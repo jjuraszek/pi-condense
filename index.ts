@@ -19,6 +19,7 @@ import { captureBatch } from "./src/batch-capture.js";
 import { summarizeBatches } from "./src/summarizer.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
+import { annotateWithUnprunedCount, countUnprunedToolCalls } from "./src/reminder.js";
 import { registerQueryTool } from "./src/query-tool.js";
 import { registerCommands, pruneStatusText } from "./src/commands.js";
 import type { ContextPruneConfig, CapturedBatch, IndexEntryData, PruneFrontier } from "./src/types.js";
@@ -427,13 +428,39 @@ export default function (pi: ExtensionAPI) {
   // ── context: prune summarized tool results from next LLM call ─────────────
   pi.on("context", async (event, _ctx) => {
     if (!currentConfig.value.enabled) return undefined;
-    if (indexer.getIndex().size === 0) return undefined;
 
-    const pruned = pruneMessages(event.messages, indexer);
+    const indexEmpty = indexer.getIndex().size === 0;
+    let messages = event.messages;
+    let changed = false;
 
-    // Only return a modified list if something actually changed
-    if (pruned.length === event.messages.length) return undefined;
-    return { messages: pruned };
+    if (!indexEmpty) {
+      const pruned = pruneMessages(messages, indexer);
+      if (pruned.length !== messages.length) {
+        messages = pruned;
+        changed = true;
+      }
+    }
+
+    // Append a small `<pruner-note>` to the last toolResult telling the model
+    // how many unpruned tool calls are sitting in context. Only active in
+    // agentic-auto mode (where the LLM itself decides when to call
+    // context_prune) and only when the user has the reminder enabled.
+    if (
+      currentConfig.value.pruneOn === "agentic-auto" &&
+      currentConfig.value.remindUnprunedCount
+    ) {
+      const count = countUnprunedToolCalls(messages, indexer);
+      if (count > 0) {
+        const annotated = annotateWithUnprunedCount(messages, count);
+        if (annotated !== messages) {
+          messages = annotated;
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) return undefined;
+    return { messages };
   });
 
   // ── before_agent_start: inject system prompt for agentic-auto mode ───────────

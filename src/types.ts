@@ -138,6 +138,14 @@ export interface ContextPruneConfig {
   summarizerThinking: SummarizerThinking;
   /** When to trigger summarization and pruning */
   pruneOn: PruneOn;
+  /**
+   * Whether to inject a small ephemeral reminder before each LLM call
+   * telling the model how many unpruned tool-call results have piled up.
+   * Only honored when `enabled && pruneOn === "agentic-auto"`. In all other
+   * modes this flag is a no-op (the reminder is meant to nudge the LLM to
+   * call `context_prune` at a sensible cadence).
+   */
+  remindUnprunedCount: boolean;
 }
 
 export const DEFAULT_CONFIG: ContextPruneConfig = {
@@ -145,6 +153,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   summarizerModel: "default",
   summarizerThinking: "default",
   pruneOn: "agent-message",
+  remindUnprunedCount: true,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────

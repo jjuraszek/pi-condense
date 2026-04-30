@@ -33,6 +33,7 @@ pi-context-prune/
     ├── summarizer.ts              # LLM call that summarizes a CapturedBatch to markdown
     ├── indexer.ts                 # Runtime Map<toolCallId, ToolCallRecord> + session persistence
     ├── pruner.ts                  # Filter context event messages (removes summarized ToolResultMessages)
+    ├── reminder.ts                # Append <pruner-note> reminder to last toolResult (agentic-auto only)
     ├── query-tool.ts              # Register the context_tree_query tool for recovering pruned outputs
     ├── context-prune-tool.ts      # Register the context_prune tool for agentic-auto mode
     ├── tree-browser.ts            # TreeBrowser TUI component + buildPruneTree for /pruner tree
@@ -54,7 +55,7 @@ Wires all modules together and registers Pi event handlers:
 - **`message_end`** — when mode is `agent-message` and the message is a final text-only assistant response (no tool calls), calls `flushPending` with `delivery: "session"`. This is the primary flush path for `agent-message` mode.
 - **`agent_end`** — safety net: if pending batches still remain (e.g. because no `message_end` fired before session shutdown), updates the status widget to show the pending count. Does **not** attempt a best-effort LLM call here to avoid starting async work after Pi may have already disposed the session.
 - **`before_agent_start`** — when mode is `agentic-auto` and pruning is enabled, appends `AGENTIC_AUTO_SYSTEM_PROMPT` to the system prompt so the LLM knows when and how to call `context_prune`.
-- **`context`** — filters the message array sent to the LLM, removing `ToolResultMessage` entries that have been summarized. Returns `undefined` (no change) if the index is empty or no messages were removed.
+- **`context`** — filters the message array sent to the LLM, removing `ToolResultMessage` entries that have been summarized. Additionally, when `pruneOn === "agentic-auto"` and `remindUnprunedCount` is true, appends a `<pruner-note>` reminder to the last toolResult telling the LLM how many unpruned tool calls are currently in context. Returns `undefined` (no change) if neither pruning nor annotation modified the list.
 
 ### `src/types.ts` — Shared types and constants
 Single source of truth for all interfaces and constants:
@@ -70,7 +71,7 @@ Single source of truth for all interfaces and constants:
 - **`SummarizerThinking`** — `"default" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh"` — reasoning effort level to pass to the summarizer LLM. `"default"` omits the option entirely (provider default); other values set `reasoningEffort` in the `complete()` call options.
 - **`PRUNE_ON_MODES`** — `{ value, label }` array for interactive selectors.
 - **`SUMMARIZER_THINKING_LEVELS`** — `{ value, label }` array for interactive selectors.
-- **`ContextPruneConfig`** — `{ enabled, summarizerModel, summarizerThinking, pruneOn }` stored in `~/.pi/agent/context-prune/settings.json`.
+- **`ContextPruneConfig`** — `{ enabled, summarizerModel, summarizerThinking, pruneOn, remindUnprunedCount }` stored in `~/.pi/agent/context-prune/settings.json`.
 - **`SummarizerStats`** — cumulative token/cost stats: `{ totalInputTokens, totalOutputTokens, totalCost, callCount }`. Persisted via `pi.appendEntry(CUSTOM_TYPE_STATS, ...)`.
 - **`SummarizeResult`** — return type from summarizer: `{ summaryText, usage }` carrying both the markdown summary and LLM usage data.
 - **`SummaryMessageDetails`** — metadata attached to `context-prune-summary` custom messages.
@@ -101,6 +102,11 @@ Maintains the runtime `Map<toolCallId, ToolCallRecord>` and handles session pers
 
 ### `src/pruner.ts` — Context message filter
 - **`pruneMessages(messages, indexer)`** — filters the `context` event's message array. Drops any message with `role === "toolResult"` whose `toolCallId` is present in the index. All other messages (including `AssistantMessage` tool-call blocks that carry the IDs) are kept so the model can still reference them when calling `context_tree_query`.
+
+### `src/reminder.ts` — Unpruned-count reminder (agentic-auto only)
+- **`countUnprunedToolCalls(messages, indexer)`** — walks `AssistantMessage` `toolCall` content blocks and counts those whose id is NOT in the indexer.
+- **`buildReminderText(count)`** — returns `<pruner-note>N unpruned tool call result(s) currently in context. Consider calling context_prune after a logical batch of 8–12 related tool calls.</pruner-note>`.
+- **`annotateWithUnprunedCount(messages, count)`** — if the last message is a `ToolResultMessage`, returns a shallow-cloned list with a `text` content block appended carrying the reminder. Otherwise returns `messages` unchanged. Wired from `index.ts`'s `context` handler, gated on `enabled && pruneOn === "agentic-auto" && remindUnprunedCount`. Annotating only the tail of the last toolResult preserves role alternation and keeps the static prompt-cache prefix intact.
 
 ### `src/query-tool.ts` — `context_tree_query` tool
 Registers a Pi tool that allows the LLM (or user) to recover pruned outputs:
@@ -144,11 +150,12 @@ Accumulates cumulative token/cost stats for summarizer LLM calls and persists th
 - **`HELP_TEXT`** — full explanation of all subcommands, mode guidance, and a note on prompt-cache impact.
 - **`getArgumentCompletions(prefix)`** — filters `SUBCOMMANDS` by prefix for tab-completion.
 - **Bare `/pruner`** (no args) — calls `ctx.ui.select()` to show an interactive picker over `SUBCOMMANDS`.
-- **`/pruner settings`** — opens an interactive `SettingsOverlay` (via `ctx.ui.custom()` with `overlay: true`) containing a `SettingsList` with four items:
+- **`/pruner settings`** — opens an interactive `SettingsOverlay` (via `ctx.ui.custom()` with `overlay: true`) containing a `SettingsList` with five items:
   1. **Enabled** — toggle between `true` / `false`
   2. **Prune trigger** — cycle through all five `PruneOn` modes
   3. **Summarizer model** — shows current value; pressing Enter opens a searchable submenu listing `"default"` plus all models from `ctx.modelRegistry.getAvailable()`. Selecting a model saves immediately.
   4. **Summarizer thinking** — cycle through all `SummarizerThinking` levels.
+  5. **Remind unpruned count** — toggle between `true` / `false`. Only effective when prune trigger is `agentic-auto`; description updates to indicate this when other modes are selected.
   All changes are persisted to `settings.json` on every toggle and the footer widget is updated.
 - **`/pruner on|off`** — enables/disables pruning, saves config, calls `syncToolActivation()`, updates footer widget.
 - **`/pruner status`** — shows enabled state, summarizer model, thinking level, prune trigger, and cumulative summarizer stats (calls, tokens, cost).

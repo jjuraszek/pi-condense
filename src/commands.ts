@@ -122,6 +122,14 @@ function pruneTriggerDescription(mode: ContextPruneConfig["pruneOn"]): string {
   return `When to summarize tool outputs. Current mode: ${pruneModeLabel(mode)} (${mode}) — ${pruneModeGuidance(mode)} Press Enter/Space to cycle through modes.`;
 }
 
+function remindUnprunedCountDescription(config: ContextPruneConfig): string {
+  const base = config.remindUnprunedCount ? "ON" : "OFF";
+  if (config.pruneOn === "agentic-auto") {
+    return `Inject a small <pruner-note> reminder before each LLM call telling the model how many unpruned tool calls are in context. Currently ${base}. Only active in agentic-auto mode.`;
+  }
+  return `Inject a small <pruner-note> reminder before each LLM call. Currently ${base}, but has NO effect in '${config.pruneOn}' mode — only honored when prune trigger is 'agentic-auto'.`;
+}
+
 const HELP_TEXT = `pruner — automatically summarizes tool-call outputs to keep context lean.
 
 Usage:
@@ -144,6 +152,13 @@ Usage:
   /pruner tree                             Browse pruned tool calls in a foldable tree (Ctrl-O opens selected summary)
   /pruner now                              Flush pending tool calls immediately
   /pruner help                             Show this help
+
+Agentic-auto reminder:
+  When prune-on is 'agentic-auto' and remindUnprunedCount is true (default), the
+  extension appends a tiny <pruner-note> line to the last toolResult before each
+  LLM call telling the model how many unpruned tool calls have piled up. This
+  helps the LLM decide when to call context_prune. Toggle via /pruner settings.
+  This setting has no effect in any other prune-on mode.
 
 Mode guidance:
   - every-turn: only for debugging / testing summary behavior. Rewrites earlier context too often and can repeatedly bust provider prompt caches.
@@ -259,6 +274,13 @@ export function registerCommands(
               currentValue: config.summarizerThinking,
               description: summarizerThinkingDescription(config.summarizerThinking),
             },
+            {
+              id: "remindUnprunedCount",
+              label: "Remind unpruned count",
+              values: ["true", "false"],
+              currentValue: String(config.remindUnprunedCount),
+              description: remindUnprunedCountDescription(config),
+            },
           ];
 
           let settingsList: SettingsList;
@@ -274,6 +296,10 @@ export function registerCommands(
               if (pruneTriggerItem) {
                 pruneTriggerItem.description = pruneTriggerDescription(newConfig.pruneOn);
               }
+              const remindItem = items.find((item) => item.id === "remindUnprunedCount");
+              if (remindItem) {
+                remindItem.description = remindUnprunedCountDescription(newConfig);
+              }
             } else if (id === "summarizerModel") {
               newConfig.summarizerModel = newValue;
             } else if (id === "summarizerThinking") {
@@ -281,6 +307,16 @@ export function registerCommands(
               const thinkingItem = items.find((item) => item.id === "summarizerThinking");
               if (thinkingItem) {
                 thinkingItem.description = summarizerThinkingDescription(newConfig.summarizerThinking);
+              }
+            } else if (id === "remindUnprunedCount") {
+              newConfig.remindUnprunedCount = newValue === "true";
+              const remindItem = items.find((item) => item.id === "remindUnprunedCount");
+              if (remindItem) {
+                remindItem.description = remindUnprunedCountDescription(newConfig);
+              }
+              const pruneTriggerItem = items.find((item) => item.id === "pruneOn");
+              if (pruneTriggerItem) {
+                pruneTriggerItem.description = pruneTriggerDescription(newConfig.pruneOn);
               }
             }
             currentConfig.value = newConfig;
@@ -346,7 +382,7 @@ export function registerCommands(
             ? `\n  --- summarizer ---\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`
             : "\n  (no summarizer calls yet)";
           ctx.ui.notify(
-            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}${statsLine}`,
+            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  remind:   ${cfg.remindUnprunedCount ? "on" : "off"} (agentic-auto only)${statsLine}`,
           );
           break;
         }
