@@ -10,8 +10,8 @@ steps:
     steps:
       - "- [x] step 1: add .agents to npm ignore rules"
       - "- [x] step 2: review the resulting diff and keep the change minimal"
-      - "- [ ] step 3: commit the packaging change on main"
-      - "- [ ] step 4: push the commit to origin/main"
+      - "- [x] step 3: commit the packaging change on main"
+      - "- [x] step 4: push the commit to origin/main"
   - phase: release
     steps:
       - "- [ ] step 1: run the repository minor release flow"
@@ -27,8 +27,8 @@ steps:
 ## Phase 2 — Implementation
 - [x] step 1: add .agents to npm ignore rules
 - [x] step 2: review the resulting diff and keep the change minimal
-- [ ] step 3: commit the packaging change on main
-- [ ] step 4: push the commit to origin/main
+- [x] step 3: commit the packaging change on main
+- [x] step 4: push the commit to origin/main
 
 ## Phase 3 — Release
 - [ ] step 1: run the repository minor release flow
