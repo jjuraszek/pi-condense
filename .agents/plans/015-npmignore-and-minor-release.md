@@ -14,8 +14,8 @@ steps:
       - "- [x] step 4: push the commit to origin/main"
   - phase: release
     steps:
-      - "- [ ] step 1: run the repository minor release flow"
-      - "- [ ] step 2: confirm the new version, tag, and push status"
+      - "- [x] step 1: run the repository minor release flow"
+      - "- [x] step 2: confirm the new version, tag, and push status"
 ---
 
 # 015-npmignore-and-minor-release
@@ -31,5 +31,5 @@ steps:
 - [x] step 4: push the commit to origin/main
 
 ## Phase 3 — Release
-- [ ] step 1: run the repository minor release flow
-- [ ] step 2: confirm the new version, tag, and push status
+- [x] step 1: run the repository minor release flow
+- [x] step 2: confirm the new version, tag, and push status
