@@ -1,125 +1,111 @@
 ---
 name: release
-description: Run the pi-context-prune maintainer release workflow. Use when asked to do `/release major`, `/release minor`, or `/release patch` from this repository, including version bumping, tagging, pushing, and triggering npm publication.
+description: Creates a repository release for this Pi package. Use when the user asks to do a major, minor, or patch release, bump the package version, create and push a git tag, and publish to npm through the repo's tag-driven GitHub Actions workflow.
 ---
 
 # Release
 
-This skill is **specific to the `pi-context-prune` repository**.
+Use this skill when asked to release this package, especially through `/release major`, `/release minor`, or `/release patch`.
 
-Use it when the user wants to cut a new release of this package with one of these semantic version bump types:
+## Repository-specific release model
 
+This repository already publishes to npm from GitHub Actions.
+
+- Workflow: `.github/workflows/release.yml`
+- Trigger: pushing a semver tag like `v1.2.3`
+- Publish mechanism: the GitHub Actions job runs `npm publish --access public --provenance`
+
+Because npm publishing is tag-driven in CI for this repo, **do not run `npm publish` locally during a normal release**. The correct way to "make npm publish happen" here is:
+
+1. bump the version
+2. create the release commit and git tag
+3. push `main`
+4. push the tag to GitHub
+5. optionally verify the GitHub Actions publish workflow started or succeeded
+
+Running `npm publish` locally as well would race with or duplicate the CI release.
+
+## Inputs
+
+Accepted release types:
 - `major`
 - `minor`
 - `patch`
 
-## What this workflow does
+If the user does not specify one of those three values, ask for clarification.
 
-For this repo, a release means:
+## Safety checks before releasing
 
-1. bump the package version
-2. create the matching git commit and tag (`vX.Y.Z`)
-3. push the branch and tag to GitHub
-4. let the existing GitHub Actions workflow publish the package to npm
+Before running the release script, confirm all of the following:
 
-The canonical release implementation lives in:
+- the repo working tree is clean
+- the release should go from `main`
+- the local checkout can fast-forward cleanly from `origin/main`
+- the current package version comes from `package.json`
+- the release workflow file still exists at `.github/workflows/release.yml`
 
-- `scripts/release.mjs`
+If any of those checks fail, stop and explain why.
 
-The npm publish step is handled by:
+## Preferred execution path
 
-- `.github/workflows/release.yml`
-
-That workflow runs on pushed tags matching `v<semver>` and executes `npm publish --access public --provenance` with the repo's `NPM_TOKEN` secret.
-
-## Required behavior
-
-When using this skill:
-
-1. Accept only `major`, `minor`, or `patch`.
-2. State the chosen release type briefly before making changes.
-3. Use the helper script instead of manually running a long sequence of release commands.
-4. Do **not** run a separate local `npm publish` unless the user explicitly asks for a manual fallback.
-   - In this repo, pushing the version tag is what triggers npm publication through GitHub Actions.
-5. After the script finishes, report:
-   - previous version
-   - new version
-   - created tag
-   - pushed refs
-   - that npm publication was triggered via GitHub Actions
-
-## Preconditions
-
-Before running the release script, verify or rely on the script's checks for all of the following:
-
-- current repo is `pi-context-prune`
-- release type is one of `major | minor | patch`
-- current branch is `main`
-- git working tree is clean
-- local branch can fast-forward from `origin/main`
-
-## Canonical command
-
-Run this from the repo root:
+Use the helper script in this skill:
 
 ```bash
-node scripts/release.mjs <major|minor|patch>
+bash skills/release/scripts/release.sh <major|minor|patch>
 ```
 
 Examples:
 
 ```bash
-node scripts/release.mjs patch
-node scripts/release.mjs minor
-node scripts/release.mjs major
+bash skills/release/scripts/release.sh patch
+bash skills/release/scripts/release.sh minor
+bash skills/release/scripts/release.sh major
 ```
 
-## What the script does
+For a no-side-effects validation run, use:
 
-The helper script is the source of truth for the mutating steps. It:
+```bash
+bash skills/release/scripts/release.sh --dry-run patch
+```
 
-1. validates the requested release type
-2. verifies a clean working tree
-3. verifies the current branch is `main`
-4. fetches tags and fast-forwards from `origin/main`
-5. runs:
-   - `npm run check`
-   - `npm pack --dry-run`
-6. runs `npm version <type> -m "release: v%s"`
-   - this updates `package.json`
-   - this creates the release commit
-   - this creates the git tag
-7. pushes `main`
-8. pushes the created tag
-9. prints a short success summary
+## What the helper script does
 
-## Response format after success
+The script is the authoritative release path for this repo. It:
 
-Use a concise summary like:
+1. validates the requested bump type
+2. ensures the working tree is clean
+3. fetches from `origin`
+4. switches to `main` if needed
+5. fast-forwards `main` from `origin/main`
+6. runs `npm run build --if-present`
+7. runs `npm run check --if-present`
+8. runs `npm version <type> -m "Release %s"`
+9. pushes `main`
+10. pushes the newly created tag
+11. prints the new version and reminds you that GitHub Actions will publish to npm
 
-- Released `OLD_VERSION -> NEW_VERSION`
-- Created tag `vNEW_VERSION`
-- Pushed `main` and `vNEW_VERSION` to `origin`
-- GitHub Actions publish workflow has been triggered for npm publication
+## After the script succeeds
+
+Report back with:
+
+- the old version
+- the new version
+- the created tag
+- confirmation that `main` and the tag were pushed
+- a note that npm publication is performed by `.github/workflows/release.yml` after the tag push
+
+If `gh` is available and the user asked for verification, you may inspect the latest run for the `Release to npm` workflow. If not, state that the tag push has triggered the publish workflow and that final confirmation should come from GitHub Actions.
 
 ## Failure handling
 
 If the script fails:
 
-1. stop and do not guess
-2. inspect the script output
-3. explain clearly which step failed
-4. if `npm version` already succeeded, mention that a release commit and tag may already exist locally
-5. propose the smallest safe recovery step
+- do not guess
+- quote the failing command or the relevant stderr
+- explain whether the release partially completed
+- if `npm version` already created a commit/tag but push failed, tell the user exactly what happened before attempting cleanup
 
-Typical recovery hints:
+## Notes
 
-- if the tree is dirty: commit or stash changes first
-- if not on `main`: switch to `main`
-- if fast-forward pull fails: resolve divergence before releasing
-- if push of `main` or the tag fails: inspect remote/auth state before retrying
-
-## Notes for `/release ...`
-
-This repo also defines a prompt template at `.pi/prompts/release.md`.
-When a user invokes `/release major`, `/release minor`, or `/release patch`, that prompt should route into this skill and then run the canonical script above.
+- This skill is paired with the prompt template at `prompts/release.md` so the user can invoke it with `/release <major|minor|patch>`.
+- Keep release responses concise and operational.
