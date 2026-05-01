@@ -29,7 +29,7 @@ pi-context-prune/
 └── src/
     ├── types.ts                   # Shared types, constants, and interfaces (including PruneOn modes)
     ├── config.ts                  # Load/save ~/.pi/agent/context-prune/settings.json
-    ├── batch-capture.ts           # Serialize turn_end events into CapturedBatch objects
+    ├── batch-capture.ts           # Capture turn results from events or session branch
     ├── summarizer.ts              # LLM call that summarizes a CapturedBatch to markdown
     ├── indexer.ts                 # Runtime Map<toolCallId, ToolCallRecord> + session persistence
     ├── pruner.ts                  # Filter context event messages (removes summarized ToolResultMessages)
@@ -44,7 +44,8 @@ pi-context-prune/
 ### `index.ts` — Extension entry point
 Wires all modules together and registers Pi event handlers:
 - **`pendingBatches: CapturedBatch[]`** — queue of captured batches not yet summarized; drained by `flushPending`.
-- **`flushPending(ctx, options?)`** — summarizes + indexes all pending batches in a **single LLM call**. Accepts `{ delivery?: "runtime" | "session" }`: `"runtime"` uses `pi.sendMessage(..., { deliverAs: "steer" })` (default, used during an active agent loop); `"session"` writes directly via `sessionManager.appendCustomMessageEntry` (used for `every-turn` and `agent-message` modes where Pi may be shutting down by the time the summarizer returns). Sets status to "prune: summarizing…" while working, then restores the status widget with stats (e.g. `prune: ON (Every turn) │ ↑1.2k ↓340 $0.003`). Returns a typed `FlushResult` (`{ ok: true, batchCount, toolCallCount }` or `{ ok: false, reason, error? }`). Batches that fail to flush are atomically restored to `pendingBatches`.
+- **`flushPending(ctx, options?)`** — summarizes + indexes all unsummarized batches in a **single LLM call**. It first scans the session branch via `captureUnindexedBatchesFromSession` to grab everything that hasn't been pruned yet (including results from the current turn-in-progress). It then clears `pendingBatches` (which serves as a trigger/cache) and proceeds with summarization. Accepts `{ delivery?: "runtime" | "session" }`: `"runtime"` uses `pi.sendMessage(..., { deliverAs: "steer" })` (default, used during an active agent loop); `"session"` writes directly via `sessionManager.appendCustomMessageEntry` (used for `every-turn` and `agent-message` modes where Pi may be shutting down by the time the summarizer returns). Sets status to "prune: summarizing…" while working, then restores the status widget with stats. Returns a typed `FlushResult`.
+
 - **`syncToolActivation()`** — activates or deactivates the `context_prune` tool in the Pi active-tools list based on whether `enabled && pruneOn === "agentic-auto"`. Uses `pi.getActiveTools()` / `pi.setActiveTools()` (ExtensionAPI, not ExtensionContext).
 - **`session_start`** — loads config from `~/.pi/agent/context-prune/settings.json`, rebuilds the in-memory index and stats accumulator, clears `pendingBatches`, updates the footer status widget, calls `syncToolActivation()`, and notifies the user of the loaded state.
 - **`session_tree`** — rebuilds the index and stats accumulator after branch navigation (pending batches and stats belong to the current branch).
@@ -84,6 +85,7 @@ Single source of truth for all interfaces and constants:
 
 ### `src/batch-capture.ts` — Turn capture and serialization
 - **`captureBatch(message, toolResults, turnIndex, timestamp)`** — converts raw `turn_end` event data into a typed `CapturedBatch`. Extracts `assistantText` from `TextContent` blocks and matches each `ToolCall` content block in the `AssistantMessage` with its corresponding `ToolResultMessage` by `toolCallId`. Falls back to `"(no result)"` if no match is found for a tool call.
+- **`captureUnindexedBatchesFromSession(branch, indexer, excludeToolNames)`** — scans a session branch for all unsummarized tool results and groups them into `CapturedBatch` objects. This allows the pruner to capture results from the current in-progress turn (before `turn_end` fires) when triggered by `context_prune` or `/pruner now`.
 - **`serializeBatchForSummarizer(batch)`** — renders a single `CapturedBatch` as plain text for the summarizer LLM. Includes `assistantText` as a header if present. Truncates individual result text at 2 000 chars to keep the summarizer prompt manageable.
 - **`serializeBatchesForSummarizer(batches)`** — renders multiple `CapturedBatch` objects into a single text block for batched summarization. Each batch is rendered as a `=== Turn N ===` section, separated by blank lines. Reuses `serializeBatchForSummarizer` for each batch's body.
 

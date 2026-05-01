@@ -50,6 +50,56 @@ export function captureBatch(
   return { turnIndex, timestamp, assistantText, toolCalls };
 }
 
+/**
+ * Scans a session branch for unsummarized tool results and groups them into CapturedBatches.
+ * Useful for capturing results from the current in-progress turn when a prune is triggered.
+ *
+ * @param branch            The session message branch (from ctx.sessionManager.getBranch())
+ * @param indexer           The pruner indexer to check for already-summarized IDs
+ * @param excludeToolNames  Optional tool names to skip (e.g. context_prune itself)
+ */
+export function captureUnindexedBatchesFromSession(
+  branch: any[],
+  indexer: { isSummarized(id: string): boolean },
+  excludeToolNames: string[] = []
+): CapturedBatch[] {
+  const resultMap = new Map<string, any>();
+  for (const m of branch) {
+    if (m.role === "toolResult" && m.toolCallId) {
+      resultMap.set(m.toolCallId, m);
+    }
+  }
+
+  const batches: CapturedBatch[] = [];
+  let turnCounter = 0;
+
+  for (const msg of branch) {
+    if (msg.role !== "assistant") continue;
+
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    const toolCallBlocks = content.filter((c: any) => c.type === "toolCall");
+
+    // Find tool calls that have results in this branch and are not yet summarized
+    const readyToPrune = toolCallBlocks.filter((tc: any) => {
+      const id = tc.id;
+      if (!id) return false;
+      if (indexer.isSummarized(id)) return false;
+      if (excludeToolNames.includes(tc.name)) return false;
+      return resultMap.has(id);
+    });
+
+    if (readyToPrune.length > 0) {
+      const results = readyToPrune.map((tc: any) => resultMap.get(tc.id));
+      // We pass the full message but only the relevant results.
+      // captureBatch will only include tool calls that have a match in results.
+      const batch = captureBatch(msg, results, turnCounter++, msg.timestamp ?? Date.now());
+      batches.push(batch);
+    }
+  }
+
+  return batches;
+}
+
 /** Serializes a single CapturedBatch into readable text for the summarizer LLM. */
 export function serializeBatchForSummarizer(batch: CapturedBatch): string {
   const parts: string[] = [];

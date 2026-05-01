@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
-import { captureBatch } from "./src/batch-capture.js";
+import { captureBatch, captureUnindexedBatchesFromSession } from "./src/batch-capture.js";
 import { summarizeBatches } from "./src/summarizer.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
@@ -129,10 +129,27 @@ export default function (pi: ExtensionAPI) {
   // agent-message's final-message flush, where print-mode Pi may invalidate pi.*
   // while the summarizer LLM call is in flight.
   const flushPending = async (ctx: any, options: { delivery?: "runtime" | "session" } = {}): Promise<FlushResult> => {
-    if (pendingBatches.length === 0) return { ok: false, reason: "empty" };
     if (isFlushing) return { ok: false, reason: "already-flushing" };
 
-    const batches = pendingBatches.splice(0); // drain atomically; restore on failure
+    // Capture everything unindexed from the session branch. This ensures that
+    // even tool results from the current in-progress turn (which haven't fired
+    // turn_end yet) are included when the agent calls context_prune.
+    let batches: CapturedBatch[] = [];
+    try {
+      const branch = ctx.sessionManager.getBranch();
+      batches = captureUnindexedBatchesFromSession(branch, indexer, [CONTEXT_PRUNE_TOOL_NAME]);
+    } catch (err) {
+      // Fallback: if we can't access the branch (e.g. stale context), use the queued batches
+      batches = pendingBatches.slice();
+    }
+
+    if (batches.length === 0) return { ok: false, reason: "empty" };
+
+    // Draining the queue since we've captured the state via session or slice.
+    // We drain BEFORE the await so concurrent calls (though guarded by isFlushing)
+    // or rapid turn-ends don't result in double-summarization.
+    pendingBatches.length = 0;
+
     const toolCallCount = batches.reduce((sum, batch) => sum + batch.toolCalls.length, 0);
     isFlushing = true;
 
