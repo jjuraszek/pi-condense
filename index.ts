@@ -93,12 +93,28 @@ export default function (pi: ExtensionAPI) {
 
   const isFinalAssistantMessage = (message: any) => message?.role === "assistant" && !assistantMessageHasToolCalls(message);
 
-  const isBatchAtOrBeforeFrontier = (batch: CapturedBatch) => {
+  const trimBatchToPendingRange = (batch: CapturedBatch): CapturedBatch | null => {
     const currentFrontier = frontier.get();
-    if (!currentFrontier) return false;
-    if (batch.turnIndex < currentFrontier.lastAttemptedTurnIndex) return true;
-    if (batch.turnIndex > currentFrontier.lastAttemptedTurnIndex) return false;
-    return batch.toolCalls.some((tc) => tc.toolCallId === currentFrontier.lastAttemptedToolCallId);
+    let toolCalls = batch.toolCalls;
+
+    // The indexer tells us what was successfully summarized earlier.
+    toolCalls = toolCalls.filter((tc) => !indexer.isSummarized(tc.toolCallId));
+    if (toolCalls.length === 0) return null;
+
+    // The frontier tells us the last attempted boundary even when the attempt did
+    // not persist index entries (e.g. skipped-oversized). When the LLM prunes in
+    // the middle of a long tool chain, keep later tool calls from the same turn
+    // instead of dropping the whole batch on the floor.
+    if (!currentFrontier) return { ...batch, toolCalls };
+    if (batch.turnIndex < currentFrontier.lastAttemptedTurnIndex) return null;
+    if (batch.turnIndex > currentFrontier.lastAttemptedTurnIndex) return { ...batch, toolCalls };
+
+    const originalIndex = toolCalls.findIndex((tc) => tc.toolCallId === currentFrontier.lastAttemptedToolCallId);
+    if (originalIndex < 0) return { ...batch, toolCalls };
+
+    const remaining = toolCalls.slice(originalIndex + 1);
+    if (remaining.length === 0) return null;
+    return { ...batch, toolCalls: remaining };
   };
 
   const restoreBatches = (batches: CapturedBatch[]) => {
@@ -142,6 +158,10 @@ export default function (pi: ExtensionAPI) {
       // Fallback: if we can't access the branch (e.g. stale context), use the queued batches
       batches = pendingBatches.slice();
     }
+
+    batches = batches
+      .map((batch) => trimBatchToPendingRange(batch))
+      .filter((batch): batch is CapturedBatch => batch !== null);
 
     if (batches.length === 0) return { ok: false, reason: "empty" };
 
@@ -372,15 +392,14 @@ export default function (pi: ExtensionAPI) {
       event.turnIndex,
       Date.now()
     );
-    const batch = {
+    const batch = trimBatchToPendingRange({
       ...capturedBatch,
       // Do not summarize the pruner's own housekeeping tool result. Otherwise
       // agentic-auto mode can queue the context_prune result and try to flush it
       // during agent_end, when Pi may already have invalidated the extension ctx.
       toolCalls: capturedBatch.toolCalls.filter((tc) => tc.toolName !== CONTEXT_PRUNE_TOOL_NAME),
-    };
-    if (batch.toolCalls.length === 0) return;
-    if (isBatchAtOrBeforeFrontier(batch)) return;
+    });
+    if (!batch) return;
 
     pendingBatches.push(batch);
 

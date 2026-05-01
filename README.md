@@ -285,8 +285,8 @@ session_tree
 
 turn_end (tool calls present + enabled)
   └─► captureBatch()            serialize the tool call batch
-  └─► skip batches at/before frontier (already attempted earlier)
-  └─► push to pendingBatches
+  └─► trim against index/frontier so same-turn later tool calls survive an earlier mid-turn prune
+  └─► push remaining tool calls to pendingBatches
   └─► if every-turn: flushPending() immediately
   └─► otherwise: notify user of pending count + trigger
 
@@ -300,6 +300,8 @@ context_prune tool call (agentic-auto mode)
   └─► flushPending()
 
 flushPending()
+  └─► scan the session branch for completed unpruned tool results, including mid-turn subsets
+  └─► trim against index/frontier so already-attempted prefixes are ignored
   └─► summarizeBatches()         call LLM → summary text + usage stats
   └─► compare summary chars vs raw tool-result chars
   └─► if smaller: persist index + inject summary, then advance frontier
@@ -337,6 +339,7 @@ The extension registers a status widget in the Pi footer that shows the current 
 - The `context_tree_query` tool is only active when the extension is loaded.
 - The `context_prune` tool is only activated in `agentic-auto` mode.
 - The summarizer call happens synchronously inside `turn_end`, adding latency between turns proportional to the summarizer model's response time.
+- Mid-turn pruning now supports completed subsets of a longer tool chain, but batching is still based on assistant-message groups rather than arbitrary semantic task labels.
 - The `/pruner tree` browser shows pruned tool calls grouped under their summaries. Press `Ctrl-O` on a summary node to open the full pruned summary message in a bordered overlay. It still does not recover full original tool outputs inline (use `context_tree_query` for that).
 - Summary grouping across multiple turns (e.g., "compress the last 5 summaries") is a follow-up item.
 

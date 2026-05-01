@@ -90,10 +90,17 @@ export function captureUnindexedBatchesFromSession(
 
     if (readyToPrune.length > 0) {
       const results = readyToPrune.map((tc: any) => resultMap.get(tc.id));
-      // We pass the full message but only the relevant results.
-      // captureBatch will only include tool calls that have a match in results.
+      const readyIds = new Set(readyToPrune.map((tc: any) => tc.id));
+      // We pass the full message but then trim back down to only the tool calls
+      // whose results already exist in the session. This lets agentic-auto prune
+      // an intermediate completed subset in the middle of a longer tool chain
+      // without accidentally capturing later unresolved calls from the same
+      // assistant message as "(no result)" placeholders.
       const batch = captureBatch(msg, results, turnCounter++, msg.timestamp ?? Date.now());
-      batches.push(batch);
+      batches.push({
+        ...batch,
+        toolCalls: batch.toolCalls.filter((tc) => readyIds.has(tc.toolCallId)),
+      });
     }
   }
 
