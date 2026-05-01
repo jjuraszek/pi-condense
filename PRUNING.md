@@ -14,11 +14,12 @@
 6. [How Prefix Caching Works](#how-prefix-caching-works)
 7. [Why Frequent Pruning Busts Cache](#why-frequent-pruning-busts-cache)
 8. [The Sweet Spot: Batch and Prune](#the-sweet-spot-batch-and-prune)
-9. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
+9. [Advanced Features & Safeguards](#advanced-features--safeguards)
+10. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
    - [SUPO — Summarization augmented Policy Optimization](#supo--summarization-augmented-policy-optimization)
    - [ReSum — Recursive Summarization for Long-Horizon Agents](#resum--recursive-summarization-for-long-horizon-agents)
    - [ACON — Agent Context Optimization](#acon--agent-context-optimization)
-10. [Summary](#summary)
+11. [Summary](#summary)
 
 ---
 
@@ -98,7 +99,7 @@ In a long session this can grow to **30k–100k+ tokens**. The model pays for ev
 │               an API and displays it in a table...                      │
 │                                                                         │
 │  [summary]    ╔════════════════════════════════════════════╗            │
-│               ║ ⚃  Summary of Turns 1-5 (5 tool calls)     ║            │
+│               ║ ⚃  [pruner] Turn 1 summary (5 tools)       ║            │
 │               ║                                            ║            │
 │               ║ • Read existing App.tsx and package.json   ║            │
 │               ║ • Searched React Table docs; decided on    ║            │
@@ -261,7 +262,7 @@ So after pruning, the model is working with a **two-layer memory**:
 | Part of old turn | After pruning | Why |
 |---|---|---|
 | Assistant tool-call block | **Kept in context** | Preserves the `toolCallId` anchors the model can reference |
-| Tool result message | **Removed from active context** | Saves tokens |
+| Tool result message | **Removed from active context** | Saves tokens (unless the summary is larger than the raw text, in which case pruning is skipped) |
 | Summary message | **Added to context** | Gives the model a compact description of what happened |
 | Indexed tool-call record | **Stored in pruner index** | Lets the model re-open the original raw output later |
 
@@ -538,6 +539,17 @@ graph LR
 | `on-demand` | 0–1 | When you say so | Maximum cache preservation |
 
 > **Everything before the previous pruning point stays in the prefix cache.** The cached prefix is the stable foundation; only the new suffix (recent turns since last prune) changes per request.
+
+---
+
+## Advanced Features & Safeguards
+
+The `pi-context-prune` extension includes several mechanisms to ensure pruning is safe, transparent, and configurable:
+
+- **Oversized Summary Skipping (`skip-oversized`):** Occasionally, a batch of tool calls produces very little raw text, and the LLM's summary ends up being *larger* than the original content. When this happens, the pruner detects it and automatically skips pruning that batch. The frontier advances, but the original raw text remains in context to save tokens.
+- **Tree Browser (`/pruner tree`):** You can visually explore all pruned tool calls in your current session using an interactive, foldable tree UI. Selecting a summary lets you inspect its contents directly.
+- **Agentic-Auto Unpruned Count Reminder (`remindUnprunedCount`):** In `agentic-auto` mode, the agent decides when to prune. To help the LLM maintain a healthy cadence, the extension appends a tiny ephemeral `<pruner-note>` to the last tool result before each generation, reminding the model exactly how many unpruned tool calls have piled up in context.
+- **Configurable Summarizer Thinking (`summarizerThinking`):** You can control the reasoning effort used during summarization (e.g., `off`, `low`, `high`). This allows you to trade off between summarization speed, cost, and analytical depth.
 
 ---
 

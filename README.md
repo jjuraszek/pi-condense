@@ -2,9 +2,16 @@
 
 A [Pi coding-agent](https://github.com/badlogic/pi-mono) extension that **summarizes completed tool-call batches**, prunes raw tool outputs from future LLM context, and exposes a `context_tree_query` escape hatch to recover any original output on demand.
 
-## Companion Extensions
+## Related Extensions
 
-> **📊 Tip:** If you want to visualise your **context cache hit rates** over time, check out [pi-cache-graph](https://github.com/championswimmer/pi-cache-graph) — a companion Pi extension that plots cache hits and misses as a live graph inside the TUI. Pruning context with `pi-context-prune` directly improves cache re-use, and `pi-cache-graph` lets you see the effect in real time.
+Here are some other Pi extensions that work well alongside context pruning:
+
+*   **[pi-context-usage](https://github.com/championswimmer/pi-context-usage) ([npm](https://www.npmjs.com/package/pi-context-usage))**
+    *   **What it does:** Visualizes the current size of your LLM context and breaks it down to show exactly what is taking up space (system prompt, user messages, tool calls, tool results, etc.).
+    *   **Why use it:** It's the perfect way to see *why* you need pruning. You can use it to inspect your context before and after a prune to see exactly how much space the `pi-context-prune` extension just saved you.
+*   **[pi-cache-graph](https://github.com/championswimmer/pi-cache-graph) ([npm](https://www.npmjs.com/package/pi-cache-graph))**
+    *   **What it does:** Plots your provider's prefix cache hits and misses as a live graph inside the TUI.
+    *   **Why use it:** Pruning context directly impacts cache re-use. This extension lets you see the real-time effect of your chosen `pruneOn` mode on cache stability.
 
 ---
 
@@ -185,7 +192,8 @@ Config is stored in `~/.pi/agent/context-prune/settings.json` (global, project-i
   "enabled": false,
   "summarizerModel": "default",
   "summarizerThinking": "default",
-  "pruneOn": "agent-message"
+  "pruneOn": "agent-message",
+  "remindUnprunedCount": true
 }
 ```
 
@@ -195,6 +203,9 @@ Config is stored in `~/.pi/agent/context-prune/settings.json` (global, project-i
 | `summarizerModel` | `"default"` or `"provider/model-id"` | `"default"` |
 | `summarizerThinking` | `"default"`, `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` | `"default"` |
 | `pruneOn` | `"every-turn"`, `"on-context-tag"`, `"on-demand"`, `"agent-message"`, `"agentic-auto"` | `"agent-message"` |
+| `remindUnprunedCount` | `true` / `false` | `true` |
+
+- `remindUnprunedCount: true` appends a small ephemeral `<pruner-note>` to the last tool result before each LLM call to remind the model of the number of unpruned tool calls in context. This only has an effect when `pruneOn` is set to `"agentic-auto"`.
 
 - `summarizerModel: "default"` means the current active Pi model. An explicit value like `"anthropic/claude-haiku-3-5"` uses that model for summarization (must be registered in Pi and have an API key).
 - `summarizerThinking: "default"` preserves old behavior: no explicit thinking/reasoning option is added to summarizer calls.
