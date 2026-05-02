@@ -63,8 +63,12 @@ export function captureUnindexedBatchesFromSession(
   indexer: { isSummarized(id: string): boolean },
   excludeToolNames: string[] = []
 ): CapturedBatch[] {
+  // branch is SessionEntry[]. Each message entry has { type: "message", message: AgentMessage }.
+  // We must unwrap the SessionEntry wrapper before accessing role/toolCallId.
   const resultMap = new Map<string, any>();
-  for (const m of branch) {
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    const m = entry.message;
     if (m.role === "toolResult" && m.toolCallId) {
       resultMap.set(m.toolCallId, m);
     }
@@ -73,7 +77,9 @@ export function captureUnindexedBatchesFromSession(
   const batches: CapturedBatch[] = [];
   let turnCounter = 0;
 
-  for (const msg of branch) {
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    const msg = entry.message;
     if (msg.role !== "assistant") continue;
 
     const content = Array.isArray(msg.content) ? msg.content : [];
@@ -96,7 +102,8 @@ export function captureUnindexedBatchesFromSession(
       // an intermediate completed subset in the middle of a longer tool chain
       // without accidentally capturing later unresolved calls from the same
       // assistant message as "(no result)" placeholders.
-      const batch = captureBatch(msg, results, turnCounter++, msg.timestamp ?? Date.now());
+      const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : (msg.timestamp ?? Date.now());
+      const batch = captureBatch(msg, results, turnCounter++, ts);
       batches.push({
         ...batch,
         toolCalls: batch.toolCalls.filter((tc) => readyIds.has(tc.toolCallId)),
