@@ -23,10 +23,19 @@ export async function loadConfig(): Promise<ContextPruneConfig> {
     const merged = { ...DEFAULT_CONFIG, ...existing };
     return {
       ...merged,
+      enabled: typeof merged.enabled === "boolean" ? merged.enabled : DEFAULT_CONFIG.enabled,
+      showPruneStatusLine:
+        typeof merged.showPruneStatusLine === "boolean"
+          ? merged.showPruneStatusLine
+          : DEFAULT_CONFIG.showPruneStatusLine,
       pruneOn: isPruneOn(merged.pruneOn) ? merged.pruneOn : DEFAULT_CONFIG.pruneOn,
       summarizerThinking: isSummarizerThinking(merged.summarizerThinking)
         ? merged.summarizerThinking
         : DEFAULT_CONFIG.summarizerThinking,
+      remindUnprunedCount:
+        typeof merged.remindUnprunedCount === "boolean"
+          ? merged.remindUnprunedCount
+          : DEFAULT_CONFIG.remindUnprunedCount,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

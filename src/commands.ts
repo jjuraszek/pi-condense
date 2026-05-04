@@ -50,13 +50,25 @@ export function pruneStatusText(config: ContextPruneConfig, stats?: SummarizerSt
   return text;
 }
 
+export function setPruneStatusWidget(
+  ctx: { ui: { setStatus: (id: string, text?: string) => void } },
+  config: ContextPruneConfig,
+  value?: SummarizerStats | string,
+): void {
+  if (!config.showPruneStatusLine) {
+    ctx.ui.setStatus(STATUS_WIDGET_ID, undefined);
+    return;
+  }
+  ctx.ui.setStatus(STATUS_WIDGET_ID, typeof value === "string" ? value : pruneStatusText(config, value));
+}
+
 // ── Subcommand list (for completions & interactive picker) ──────────────────
 
 const SUBCOMMANDS = [
   { value: "settings", label: "settings — interactive settings overlay" },
   { value: "on",       label: "on       — enable context pruning" },
   { value: "off",      label: "off      — disable context pruning" },
-  { value: "status",  label: "status   — show status, model, thinking, and prune trigger" },
+  { value: "status",  label: "status   — show status, model, thinking, prune trigger, and status line" },
   { value: "model",   label: "model    — show or set the summarizer model" },
   { value: "thinking", label: "thinking — show or set the summarizer thinking level" },
   { value: "prune-on", label: "prune-on — show or set the trigger mode" },
@@ -130,13 +142,21 @@ function remindUnprunedCountDescription(config: ContextPruneConfig): string {
   return `Inject a small <pruner-note> reminder before each LLM call. Currently ${base}, but has NO effect in '${config.pruneOn}' mode — only honored when prune trigger is 'agentic-auto'.`;
 }
 
+function pruneStatusLineDescription(config: ContextPruneConfig): string {
+  const base = config.showPruneStatusLine ? "ON" : "OFF";
+  if (config.showPruneStatusLine) {
+    return `Show the prune footer status line and queued turn notifications. Currently ${base}.`;
+  }
+  return `Hide the prune footer status line and queued turn notifications. Currently ${base}.`;
+}
+
 const HELP_TEXT = `pruner — automatically summarizes tool-call outputs to keep context lean.
 
 Usage:
   /pruner settings                         Interactive settings overlay
   /pruner on                               Enable context pruning
   /pruner off                              Disable context pruning
-  /pruner status                           Show status, model, prune trigger, and stats
+  /pruner status                           Show status, model, prune trigger, status line, and stats
   /pruner model                            Show the current summarizer model
   /pruner model <id>                       Set summarizer model (e.g. anthropic/claude-haiku-3-5)
   /pruner model <id>:<thinking>            Set summarizer model and thinking together (e.g. openai/gpt-5-mini:low)
@@ -225,6 +245,13 @@ export function registerCommands(
               description: "Enable or disable context pruning",
             },
             {
+              id: "showPruneStatusLine",
+              label: "Prune status line",
+              values: ["true", "false"],
+              currentValue: String(config.showPruneStatusLine),
+              description: pruneStatusLineDescription(config),
+            },
+            {
               id: "pruneOn",
               label: "Prune trigger",
               values: PRUNE_ON_MODES.map((m) => m.value),
@@ -290,6 +317,12 @@ export function registerCommands(
             const newConfig = { ...currentConfig.value };
             if (id === "enabled") {
               newConfig.enabled = newValue === "true";
+            } else if (id === "showPruneStatusLine") {
+              newConfig.showPruneStatusLine = newValue === "true";
+              const statusLineItem = items.find((item) => item.id === "showPruneStatusLine");
+              if (statusLineItem) {
+                statusLineItem.description = pruneStatusLineDescription(newConfig);
+              }
             } else if (id === "pruneOn") {
               newConfig.pruneOn = newValue as ContextPruneConfig["pruneOn"];
               const pruneTriggerItem = items.find((item) => item.id === "pruneOn");
@@ -321,7 +354,7 @@ export function registerCommands(
             }
             currentConfig.value = newConfig;
             saveConfig(newConfig);
-            ctx.ui.setStatus(STATUS_WIDGET_ID, pruneStatusText(newConfig, getStats()));
+            setPruneStatusWidget(ctx, newConfig, getStats());
             settingsList?.invalidate();
             // Toggle context_prune tool activation when config changes
             syncToolActivation();
@@ -358,7 +391,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: true };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning enabled.");
-          ctx.ui.setStatus(STATUS_WIDGET_ID, pruneStatusText(currentConfig.value, getStats()));
+          setPruneStatusWidget(ctx, currentConfig.value, getStats());
           syncToolActivation();
           break;
         }
@@ -368,7 +401,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: false };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning disabled.");
-          ctx.ui.setStatus(STATUS_WIDGET_ID, pruneStatusText(currentConfig.value, getStats()));
+          setPruneStatusWidget(ctx, currentConfig.value, getStats());
           syncToolActivation();
           break;
         }
@@ -382,7 +415,7 @@ export function registerCommands(
             ? `\n  --- summarizer ---\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`
             : "\n  (no summarizer calls yet)";
           ctx.ui.notify(
-            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  remind:   ${cfg.remindUnprunedCount ? "on" : "off"} (agentic-auto only)${statsLine}`,
+            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}\n  remind:   ${cfg.remindUnprunedCount ? "on" : "off"} (agentic-auto only)${statsLine}`,
           );
           break;
         }
@@ -486,7 +519,7 @@ export function registerCommands(
             currentConfig.value = { ...currentConfig.value, pruneOn: modeArg as ContextPruneConfig["pruneOn"] };
           }
           saveConfig(currentConfig.value);
-          ctx.ui.setStatus(STATUS_WIDGET_ID, pruneStatusText(currentConfig.value, getStats()));
+          setPruneStatusWidget(ctx, currentConfig.value, getStats());
           syncToolActivation();
           break;
         }

@@ -72,7 +72,7 @@ Single source of truth for all interfaces and constants:
 - **`SummarizerThinking`** — `"default" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh"` — reasoning effort level to pass to the summarizer LLM. `"default"` omits the option entirely (provider default); other values set `reasoningEffort` in the `complete()` call options.
 - **`PRUNE_ON_MODES`** — `{ value, label }` array for interactive selectors.
 - **`SUMMARIZER_THINKING_LEVELS`** — `{ value, label }` array for interactive selectors.
-- **`ContextPruneConfig`** — `{ enabled, summarizerModel, summarizerThinking, pruneOn, remindUnprunedCount }` stored in `~/.pi/agent/context-prune/settings.json`.
+- **`ContextPruneConfig`** — `{ enabled, showPruneStatusLine, summarizerModel, summarizerThinking, pruneOn, remindUnprunedCount }` stored in `~/.pi/agent/context-prune/settings.json`.
 - **`SummarizerStats`** — cumulative token/cost stats: `{ totalInputTokens, totalOutputTokens, totalCost, callCount }`. Persisted via `pi.appendEntry(CUSTOM_TYPE_STATS, ...)`.
 - **`SummarizeResult`** — return type from summarizer: `{ summaryText, usage }` carrying both the markdown summary and LLM usage data.
 - **`SummaryMessageDetails`** — metadata attached to `context-prune-summary` custom messages.
@@ -154,13 +154,13 @@ Accumulates cumulative token/cost stats for summarizer LLM calls and persists th
 - **Bare `/pruner`** (no args) — calls `ctx.ui.select()` to show an interactive picker over `SUBCOMMANDS`.
 - **`/pruner settings`** — opens an interactive `SettingsOverlay` (via `ctx.ui.custom()` with `overlay: true`) containing a `SettingsList` with five items:
   1. **Enabled** — toggle between `true` / `false`
-  2. **Prune trigger** — cycle through all five `PruneOn` modes
-  3. **Summarizer model** — shows current value; pressing Enter opens a searchable submenu listing `"default"` plus all models from `ctx.modelRegistry.getAvailable()`. Selecting a model saves immediately.
-  4. **Summarizer thinking** — cycle through all `SummarizerThinking` levels.
-  5. **Remind unpruned count** — toggle between `true` / `false`. Only effective when prune trigger is `agentic-auto`; description updates to indicate this when other modes are selected.
-  All changes are persisted to `settings.json` on every toggle and the footer widget is updated.
+  2. **Prune status line** — toggle the footer status widget and queued turn notifications on/off
+  3. **Prune trigger** — cycle through all five `PruneOn` modes
+  4. **Summarizer model** — shows current value; pressing Enter opens a searchable submenu listing `"default"` plus all models from `ctx.modelRegistry.getAvailable()`. Selecting a model saves immediately.
+  5. **Summarizer thinking** — cycle through all `SummarizerThinking` levels.
+  All changes are persisted to `settings.json` on every toggle and the footer widget is updated when enabled.
 - **`/pruner on|off`** — enables/disables pruning, saves config, calls `syncToolActivation()`, updates footer widget.
-- **`/pruner status`** — shows enabled state, summarizer model, thinking level, prune trigger, and cumulative summarizer stats (calls, tokens, cost).
+- **`/pruner status`** — shows enabled state, summarizer model, thinking level, prune trigger, status line visibility, and cumulative summarizer stats (calls, tokens, cost).
 - **`/pruner stats`** — shows detailed cumulative summarizer token/cost stats.
 - **`/pruner model [value]`** — gets or sets the summarizer model. Accepts `"provider/model-id"` or `"provider/model-id:thinking"` (colon-separated suffix sets both model and thinking level in one command).
 - **`/pruner thinking [value]`** — gets or sets the summarizer thinking level; bare form shows `ctx.ui.select()` picker over `SUMMARIZER_THINKING_LEVELS`.

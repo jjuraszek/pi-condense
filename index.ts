@@ -21,11 +21,10 @@ import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
 import { annotateWithUnprunedCount, countUnprunedToolCalls } from "./src/reminder.js";
 import { registerQueryTool } from "./src/query-tool.js";
-import { registerCommands, pruneStatusText } from "./src/commands.js";
+import { registerCommands, setPruneStatusWidget } from "./src/commands.js";
 import type { ContextPruneConfig, CapturedBatch, IndexEntryData, PruneFrontier } from "./src/types.js";
 import {
   DEFAULT_CONFIG,
-  STATUS_WIDGET_ID,
   CONTEXT_PRUNE_TOOL_NAME,
   AGENTIC_AUTO_SYSTEM_PROMPT,
   CUSTOM_TYPE_SUMMARY,
@@ -69,14 +68,6 @@ export default function (pi: ExtensionAPI) {
     err instanceof Error && err.message.includes("This extension ctx is stale");
 
   const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
-
-  const safeSetStatus = (ctx: any, text: string) => {
-    try {
-      ctx.ui.setStatus(STATUS_WIDGET_ID, text);
-    } catch (err) {
-      if (!isStaleContextError(err)) throw err;
-    }
-  };
 
   const safeNotify = (ctx: any, message: string, type: "info" | "warning" | "error" = "info") => {
     try {
@@ -190,7 +181,7 @@ export default function (pi: ExtensionAPI) {
       sessionManager!.appendCustomMessageEntry(CUSTOM_TYPE_SUMMARY, content, true, details);
 
     try {
-      safeSetStatus(ctx, "prune: summarizing…");
+      setPruneStatusWidget(ctx, currentConfig.value, "prune: summarizing…");
 
       const rawCharCount = batches.reduce(
         (sum, batch) => sum + batch.toolCalls.reduce((batchSum, tc) => batchSum + tc.resultText.length, 0),
@@ -218,7 +209,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!result) {
         restoreBatches(batches);
-        safeSetStatus(ctx, pruneStatusText(currentConfig.value, statsAccum.getStats()));
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
         return { ok: false, reason: "summarizer-failed" };
       }
 
@@ -290,7 +281,7 @@ export default function (pi: ExtensionAPI) {
         return { ok: false, reason: isStaleContextError(err) ? "stale-context" : "failed", error: errorMessage(err) };
       }
 
-      safeSetStatus(ctx, pruneStatusText(currentConfig.value, statsAccum.getStats()));
+      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
       if (shouldSkipOversized) {
         safeNotify(
           ctx,
@@ -353,7 +344,7 @@ export default function (pi: ExtensionAPI) {
     pendingBatches.length = 0;
 
     // Update footer status
-    ctx.ui.setStatus(STATUS_WIDGET_ID, pruneStatusText(currentConfig.value, statsAccum.getStats()));
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
 
     // Toggle context_prune tool activation for agentic-auto mode
     syncToolActivation();
@@ -423,12 +414,14 @@ export default function (pi: ExtensionAPI) {
           trigger = "/pruner now";
           break;
       }
-      safeSetStatus(ctx, `prune: ${n} pending`);
-      safeNotify(
-        ctx,
-        `pruner: ${n} turn${n === 1 ? "" : "s"} queued — will summarize on ${trigger}`,
-        "info"
-      );
+      if (currentConfig.value.showPruneStatusLine) {
+        setPruneStatusWidget(ctx, currentConfig.value, `prune: ${n} pending`);
+        safeNotify(
+          ctx,
+          `pruner: ${n} turn${n === 1 ? "" : "s"} queued — will summarize on ${trigger}`,
+          "info"
+        );
+      }
     }
   });
 
@@ -458,7 +451,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => {
     if (!currentConfig.value.enabled) return;
     if (pendingBatches.length === 0) return;
-    safeSetStatus(ctx, `prune: ${pendingBatches.length} pending`);
+    setPruneStatusWidget(ctx, currentConfig.value, `prune: ${pendingBatches.length} pending`);
   });
 
   // ── context: prune summarized tool results from next LLM call ─────────────

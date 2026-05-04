@@ -150,14 +150,15 @@ The extension registers the `/pruner` command:
 
 ### Settings overlay
 
-`/pruner settings` opens a TUI overlay with four interactive items:
+`/pruner settings` opens a TUI overlay with five interactive items:
 
 1. **Enabled** — toggle pruning on/off
-2. **Prune trigger** — cycle through all five `pruneOn` modes
-3. **Summarizer model** — press Enter to open a searchable submenu listing `"default"` plus all available models
-4. **Summarizer thinking** — cycle through the thinking/reasoning level used for summarizer calls
+2. **Prune status line** — show or hide the footer status widget and queued turn notifications
+3. **Prune trigger** — cycle through all five `pruneOn` modes
+4. **Summarizer model** — press Enter to open a searchable submenu listing `"default"` plus all available models
+5. **Summarizer thinking** — cycle through the thinking/reasoning level used for summarizer calls
 
-All changes are saved immediately to `~/.pi/agent/context-prune/settings.json` and reflected in the footer status widget.
+All changes are saved immediately to `~/.pi/agent/context-prune/settings.json` and reflected in the footer status widget when it is enabled.
 
 ## Tools
 
@@ -190,6 +191,7 @@ Config is stored in `~/.pi/agent/context-prune/settings.json` (global, project-i
 ```json
 {
   "enabled": false,
+  "showPruneStatusLine": true,
   "summarizerModel": "default",
   "summarizerThinking": "default",
   "pruneOn": "agent-message",
@@ -200,11 +202,13 @@ Config is stored in `~/.pi/agent/context-prune/settings.json` (global, project-i
 | Key | Values | Default |
 |---|---|---|
 | `enabled` | `true` / `false` | `false` |
+| `showPruneStatusLine` | `true` / `false` | `true` |
 | `summarizerModel` | `"default"` or `"provider/model-id"` | `"default"` |
 | `summarizerThinking` | `"default"`, `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` | `"default"` |
 | `pruneOn` | `"every-turn"`, `"on-context-tag"`, `"on-demand"`, `"agent-message"`, `"agentic-auto"` | `"agent-message"` |
 | `remindUnprunedCount` | `true` / `false` | `true` |
 
+- `showPruneStatusLine: true` keeps the prune footer widget and the automatic queued-turn notice visible. Turn it off if you want pruning to stay active without the extra status noise.
 - `remindUnprunedCount: true` appends a small ephemeral `<pruner-note>` to the last tool result before each LLM call to remind the model of the number of unpruned tool calls in context. This only has an effect when `pruneOn` is set to `"agentic-auto"`.
 
 - `summarizerModel: "default"` means the current active Pi model. An explicit value like `"anthropic/claude-haiku-3-5"` uses that model for summarization (must be registered in Pi and have an API key).
@@ -332,6 +336,7 @@ The extension registers a status widget in the Pi footer that shows the current 
 - `prune: ON (Every turn) │ ↑1.2k ↓340 $0.003` — pruning active with cumulative stats (input/output tokens, cost)
 - `prune: 3 pending` — batches queued, waiting for the trigger
 - `prune: summarizing…` — currently running the summarizer LLM call
+- When `showPruneStatusLine` is `false`, the footer stays clear and the queued-turn notice is suppressed, but pruning still works normally.
 
 ## v1 Limitations
 

@@ -17,7 +17,7 @@
  *     Pi preserves unknown keys when rewriting settings files)
  *
  * CONFIG FORMAT (Ph1 step 4):
- *   { "contextPrune": { "enabled": false, "summarizerModel": "default" } }
+ *   { "contextPrune": { "enabled": false, "summarizerModel": "default", "showPruneStatusLine": true } }
  *   summarizerModel: "default" = use current active model (ctx.model)
  *                   "provider/model-id" = explicit model via ctx.modelRegistry.find()
  *
@@ -128,6 +128,8 @@ export const PRUNE_ON_MODES: { value: PruneOn; label: string }[] = [
 export interface ContextPruneConfig {
   /** Whether to prune raw tool outputs from future LLM context */
   enabled: boolean;
+  /** Whether to show the prune footer status line and queued turn messages */
+  showPruneStatusLine: boolean;
   /**
    * Which model to use for summarization.
    * "default" = current active Pi model (ctx.model)
@@ -150,6 +152,7 @@ export interface ContextPruneConfig {
 
 export const DEFAULT_CONFIG: ContextPruneConfig = {
   enabled: false,
+  showPruneStatusLine: true,
   summarizerModel: "default",
   summarizerThinking: "default",
   pruneOn: "agent-message",
