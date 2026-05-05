@@ -32,7 +32,7 @@ import {
   CUSTOM_TYPE_STATS,
   CUSTOM_TYPE_FRONTIER,
 } from "./src/types.js";
-import { formatCompactCount, StatsAccumulator } from "./src/stats.js";
+import { StatsAccumulator } from "./src/stats.js";
 import { registerContextPruneTool } from "./src/context-prune-tool.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 
@@ -75,12 +75,6 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       if (!isStaleContextError(err)) throw err;
     }
-  };
-
-  const summarizingStatusText = (index: number, total: number, receivedChars: number) => {
-    const chars = `${formatCompactCount(receivedChars)} chars`;
-    if (total <= 1) return `prune: summarizing… ${chars}`;
-    return `prune: summarizing… ${index + 1}/${total} · ${chars}`;
   };
 
   const assistantMessageHasToolCalls = (message: any) =>
@@ -197,7 +191,6 @@ export default function (pi: ExtensionAPI) {
       setPruneStatusWidget(ctx, currentConfig.value, "prune: summarizing…");
 
       const reportBatchTextProgress = (index: number, total: number, batch: CapturedBatch, receivedChars: number) => {
-        setPruneStatusWidget(ctx, currentConfig.value, summarizingStatusText(index, total, receivedChars));
         options.onBatchTextProgress?.(index, total, batch, receivedChars);
       };
 

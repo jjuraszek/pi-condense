@@ -179,6 +179,7 @@ When `pruneOn` is set to `agentic-auto`, the `context_prune` tool is activated a
 
 When the model calls `context_prune`:
 - All pending tool-call batches are summarized together (parallel one-call-per-batch by default, or sequentially in `/pruner now` so the overlay can show live progress)
+- While the tool is running, compact live progress is streamed into the tool output box above the input (for example `Context prune running… batch 2/4 · 1.2k chars received`)
 - If the summary is smaller than the raw tool-result text it would replace, the original outputs are pruned from future context and a summary message is injected as a steer
 - If the summary is larger than the raw tool-result text, pruning is skipped for that attempted range: the original tool results remain in context, but the prune frontier still advances so the next prune attempt starts after that range instead of retrying it forever
 
@@ -335,8 +336,8 @@ The extension registers a status widget in the Pi footer that shows the current 
 - `prune: ON (On agent message)` — pruning active with the current trigger mode
 - `prune: ON (Every turn) │ ↑1.2k ↓340 $0.003` — pruning active with cumulative stats (input/output tokens, cost)
 - `prune: 3 pending` — batches queued, waiting for the trigger
-- `prune: summarizing…` — currently running the summarizer LLM call before any streamed text has arrived
-- `prune: summarizing… 842 chars` / `prune: summarizing… 2/4 · 1.2k chars` — live streamed summary progress in the footer while pruning is in flight (including agentic-auto `context_prune` runs)
+- `prune: summarizing…` — currently running the summarizer LLM call
+- Live progress details are shown in richer surfaces instead: `/pruner now` uses the multi-row overlay, and agentic-auto `context_prune` streams updates in the tool output box above the input
 - When `showPruneStatusLine` is `false`, the footer stays clear and the queued-turn notice is suppressed, but pruning still works normally.
 
 ## v1 Limitations

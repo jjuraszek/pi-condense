@@ -8,7 +8,9 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { formatCompactCount } from "./stats.js";
+import type { FlushOptions } from "./types.js";
 import { CONTEXT_PRUNE_TOOL_NAME } from "./types.js";
 
 /**
@@ -23,9 +25,25 @@ type FlushResult =
   | { ok: true; reason: "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
   | { ok: false; reason: string; error?: string };
 
+function contextPruneProgressText(index: number, total: number, receivedChars: number): string {
+  const chars = `${formatCompactCount(receivedChars)} chars received`;
+  if (total <= 1) return `Context prune running… ${chars}`;
+  return `Context prune running… batch ${index + 1}/${total} · ${chars}`;
+}
+
+function sendToolProgress(
+  onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+  text: string,
+): void {
+  onUpdate?.({
+    content: [{ type: "text", text }],
+    details: {},
+  });
+}
+
 export function registerContextPruneTool(
   pi: ExtensionAPI,
-  flushPending: (ctx: ExtensionContext) => Promise<FlushResult>,
+  flushPending: (ctx: ExtensionContext, options?: FlushOptions) => Promise<FlushResult>,
 ): void {
   pi.registerTool({
     name: CONTEXT_PRUNE_TOOL_NAME,
@@ -42,9 +60,19 @@ export function registerContextPruneTool(
     ],
     parameters: Type.Object({}),
 
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, _params, _signal, onUpdate, ctx) {
       try {
-        const result = await flushPending(ctx);
+        sendToolProgress(onUpdate, "Context prune running…");
+
+        let lastProgressText = "Context prune running…";
+        const result = await flushPending(ctx, {
+          onBatchTextProgress: (index, total, _batch, receivedChars) => {
+            const next = contextPruneProgressText(index, total, receivedChars);
+            if (next === lastProgressText) return;
+            lastProgressText = next;
+            sendToolProgress(onUpdate, next);
+          },
+        });
         if (!result.ok) {
           const suffix = "error" in result && result.error ? ` (${result.error})` : "";
           return {
