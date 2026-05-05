@@ -1,6 +1,7 @@
 /**
  * MultiBatchLoaderOverlay — a TUI overlay for /pruner now that shows one
- * animated spinner row per pending batch and checks each row off as the
+ * animated spinner row per pending batch, updates it with streamed summary
+ * character counts while running, and checks each row off as the
  * corresponding LLM summarization call completes.
  *
  * Construction requires knowing the batch list up-front (call
@@ -11,6 +12,7 @@
 import type { CapturedBatch } from "./types.js";
 import { Container, Loader } from "@mariozechner/pi-tui";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { formatCompactCount } from "./stats.js";
 
 export class MultiBatchLoaderOverlay extends Container {
   private readonly loaders: Loader[];
@@ -28,9 +30,6 @@ export class MultiBatchLoaderOverlay extends Container {
     this.addChild(new DynamicBorder());
 
     for (let i = 0; i < total; i++) {
-      const b = batches[i];
-      const n = b.toolCalls.length;
-      const label = `Batch ${i + 1}/${total}  (${n} tool call${n !== 1 ? "s" : ""})  summarizing…`;
       // Mirror the colour scheme used by BorderedLoader:
       //   spinner  → accent colour
       //   message  → muted colour
@@ -38,7 +37,7 @@ export class MultiBatchLoaderOverlay extends Container {
         tui,
         (s: string) => theme.fg("accent", s),
         (s: string) => theme.fg("muted", s),
-        label,
+        this.runningLabel(i),
       );
       this.loaders.push(loader);
       this.addChild(loader);
@@ -52,9 +51,22 @@ export class MultiBatchLoaderOverlay extends Container {
     this._onAbort = fn;
   }
 
-  /** Explicitly mark a row as running (no-op — rows start spinning by default). */
-  markRunning(_index: number): void {
-    // already spinning — kept for call-site symmetry with markDone/markSkipped
+  private runningLabel(index: number, receivedChars = 0): string {
+    const b = this.batches[index];
+    const total = this.batches.length;
+    const n = b.toolCalls.length;
+    const received = receivedChars > 0 ? `  received ${formatCompactCount(receivedChars)} chars` : "";
+    return `Batch ${index + 1}/${total}  (${n} tool call${n !== 1 ? "s" : ""})  summarizing…${received}`;
+  }
+
+  /** Explicitly mark a row as running. */
+  markRunning(index: number): void {
+    this.loaders[index].setMessage(this.runningLabel(index));
+  }
+
+  /** Update the row with the number of summary characters received so far. */
+  markReceivedChars(index: number, receivedChars: number): void {
+    this.loaders[index].setMessage(this.runningLabel(index, receivedChars));
   }
 
   /** Stop the spinner and show a ✓ checkmark for the completed batch row. */

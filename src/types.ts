@@ -311,6 +311,14 @@ export type ProgressCallback = (
   stage: "start" | "done" | "skipped",
 ) => void;
 
+/** Live text-progress callback for a batch currently being summarized. */
+export type BatchTextProgressCallback = (
+  index: number,
+  total: number,
+  batch: CapturedBatch,
+  receivedChars: number,
+) => void;
+
 /** Options accepted by `flushPending`. */
 export interface FlushOptions {
   /** Delivery path: "runtime" uses sendMessage/steer (default); "session" writes directly to session. */
@@ -322,12 +330,29 @@ export interface FlushOptions {
    */
   onProgress?: ProgressCallback;
   /**
+   * When provided, receives the number of summary characters streamed so far for
+   * the currently-running batch. Used by `/pruner now` to show live progress.
+   */
+  onBatchTextProgress?: BatchTextProgressCallback;
+  /**
    * Pre-captured batches from a prior `capturePendingBatches()` call.
    * When set, `flushPending` skips the internal capture step and uses these directly.
    * Avoids double-capture when the caller needs to know the batch count before
    * opening the progress overlay.
    */
   previewedBatches?: CapturedBatch[];
+}
+
+/** Options for a single summarizeBatch() call. */
+export interface SummarizeBatchOptions {
+  /** Receives the number of summary text characters streamed so far. */
+  onTextProgress?: (receivedChars: number) => void;
+}
+
+/** Options for summarizeBatches() when callers want live per-batch text progress. */
+export interface SummarizeBatchesOptions {
+  /** Receives streamed summary text character counts for each batch. */
+  onBatchTextProgress?: BatchTextProgressCallback;
 }
 
 /**

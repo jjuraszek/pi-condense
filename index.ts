@@ -32,7 +32,7 @@ import {
   CUSTOM_TYPE_STATS,
   CUSTOM_TYPE_FRONTIER,
 } from "./src/types.js";
-import { StatsAccumulator } from "./src/stats.js";
+import { formatCompactCount, StatsAccumulator } from "./src/stats.js";
 import { registerContextPruneTool } from "./src/context-prune-tool.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 
@@ -75,6 +75,12 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       if (!isStaleContextError(err)) throw err;
     }
+  };
+
+  const summarizingStatusText = (index: number, total: number, receivedChars: number) => {
+    const chars = `${formatCompactCount(receivedChars)} chars`;
+    if (total <= 1) return `prune: summarizing… ${chars}`;
+    return `prune: summarizing… ${index + 1}/${total} · ${chars}`;
   };
 
   const assistantMessageHasToolCalls = (message: any) =>
@@ -190,6 +196,11 @@ export default function (pi: ExtensionAPI) {
     try {
       setPruneStatusWidget(ctx, currentConfig.value, "prune: summarizing…");
 
+      const reportBatchTextProgress = (index: number, total: number, batch: CapturedBatch, receivedChars: number) => {
+        setPruneStatusWidget(ctx, currentConfig.value, summarizingStatusText(index, total, receivedChars));
+        options.onBatchTextProgress?.(index, total, batch, receivedChars);
+      };
+
       // Summarize batches. When onProgress is provided (i.e. /pruner now with the
       // multi-row overlay) we process sequentially so each row can be checked off
       // as its LLM call completes. Otherwise all batches run in parallel.
@@ -198,13 +209,19 @@ export default function (pi: ExtensionAPI) {
         results = [];
         for (let i = 0; i < batches.length; i++) {
           options.onProgress(i, batches.length, batches[i], "start");
-          const r = await summarizeBatch(batches[i], currentConfig.value, ctx);
+          const r = await summarizeBatch(batches[i], currentConfig.value, ctx, {
+            onTextProgress: (receivedChars) => {
+              reportBatchTextProgress(i, batches.length, batches[i], receivedChars);
+            },
+          });
           results.push(r);
           options.onProgress(i, batches.length, batches[i], r ? "done" : "skipped");
         }
       } else {
         // Parallel — one LLM call per batch, all in flight simultaneously.
-        results = await summarizeBatches(batches, currentConfig.value, ctx);
+        results = await summarizeBatches(batches, currentConfig.value, ctx, {
+          onBatchTextProgress: reportBatchTextProgress,
+        });
       }
 
       // Process results in order; stop at first null (individual call failure).

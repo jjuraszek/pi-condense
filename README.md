@@ -145,7 +145,7 @@ The extension registers the `/pruner` command:
 | `/pruner prune-on <mode>` | Set trigger mode directly |
 | `/pruner stats` | Show cumulative summarizer token/cost stats |
 | `/pruner tree` | Browse pruned tool calls in a foldable tree browser; press `Ctrl-O` on a summary to open it in a bordered overlay |
-| `/pruner now` | Flush pending tool calls immediately (works in all modes) |
+| `/pruner now` | Flush pending tool calls immediately (works in all modes) with a live progress overlay that shows streamed received-character counts per batch |
 | `/pruner help` | Show full help text |
 
 ### Settings overlay
@@ -178,7 +178,7 @@ The LLM can call `context_tree_query` with those IDs to get the full original ou
 When `pruneOn` is set to `agentic-auto`, the `context_prune` tool is activated and made available to the LLM. It is removed from the active tool list in all other modes.
 
 When the model calls `context_prune`:
-- All pending tool-call batches are summarized in a single LLM call
+- All pending tool-call batches are summarized together (parallel one-call-per-batch by default, or sequentially in `/pruner now` so the overlay can show live progress)
 - If the summary is smaller than the raw tool-result text it would replace, the original outputs are pruned from future context and a summary message is injected as a steer
 - If the summary is larger than the raw tool-result text, pruning is skipped for that attempted range: the original tool results remain in context, but the prune frontier still advances so the next prune attempt starts after that range instead of retrying it forever
 
@@ -306,7 +306,7 @@ context_prune tool call (agentic-auto mode)
 flushPending()
   └─► scan the session branch for completed unpruned tool results, including mid-turn subsets
   └─► trim against index/frontier so already-attempted prefixes are ignored
-  └─► summarizeBatches()         call LLM → summary text + usage stats
+  └─► summarizeBatches()         call LLM(s) → summary text + usage stats
   └─► compare summary chars vs raw tool-result chars
   └─► if smaller: persist index + inject summary, then advance frontier
   └─► if larger: keep original tool results, skip summary/index writes, still advance frontier
@@ -335,7 +335,8 @@ The extension registers a status widget in the Pi footer that shows the current 
 - `prune: ON (On agent message)` — pruning active with the current trigger mode
 - `prune: ON (Every turn) │ ↑1.2k ↓340 $0.003` — pruning active with cumulative stats (input/output tokens, cost)
 - `prune: 3 pending` — batches queued, waiting for the trigger
-- `prune: summarizing…` — currently running the summarizer LLM call
+- `prune: summarizing…` — currently running the summarizer LLM call before any streamed text has arrived
+- `prune: summarizing… 842 chars` / `prune: summarizing… 2/4 · 1.2k chars` — live streamed summary progress in the footer while pruning is in flight (including agentic-auto `context_prune` runs)
 - When `showPruneStatusLine` is `false`, the footer stays clear and the queued-turn notice is suppressed, but pruning still works normally.
 
 ## v1 Limitations

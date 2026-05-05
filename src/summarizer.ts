@@ -1,6 +1,14 @@
-import { complete } from "@mariozechner/pi-ai";
+import { stream } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { CapturedBatch, ContextPruneConfig, SummarizerThinking, SummarizeResult } from "./types.js";
+import type {
+  CapturedBatch,
+  ContextPruneConfig,
+  SummarizerThinking,
+  SummarizeBatchOptions,
+  SummarizeBatchesOptions,
+  SummarizeResult,
+} from "./types.js";
 import { serializeBatchForSummarizer } from "./batch-capture.js";
 
 const SYSTEM_PROMPT = `You are summarizing a batch of tool calls made by an AI coding assistant.
@@ -17,7 +25,7 @@ export function summarizerThinkingOptions(config: ContextPruneConfig): Record<st
     return {};
   }
 
-  // complete() accepts provider-level options. For reasoning-capable providers,
+  // stream()/complete() accept provider-level options. For reasoning-capable providers,
   // pi-ai adapters translate reasoningEffort into the provider-specific field.
   // "off" intentionally sends no effort; adapters that support explicit disable
   // handle that the same way as an absent effort, while preserving compatibility.
@@ -58,6 +66,12 @@ export function resolveModel(config: ContextPruneConfig, ctx: ExtensionContext):
   return found;
 }
 
+function receivedTextChars(message: AssistantMessage): number {
+  return message.content.reduce((sum, content) => {
+    return content.type === "text" ? sum + content.text.length : sum;
+  }, 0);
+}
+
 /**
  * Summarizes a captured batch. Returns formatted markdown string, or null on failure.
  * Shows user-visible errors via ctx.ui.notify.
@@ -65,7 +79,8 @@ export function resolveModel(config: ContextPruneConfig, ctx: ExtensionContext):
 export async function summarizeBatch(
   batch: CapturedBatch,
   config: ContextPruneConfig,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
+  options: SummarizeBatchOptions = {}
 ): Promise<SummarizeResult | null> {
   try {
     const model = resolveModel(config, ctx);
@@ -80,7 +95,7 @@ export async function summarizeBatch(
     const userMessage =
       SYSTEM_PROMPT + "\n\n<tool-call-batch>\n" + serialized + "\n</tool-call-batch>";
 
-    const response = await complete(
+    const responseStream = stream(
       model,
       {
         messages: [
@@ -93,6 +108,27 @@ export async function summarizeBatch(
       },
       { apiKey: auth.apiKey, headers: auth.headers, ...summarizerThinkingOptions(config) }
     );
+
+    let lastReportedChars = -1;
+    const reportTextProgress = (message: AssistantMessage) => {
+      const chars = receivedTextChars(message);
+      if (chars !== lastReportedChars) {
+        lastReportedChars = chars;
+        options.onTextProgress?.(chars);
+      }
+    };
+
+    for await (const event of responseStream) {
+      if (event.type === "text_start" || event.type === "text_delta" || event.type === "text_end") {
+        reportTextProgress(event.partial);
+      }
+    }
+
+    const response = await responseStream.result();
+    reportTextProgress(response);
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      throw new Error(response.errorMessage ?? `Summarizer stopped with reason: ${response.stopReason}`);
+    }
 
     const llmText = response.content
       .filter((c: any) => c.type === "text")
@@ -134,12 +170,29 @@ export async function summarizeBatch(
 export async function summarizeBatches(
   batches: CapturedBatch[],
   config: ContextPruneConfig,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
+  options: SummarizeBatchesOptions = {}
 ): Promise<Array<SummarizeResult | null>> {
   if (batches.length === 0) return [];
   // Single batch — delegate to the single-batch path (no extra overhead)
-  if (batches.length === 1) return [await summarizeBatch(batches[0], config, ctx)];
+  if (batches.length === 1) {
+    return [
+      await summarizeBatch(batches[0], config, ctx, {
+        onTextProgress: (receivedChars) => {
+          options.onBatchTextProgress?.(0, 1, batches[0], receivedChars);
+        },
+      }),
+    ];
+  }
 
   // Multiple batches — run in parallel; each produces its own SummarizeResult
-  return Promise.all(batches.map((batch) => summarizeBatch(batch, config, ctx)));
+  return Promise.all(
+    batches.map((batch, index) =>
+      summarizeBatch(batch, config, ctx, {
+        onTextProgress: (receivedChars) => {
+          options.onBatchTextProgress?.(index, batches.length, batch, receivedChars);
+        },
+      })
+    )
+  );
 }

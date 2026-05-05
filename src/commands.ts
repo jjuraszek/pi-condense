@@ -2,6 +2,7 @@ import {
   type ContextPruneConfig,
   type SummarizerStats,
   type CapturedBatch,
+  type FlushOptions,
   PRUNE_ON_MODES,
   BATCHING_MODES,
   STATUS_WIDGET_ID,
@@ -188,7 +189,7 @@ Usage:
   /pruner batching agent-message           One summary per user→final-agent-message span (merges all turns in a span)
   /pruner stats                            Show cumulative summarizer token/cost stats
   /pruner tree                             Browse pruned tool calls in a foldable tree (Ctrl-O opens selected summary)
-  /pruner now                              Flush pending tool calls immediately (shows blocking loader)
+  /pruner now                              Flush pending tool calls immediately (shows blocking loader with live received-character counts)
   /pruner help                             Show this help
 
 Agentic-auto reminder:
@@ -224,7 +225,7 @@ Settings are saved to ~/.pi/agent/context-prune/settings.json`;
 export function registerCommands(
   pi: ExtensionAPI,
   currentConfig: { value: ContextPruneConfig },
-  flushPending: (ctx: ExtensionCommandContext, options?: { delivery?: "runtime" | "session"; onProgress?: (index: number, total: number, batch: CapturedBatch, stage: "start" | "done" | "skipped") => void; previewedBatches?: CapturedBatch[] }) => Promise<
+  flushPending: (ctx: ExtensionCommandContext, options?: FlushOptions) => Promise<
     | { ok: true; reason: "flushed" | "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
     | { ok: false; reason: string; error?: string }
   >,
@@ -619,6 +620,9 @@ export function registerCommands(
                   if (stage === "done") overlay.markDone(index);
                   else if (stage === "skipped") overlay.markSkipped(index);
                   else overlay.markRunning(index);
+                },
+                onBatchTextProgress: (index, _total, _batch, receivedChars) => {
+                  overlay.markReceivedChars(index, receivedChars);
                 },
               })
                 .then((r) => {

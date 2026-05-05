@@ -105,11 +105,16 @@ export class StatsAccumulator {
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
 
-/** Format token counts like Pi's status line (e.g. "1.2k", "340") */
-export function formatTokens(n: number): string {
+/** Format compact counts like Pi's status line (e.g. "1.2k", "340") */
+export function formatCompactCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+/** Format token counts like Pi's status line (e.g. "1.2k", "340") */
+export function formatTokens(n: number): string {
+  return formatCompactCount(n);
 }
 
 /** Format cost like "$0.003" */
