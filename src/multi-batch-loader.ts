@@ -12,17 +12,19 @@
 import type { CapturedBatch } from "./types.js";
 import { Container, Loader } from "@mariozechner/pi-tui";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import { formatCompactCount } from "./stats.js";
+import { pruneProgressText } from "./progress-text.js";
 
 export class MultiBatchLoaderOverlay extends Container {
   private readonly loaders: Loader[];
   private readonly batches: CapturedBatch[];
+  private readonly latestReceivedChars: number[];
   private _onAbort?: () => void;
 
   constructor(tui: any, theme: any, batches: CapturedBatch[]) {
     super();
     this.batches = batches;
     this.loaders = [];
+    this.latestReceivedChars = batches.map(() => 0);
 
     const total = batches.length;
 
@@ -52,39 +54,35 @@ export class MultiBatchLoaderOverlay extends Container {
   }
 
   private runningLabel(index: number, receivedChars = 0): string {
-    const b = this.batches[index];
-    const total = this.batches.length;
-    const n = b.toolCalls.length;
-    const received = receivedChars > 0 ? `  received ${formatCompactCount(receivedChars)} chars` : "";
-    return `Batch ${index + 1}/${total}  (${n} tool call${n !== 1 ? "s" : ""})  summarizing…${received}`;
+    return pruneProgressText(this.batches[index], index, this.batches.length, receivedChars, "running");
   }
 
   /** Explicitly mark a row as running. */
   markRunning(index: number): void {
-    this.loaders[index].setMessage(this.runningLabel(index));
+    this.latestReceivedChars[index] = 0;
+    this.loaders[index].setMessage(this.runningLabel(index, 0));
   }
 
   /** Update the row with the number of summary characters received so far. */
   markReceivedChars(index: number, receivedChars: number): void {
+    this.latestReceivedChars[index] = receivedChars;
     this.loaders[index].setMessage(this.runningLabel(index, receivedChars));
   }
 
   /** Stop the spinner and show a ✓ checkmark for the completed batch row. */
   markDone(index: number): void {
-    const b = this.batches[index];
-    const n = b.toolCalls.length;
-    const total = this.batches.length;
     this.loaders[index].stop();
     this.loaders[index].setMessage(
-      `✓  Batch ${index + 1}/${total}  done  (${n} tool call${n !== 1 ? "s" : ""})`,
+      pruneProgressText(this.batches[index], index, this.batches.length, this.latestReceivedChars[index] ?? 0, "done"),
     );
   }
 
   /** Stop the spinner and show a ⚠ warning for a batch that was skipped. */
   markSkipped(index: number): void {
-    const total = this.batches.length;
     this.loaders[index].stop();
-    this.loaders[index].setMessage(`⚠  Batch ${index + 1}/${total}  skipped`);
+    this.loaders[index].setMessage(
+      pruneProgressText(this.batches[index], index, this.batches.length, this.latestReceivedChars[index] ?? 0, "skipped"),
+    );
   }
 
   /** Forward Esc / q to the abort handler so the overlay can be dismissed. */

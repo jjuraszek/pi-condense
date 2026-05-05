@@ -14,7 +14,7 @@ import { formatTokens, formatCost } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@mariozechner/pi-tui";
 import { DynamicBorder, getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { buildPruneTree, TreeBrowser } from "./tree-browser.js";
-import { MultiBatchLoaderOverlay } from "./multi-batch-loader.js";
+import { pruneProgressText } from "./progress-text.js";
 import type { ToolCallIndexer } from "./indexer.js";
 
 /**
@@ -79,7 +79,7 @@ const SUBCOMMANDS = [
   { value: "batching", label: "batching  — show or set the batching mode (turn / agent-message)" },
   { value: "stats",   label: "stats     — show cumulative summarizer token/cost stats" },
   { value: "tree",    label: "tree      — browse pruned tool calls in a foldable tree" },
-  { value: "now",     label: "now       — flush pending tool calls immediately" },
+  { value: "now",     label: "now       — flush pending tool calls immediately (footer progress)" },
   { value: "help",    label: "help      — show this help" },
 ] as const;
 
@@ -189,7 +189,7 @@ Usage:
   /pruner batching agent-message           One summary per user→final-agent-message span (merges all turns in a span)
   /pruner stats                            Show cumulative summarizer token/cost stats
   /pruner tree                             Browse pruned tool calls in a foldable tree (Ctrl-O opens selected summary)
-  /pruner now                              Flush pending tool calls immediately (shows blocking loader with live received-character counts)
+  /pruner now                              Flush pending tool calls immediately (shows live footer progress)
   /pruner help                             Show this help
 
 Agentic-auto reminder:
@@ -593,58 +593,44 @@ export function registerCommands(
             return;
           }
 
-          // Preview the pending batches BEFORE opening the overlay so we know
-          // how many rows to pre-build. An empty queue exits early with no UI.
+          // Capture the pending queue first so we can drive a footer-only
+          // progress experience without opening the loader overlay.
           const batches = capturePendingBatches(ctx);
           if (batches.length === 0) {
             ctx.ui.notify("pruner: nothing pending — no batches to summarize", "info");
             break;
           }
 
-          // Show a blocking MultiBatchLoaderOverlay while the summarizer runs.
-          // Each batch row starts with an animated spinner and is checked off
-          // as its individual LLM call completes, giving the user concrete
-          // progress feedback instead of a single static message.
-          // Esc closes the overlay early but does NOT cancel in-flight LLM calls.
-          type FlushResult = Awaited<ReturnType<typeof flushPending>>;
-          let flushResult: FlushResult | null = null;
+          const receivedCharsByIndex = new Map<number, number>();
+          let lastFooterText = "";
+          const updateFooter = (text: string) => {
+            if (text === lastFooterText) return;
+            lastFooterText = text;
+            setPruneStatusWidget(ctx, currentConfig.value, text);
+          };
 
-          await ctx.ui.custom<undefined>(
-            (tui, theme, _kb, done) => {
-              const overlay = new MultiBatchLoaderOverlay(tui, theme, batches);
-              overlay.onAbort = () => done(undefined);
+          updateFooter(`Context prune running… ${batches.length} batch${batches.length === 1 ? "" : "es"} queued`);
 
-              flushPending(ctx, {
-                previewedBatches: batches,
-                onProgress: (index, _total, _batch, stage) => {
-                  if (stage === "done") overlay.markDone(index);
-                  else if (stage === "skipped") overlay.markSkipped(index);
-                  else overlay.markRunning(index);
-                },
-                onBatchTextProgress: (index, _total, _batch, receivedChars) => {
-                  overlay.markReceivedChars(index, receivedChars);
-                },
-              })
-                .then((r) => {
-                  flushResult = r;
-                  done(undefined);
-                })
-                .catch(() => {
-                  done(undefined);
-                });
-
-              return overlay;
+          const result = await flushPending(ctx, {
+            previewedBatches: batches,
+            onProgress: (index, total, batch, stage) => {
+              const receivedChars = receivedCharsByIndex.get(index) ?? 0;
+              if (stage === "start") {
+                updateFooter(pruneProgressText(batch, index, total, 0, "running"));
+              } else if (stage === "done") {
+                updateFooter(pruneProgressText(batch, index, total, receivedChars, "done"));
+              } else {
+                updateFooter(pruneProgressText(batch, index, total, receivedChars, "skipped"));
+              }
             },
-            { overlay: true },
-          );
+            onBatchTextProgress: (index, total, batch, receivedChars) => {
+              receivedCharsByIndex.set(index, receivedChars);
+              updateFooter(pruneProgressText(batch, index, total, receivedChars, "running"));
+            },
+          });
 
-          if (!flushResult) {
-            // Esc was pressed before flushPending resolved — still running in bg
-            ctx.ui.notify("pruner: summarization is running in background", "info");
-            break;
-          }
+          setPruneStatusWidget(ctx, currentConfig.value, getStats());
 
-          const result = flushResult as FlushResult;
           if (!result.ok) {
             const suffix = "error" in result && result.error ? ` (${result.error})` : "";
             ctx.ui.notify(`pruner: nothing flushed — ${result.reason}${suffix}`, result.reason === "empty" ? "info" : "warning");

@@ -110,6 +110,7 @@ export async function summarizeBatch(
     );
 
     let lastReportedChars = -1;
+    options.onTextProgress?.(0);
     const reportTextProgress = (message: AssistantMessage) => {
       const chars = receivedTextChars(message);
       if (chars !== lastReportedChars) {

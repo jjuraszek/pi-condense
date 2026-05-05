@@ -117,6 +117,13 @@ export function formatTokens(n: number): string {
   return formatCompactCount(n);
 }
 
+/** Format live char progress like "1.2k summary chars / 8.4k raw chars". */
+export function formatCharProgress(receivedChars: number, rawChars?: number): string {
+  const receivedLabel = `${formatCompactCount(receivedChars)} summary char${receivedChars === 1 ? "" : "s"}`;
+  if (rawChars == null) return receivedLabel;
+  return `${receivedLabel} / ${formatCompactCount(rawChars)} raw char${rawChars === 1 ? "" : "s"}`;
+}
+
 /** Format cost like "$0.003" */
 export function formatCost(n: number): string {
   if (n < 0.001 && n > 0) return `<$0.001`;

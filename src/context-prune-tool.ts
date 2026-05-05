@@ -9,9 +9,9 @@
 
 import { Type } from "@sinclair/typebox";
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { formatCompactCount } from "./stats.js";
-import type { FlushOptions } from "./types.js";
+import type { CapturedBatch, FlushOptions } from "./types.js";
 import { CONTEXT_PRUNE_TOOL_NAME } from "./types.js";
+import { pruneProgressText } from "./progress-text.js";
 
 /**
  * Registers the context_prune tool with Pi.
@@ -24,12 +24,6 @@ type FlushResult =
   | { ok: true; reason: "flushed"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
   | { ok: true; reason: "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
   | { ok: false; reason: string; error?: string };
-
-function contextPruneProgressText(index: number, total: number, receivedChars: number): string {
-  const chars = `${formatCompactCount(receivedChars)} chars received`;
-  if (total <= 1) return `Context prune running… ${chars}`;
-  return `Context prune running… batch ${index + 1}/${total} · ${chars}`;
-}
 
 function sendToolProgress(
   onUpdate: AgentToolUpdateCallback<unknown> | undefined,
@@ -66,8 +60,8 @@ export function registerContextPruneTool(
 
         let lastProgressText = "Context prune running…";
         const result = await flushPending(ctx, {
-          onBatchTextProgress: (index, total, _batch, receivedChars) => {
-            const next = contextPruneProgressText(index, total, receivedChars);
+          onBatchTextProgress: (index, total, batch, receivedChars) => {
+            const next = pruneProgressText(batch, index, total, receivedChars, "running");
             if (next === lastProgressText) return;
             lastProgressText = next;
             sendToolProgress(onUpdate, next);
