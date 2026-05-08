@@ -57,7 +57,7 @@ export default function (pi: ExtensionAPI) {
 
   type FlushResult =
     | { ok: true; reason: "flushed" | "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
-    | { ok: false; reason: "empty" | "already-flushing" | "summarizer-failed" | "stale-context" | "failed"; error?: string };
+    | { ok: false; reason: "empty" | "already-flushing" | "summarizer-failed" | "stale-context" | "failed" | "aborted"; error?: string };
 
   type SessionAppender = {
     appendCustomEntry(customType: string, data?: unknown): string;
@@ -164,6 +164,9 @@ export default function (pi: ExtensionAPI) {
 
     if (batches.length === 0) return { ok: false, reason: "empty" };
 
+    // Bail out before we drain pendingBatches so they don't need restoring.
+    if (options.signal?.aborted) return { ok: false, reason: "aborted" };
+
     // Draining the queue since we've captured the state via session or slice.
     // We drain BEFORE the await so concurrent calls (though guarded by isFlushing)
     // or rapid turn-ends don't result in double-summarization.
@@ -203,6 +206,7 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < batches.length; i++) {
           options.onProgress(i, batches.length, batches[i], "start");
           const r = await summarizeBatch(batches[i], currentConfig.value, ctx, {
+            signal: options.signal,
             onTextProgress: (receivedChars) => {
               reportBatchTextProgress(i, batches.length, batches[i], receivedChars);
             },
@@ -214,6 +218,7 @@ export default function (pi: ExtensionAPI) {
         // Parallel — one LLM call per batch, all in flight simultaneously.
         results = await summarizeBatches(batches, currentConfig.value, ctx, {
           onBatchTextProgress: reportBatchTextProgress,
+          signal: options.signal,
         });
       }
 
@@ -347,6 +352,12 @@ export default function (pi: ExtensionAPI) {
       };
     } catch (err) {
       restoreBatches(batches);
+      // When the abort signal fired, summarizeBatch rethrows rather than
+      // swallowing the error.  Don't show a UI error — the user intended this.
+      if (options.signal?.aborted) {
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
+        return { ok: false, reason: "aborted" };
+      }
       if (isStaleContextError(err)) {
         return { ok: false, reason: "stale-context", error: errorMessage(err) };
       }
@@ -554,7 +565,7 @@ export default function (pi: ExtensionAPI) {
   registerQueryTool(pi, indexer);
 
   // ── Register context_prune tool (always registered, activated only in agentic-auto mode) ──
-  registerContextPruneTool(pi, (ctx) => flushPending(ctx, { delivery: "runtime" }));
+  registerContextPruneTool(pi, (ctx, options) => flushPending(ctx, { delivery: "runtime", ...options }));
 
   // ── Register /pruner command + summary message renderer ────────────
   registerCommands(pi, currentConfig, flushPending, capturePendingBatches, syncToolActivation, () => statsAccum.getStats(), indexer);

@@ -37,7 +37,7 @@ function sendToolProgress(
 
 export function registerContextPruneTool(
   pi: ExtensionAPI,
-  flushPending: (ctx: ExtensionContext, options?: FlushOptions) => Promise<FlushResult>,
+  flushFn: (ctx: ExtensionContext, options?: FlushOptions) => Promise<FlushResult>,
 ): void {
   pi.registerTool({
     name: CONTEXT_PRUNE_TOOL_NAME,
@@ -54,12 +54,13 @@ export function registerContextPruneTool(
     ],
     parameters: Type.Object({}),
 
-    async execute(_toolCallId, _params, _signal, onUpdate, ctx) {
+    async execute(_toolCallId, _params, signal, onUpdate, ctx) {
       try {
-        sendToolProgress(onUpdate, "Context prune running…");
+        sendToolProgress(onUpdate, "Context prune running… (press Esc to cancel)");
 
         let lastProgressText = "Context prune running…";
-        const result = await flushPending(ctx, {
+        const result = await flushFn(ctx, {
+          signal,
           onBatchTextProgress: (index, total, batch, receivedChars) => {
             const next = pruneProgressText(batch, index, total, receivedChars, "running");
             if (next === lastProgressText) return;
@@ -68,6 +69,14 @@ export function registerContextPruneTool(
           },
         });
         if (!result.ok) {
+          if (result.reason === "aborted") {
+            const cancelledText = "Context prune was cancelled (Esc pressed). No batches were summarized and the prune frontier was not advanced. You can call context_prune again when ready.";
+            sendToolProgress(onUpdate, "⊘ Context prune cancelled.");
+            return {
+              content: [{ type: "text", text: cancelledText }],
+              details: result,
+            };
+          }
           const suffix = "error" in result && result.error ? ` (${result.error})` : "";
           return {
             content: [

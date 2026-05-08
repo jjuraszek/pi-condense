@@ -82,6 +82,9 @@ export async function summarizeBatch(
   ctx: ExtensionContext,
   options: SummarizeBatchOptions = {}
 ): Promise<SummarizeResult | null> {
+  // Fast-fail if already aborted before we even start.
+  if (options.signal?.aborted) throw new Error("summarizeBatch: aborted before start");
+
   try {
     const model = resolveModel(config, ctx);
 
@@ -95,6 +98,8 @@ export async function summarizeBatch(
     const userMessage =
       SYSTEM_PROMPT + "\n\n<tool-call-batch>\n" + serialized + "\n</tool-call-batch>";
 
+    // Pass the abort signal so the underlying fetch is cancelled immediately
+    // when the user presses Esc while the tool is running.
     const responseStream = stream(
       model,
       {
@@ -106,7 +111,7 @@ export async function summarizeBatch(
           },
         ],
       },
-      { apiKey: auth.apiKey, headers: auth.headers, ...summarizerThinkingOptions(config) }
+      { apiKey: auth.apiKey, headers: auth.headers, signal: options.signal, ...summarizerThinkingOptions(config) }
     );
 
     let lastReportedChars = -1;
@@ -120,15 +125,27 @@ export async function summarizeBatch(
     };
 
     for await (const event of responseStream) {
+      // Belt-and-suspenders: break early when signal fires mid-stream.
+      if (options.signal?.aborted) break;
       if (event.type === "text_start" || event.type === "text_delta" || event.type === "text_end") {
         reportTextProgress(event.partial);
       }
     }
 
+    // If signal fired while we were iterating, propagate the abort so
+    // flushPending can detect it and restore batches.
+    if (options.signal?.aborted) throw new Error("summarizeBatch: aborted during stream");
+
     const response = await responseStream.result();
     reportTextProgress(response);
-    if (response.stopReason === "error" || response.stopReason === "aborted") {
-      throw new Error(response.errorMessage ?? `Summarizer stopped with reason: ${response.stopReason}`);
+    // stopReason "aborted" means the provider cut the stream short (e.g. signal
+    // fired just before the final chunk). Treat identically to the signal check
+    // above — throw so flushPending's catch can detect options.signal.aborted.
+    if (response.stopReason === "aborted") {
+      throw new Error("summarizeBatch: stream stopped with reason aborted");
+    }
+    if (response.stopReason === "error") {
+      throw new Error(response.errorMessage ?? "Summarizer stopped with reason: error");
     }
 
     const llmText = response.content
@@ -147,6 +164,9 @@ export async function summarizeBatch(
       usage: response.usage,
     };
   } catch (err: any) {
+    // Propagate abort errors upward so flushPending can check signal.aborted
+    // and return { ok: false, reason: "aborted" } without showing a UI error.
+    if (options.signal?.aborted) throw err;
     ctx.ui.notify(
       `pruner: summarization failed: ${err.message}`,
       "error"
@@ -179,6 +199,7 @@ export async function summarizeBatches(
   if (batches.length === 1) {
     return [
       await summarizeBatch(batches[0], config, ctx, {
+        signal: options.signal,
         onTextProgress: (receivedChars) => {
           options.onBatchTextProgress?.(0, 1, batches[0], receivedChars);
         },
@@ -190,6 +211,7 @@ export async function summarizeBatches(
   return Promise.all(
     batches.map((batch, index) =>
       summarizeBatch(batch, config, ctx, {
+        signal: options.signal,
         onTextProgress: (receivedChars) => {
           options.onBatchTextProgress?.(index, batches.length, batch, receivedChars);
         },

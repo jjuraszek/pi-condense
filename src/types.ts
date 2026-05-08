@@ -341,18 +341,34 @@ export interface FlushOptions {
    * opening the progress overlay.
    */
   previewedBatches?: CapturedBatch[];
+  /**
+   * Abort signal — when fired the in-flight summarization is cancelled and
+   * `flushPending` returns `{ ok: false, reason: "aborted" }` without advancing
+   * the frontier. All pending batches are restored so the next flush can retry.
+   */
+  signal?: AbortSignal;
 }
 
 /** Options for a single summarizeBatch() call. */
 export interface SummarizeBatchOptions {
   /** Receives the number of summary text characters streamed so far. */
   onTextProgress?: (receivedChars: number) => void;
+  /**
+   * Abort signal — when fired the in-flight stream call is cancelled and the
+   * batch is treated as aborted (not a summarizer failure).
+   */
+  signal?: AbortSignal;
 }
 
 /** Options for summarizeBatches() when callers want live per-batch text progress. */
 export interface SummarizeBatchesOptions {
   /** Receives streamed summary text character counts for each batch. */
   onBatchTextProgress?: BatchTextProgressCallback;
+  /**
+   * Abort signal forwarded to every individual summarizeBatch() call.
+   * When fired, all in-flight stream calls are cancelled.
+   */
+  signal?: AbortSignal;
 }
 
 /**
