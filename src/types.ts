@@ -59,6 +59,11 @@ export const CUSTOM_TYPE_FRONTIER = "context-prune-frontier";
 /** Footer status widget ID */
 export const STATUS_WIDGET_ID = "context-prune";
 
+/**
+ * Widget ID for the live /pruner now progress panel shown above the editor.
+ */
+export const PROGRESS_WIDGET_ID = "context-prune-progress";
+
 /** Name of the context_prune tool (injected only when agentic-auto mode is active) */
 export const CONTEXT_PRUNE_TOOL_NAME = "context_prune";
 

@@ -6,15 +6,15 @@ import {
   PRUNE_ON_MODES,
   BATCHING_MODES,
   STATUS_WIDGET_ID,
+  PROGRESS_WIDGET_ID,
   SUMMARIZER_THINKING_LEVELS,
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { saveConfig } from "./config.js";
-import { formatTokens, formatCost } from "./stats.js";
+import { formatTokens, formatCost, formatCharProgress } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@mariozechner/pi-tui";
 import { DynamicBorder, getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { buildPruneTree, TreeBrowser } from "./tree-browser.js";
-import { pruneProgressText } from "./progress-text.js";
 import type { ToolCallIndexer } from "./indexer.js";
 
 /**
@@ -79,7 +79,7 @@ const SUBCOMMANDS = [
   { value: "batching", label: "batching  — show or set the batching mode (turn / agent-message)" },
   { value: "stats",   label: "stats     — show cumulative summarizer token/cost stats" },
   { value: "tree",    label: "tree      — browse pruned tool calls in a foldable tree" },
-  { value: "now",     label: "now       — flush pending tool calls immediately (footer progress)" },
+  { value: "now",     label: "now       — flush pending tool calls immediately (widget progress)" },
   { value: "help",    label: "help      — show this help" },
 ] as const;
 
@@ -219,6 +219,88 @@ Related:
   - Anthropic prompt caching docs: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
 
 Settings are saved to ~/.pi/agent/context-prune/settings.json`;
+
+// ── Pruner progress widget ────────────────────────────────────────────────────
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+type RowStatus = "pending" | "running" | "done" | "skipped";
+
+interface WidgetRow {
+  label: string;
+  toolCallCount: number;
+  rawChars: number;
+  status: RowStatus;
+  receivedChars: number;
+}
+
+/**
+ * Registers a multi-row progress widget above the editor for /pruner now.
+ * Returns helpers to update row state and clear the widget when done.
+ * Each row shows a spinner, label, tool-call count, and live summary char count.
+ */
+function startPrunerWidget(
+  ctx: ExtensionCommandContext,
+  batches: CapturedBatch[],
+): {
+  updateRow: (index: number, status: RowStatus, chars?: number) => void;
+  clearWidget: () => void;
+} {
+  const total = batches.length;
+  const rows: WidgetRow[] = batches.map((b, i) => ({
+    label: `Batch ${i + 1}/${total}`,
+    toolCallCount: b.toolCalls.length,
+    rawChars: b.toolCalls.reduce((sum, tc) => sum + tc.resultText.length, 0),
+    status: "pending",
+    receivedChars: 0,
+  }));
+
+  // Capture tui reference from the factory so updateRow can call requestRender.
+  let requestRender: (() => void) | undefined;
+
+  ctx.ui.setWidget(
+    PROGRESS_WIDGET_ID,
+    (tui, _theme) => {
+      requestRender = () => tui.requestRender();
+      return {
+        invalidate() {},
+        render(_width: number): string[] {
+          return rows.map((row) => {
+            const count = `${row.toolCallCount} tool call${row.toolCallCount === 1 ? "" : "s"}`;
+            if (row.status === "running") {
+              const frame = SPINNER_FRAMES[Math.floor(Date.now() / 120) % SPINNER_FRAMES.length];
+              const chars =
+                row.receivedChars > 0
+                  ? ` · ${formatCharProgress(row.receivedChars, row.rawChars)}`
+                  : "";
+              return `${frame} ${row.label} · ${count}${chars}`;
+            } else if (row.status === "done") {
+              return `✓ ${row.label} · ${count} · ${formatCharProgress(row.receivedChars, row.rawChars)}`;
+            } else if (row.status === "skipped") {
+              return `⚠ ${row.label} · ${count} · skipped`;
+            } else {
+              return `○ ${row.label} · ${count} · pending`;
+            }
+          });
+        },
+      };
+    },
+    { placement: "aboveEditor" },
+  );
+
+  return {
+    updateRow(index: number, status: RowStatus, chars?: number) {
+      if (index >= 0 && index < rows.length) {
+        rows[index].status = status;
+        if (chars !== undefined) rows[index].receivedChars = chars;
+        requestRender?.();
+      }
+    },
+    clearWidget() {
+      ctx.ui.setWidget(PROGRESS_WIDGET_ID, undefined);
+    },
+  };
+}
 
 // ── Command registration ────────────────────────────────────────────────────
 
@@ -593,42 +675,34 @@ export function registerCommands(
             return;
           }
 
-          // Capture the pending queue first so we can drive a footer-only
-          // progress experience without opening the loader overlay.
+          // Capture the pending queue first so we can pre-build the widget rows.
           const batches = capturePendingBatches(ctx);
           if (batches.length === 0) {
             ctx.ui.notify("pruner: nothing pending — no batches to summarize", "info");
             break;
           }
 
-          const receivedCharsByIndex = new Map<number, number>();
-          let lastFooterText = "";
-          const updateFooter = (text: string) => {
-            if (text === lastFooterText) return;
-            lastFooterText = text;
-            setPruneStatusWidget(ctx, currentConfig.value, text);
-          };
-
-          updateFooter(`Context prune running… ${batches.length} batch${batches.length === 1 ? "" : "es"} queued`);
+          // Open the progress widget above the editor — one row per batch.
+          const { updateRow, clearWidget } = startPrunerWidget(ctx, batches);
 
           const result = await flushPending(ctx, {
             previewedBatches: batches,
-            onProgress: (index, total, batch, stage) => {
-              const receivedChars = receivedCharsByIndex.get(index) ?? 0;
+            onProgress: (index, _total, _batch, stage) => {
               if (stage === "start") {
-                updateFooter(pruneProgressText(batch, index, total, 0, "running"));
+                updateRow(index, "running", 0);
               } else if (stage === "done") {
-                updateFooter(pruneProgressText(batch, index, total, receivedChars, "done"));
+                updateRow(index, "done");
               } else {
-                updateFooter(pruneProgressText(batch, index, total, receivedChars, "skipped"));
+                updateRow(index, "skipped");
               }
             },
-            onBatchTextProgress: (index, total, batch, receivedChars) => {
-              receivedCharsByIndex.set(index, receivedChars);
-              updateFooter(pruneProgressText(batch, index, total, receivedChars, "running"));
+            onBatchTextProgress: (index, _total, _batch, receivedChars) => {
+              updateRow(index, "running", receivedChars);
             },
           });
 
+          // Remove the widget and restore the normal footer status.
+          clearWidget();
           setPruneStatusWidget(ctx, currentConfig.value, getStats());
 
           if (!result.ok) {
