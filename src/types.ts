@@ -23,9 +23,9 @@
  *
  * SUMMARY MESSAGE FORMAT (Ph1 step 5):
  *   customType: "context-prune-summary"
- *   content: markdown with one bullet per tool call + toolCallIds footer
- *   details: SummaryMessageDetails (toolCallIds, toolNames, turnIndex, timestamp)
- *   The content itself includes the toolCallIds in plain text so the model can
+ *   content: markdown with one bullet per tool call + short-id footer
+ *   details: SummaryMessageDetails (toolCallRefs, toolNames, turnIndex, timestamp)
+ *   The content itself includes short alias IDs in plain text so the model can
  *   reference them in future context_tree_query calls without needing details.
  *
  * API CONSTRAINTS (Ph1 step 6):
@@ -90,7 +90,7 @@ When NOT to use context_prune:
 What happens when you call context_prune:
 - All pending tool-call results are summarized into concise bullet points.
 - The original full outputs are removed from context but preserved in the session index.
-- You can retrieve the full original output at any time using the context_tree_query tool with the toolCallIds listed in the summary.`;
+- You can retrieve the full original output at any time using the context_tree_query tool with the short refs listed in the summary.`;
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -246,11 +246,20 @@ export interface IndexEntryData {
 }
 
 /**
+ * Short alias used in the summary message text plus the real toolCallId it
+ * maps back to for future recovery through context_tree_query.
+ */
+export interface SummaryToolCallRef {
+  shortId: string;
+  toolCallId: string;
+}
+
+/**
  * Details stored in the custom summary message's `details` field.
  * Machine-readable metadata so renderers and extensions can inspect summaries.
  */
 export interface SummaryMessageDetails {
-  toolCallIds: string[];
+  toolCallRefs: SummaryToolCallRef[];
   toolNames: string[];
   turnIndex: number;
   timestamp: number;

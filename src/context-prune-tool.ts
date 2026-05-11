@@ -49,7 +49,7 @@ export function registerContextPruneTool(
     promptSnippet: "Summarize and prune preceding tool-call results to reduce context size",
     promptGuidelines: [
       "Use after completing a batch of 8–10 related tool calls, not after every 2–3 calls.",
-      "Pruned outputs can be recovered in full using context_tree_query with the toolCallIds from the summary.",
+      "Pruned outputs can be recovered in full using context_tree_query with the short refs from the summary.",
       "Do NOT use this tool for trivial or single tool calls — only when context is getting large.",
     ],
     parameters: Type.Object({}),
@@ -105,7 +105,7 @@ export function registerContextPruneTool(
           content: [
             {
               type: "text",
-              text: `Context prune completed. Summarized ${result.toolCallCount} tool call${result.toolCallCount === 1 ? "" : "s"} from ${result.batchCount} batch${result.batchCount === 1 ? "" : "es"}. Summary size: ${result.summaryCharCount} chars vs ${result.rawCharCount} raw chars. Use context_tree_query with the toolCallIds from the summary to retrieve full outputs if needed.`,
+              text: `Context prune completed. Summarized ${result.toolCallCount} tool call${result.toolCallCount === 1 ? "" : "s"} from ${result.batchCount} batch${result.batchCount === 1 ? "" : "es"}. Summary size: ${result.summaryCharCount} chars vs ${result.rawCharCount} raw chars. Use context_tree_query with the short refs from the summary to retrieve full outputs if needed.`,
             },
           ],
           details: result,

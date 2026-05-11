@@ -22,6 +22,7 @@ import { pruneMessages } from "./src/pruner.js";
 import { annotateWithUnprunedCount, countUnprunedToolCalls } from "./src/reminder.js";
 import { registerQueryTool } from "./src/query-tool.js";
 import { registerCommands, setPruneStatusWidget } from "./src/commands.js";
+import { formatSummaryToolCallRefs, makeSummaryDetails } from "./src/summary-refs.js";
 import type { ContextPruneConfig, CapturedBatch, IndexEntryData, PruneFrontier, FlushOptions } from "./src/types.js";
 import {
   DEFAULT_CONFIG,
@@ -241,31 +242,30 @@ export default function (pi: ExtensionAPI) {
 
         const batch = batches[i];
         const batchRawCharCount = batch.toolCalls.reduce((s, tc) => s + tc.resultText.length, 0);
-        const shouldSkipOversized = result.summaryText.length > batchRawCharCount;
+        const summaryRefs = indexer.allocateSummaryRefs(batch);
+        const summaryText = result.summaryText + formatSummaryToolCallRefs(summaryRefs);
+        const shouldSkipOversized = summaryText.length > batchRawCharCount;
 
         statsAccum.add(result.usage);
         totalRawCharCount += batchRawCharCount;
-        totalSummaryCharCount += result.summaryText.length;
+        totalSummaryCharCount += summaryText.length;
         totalToolCallCount += batch.toolCalls.length;
 
-        const batchDetails = {
-          toolCallIds: batch.toolCalls.map((tc) => tc.toolCallId),
-          toolNames: batch.toolCalls.map((tc) => tc.toolName),
-          turnIndex: batch.turnIndex,
-          timestamp: batch.timestamp,
-        };
+        const batchDetails = makeSummaryDetails(batch, summaryRefs);
 
         try {
           if (!shouldSkipOversized) {
             // Write one summary message per turn and index its tool calls.
             if (delivery === "runtime") {
               pi.sendMessage(
-                { customType: CUSTOM_TYPE_SUMMARY, content: result.summaryText, display: true, details: batchDetails },
+                { customType: CUSTOM_TYPE_SUMMARY, content: summaryText, display: true, details: batchDetails },
                 { deliverAs: "steer" }
               );
+              indexer.registerSummaryRefs(summaryRefs);
               indexer.addBatch(batch, pi);
             } else {
-              appendSummaryMessage(result.summaryText, batchDetails);
+              appendSummaryMessage(summaryText, batchDetails);
+              indexer.registerSummaryRefs(summaryRefs);
               persistBatchIndex(batch, appendEntry);
             }
           } else {

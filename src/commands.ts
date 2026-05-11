@@ -15,6 +15,7 @@ import { formatTokens, formatCost, formatCharProgress } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@mariozechner/pi-tui";
 import { DynamicBorder, getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { buildPruneTree, TreeBrowser } from "./tree-browser.js";
+import { normalizeSummaryToolCallRefs } from "./summary-refs.js";
 import type { ToolCallIndexer } from "./indexer.js";
 
 /**
@@ -779,9 +780,14 @@ export function registerCommands(
 
   // Register custom renderer for context-prune-summary messages
   pi.registerMessageRenderer("context-prune-summary", (message, { expanded }, theme) => {
-    const details = message.details as { turnIndex: number; toolCallIds: string[]; toolNames: string[] };
+    const details = message.details as {
+      toolCallRefs?: { shortId: string; toolCallId: string }[];
+      toolCallIds?: string[];
+      turnIndex: number;
+      toolNames: string[];
+    };
     const turnIndex = details?.turnIndex ?? "?";
-    const toolCount = details?.toolCallIds?.length ?? 0;
+    const toolCount = normalizeSummaryToolCallRefs(details).length;
     const header = theme.fg("accent", `[pruner] Turn ${turnIndex} summary (${toolCount} tool${toolCount === 1 ? "" : "s"})`);
     if (expanded) {
       return new Text(header + "\n" + message.content, 0, 0);

@@ -90,7 +90,8 @@ export async function summarizeBatch(
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok) {
-      ctx.ui.notify(`pruner: summarization failed: ${auth.error}`, "error");
+      const authMessage = "error" in auth ? auth.error : "authentication failed";
+      ctx.ui.notify(`pruner: summarization failed: ${authMessage}`, "error");
       return null;
     }
 
@@ -153,14 +154,8 @@ export async function summarizeBatch(
       .map((c: any) => c.text)
       .join("\n");
 
-    const toolCallIds = batch.toolCalls.map((tc) => tc.toolCallId);
-    const idList = toolCallIds.map((id) => `\`${id}\``).join(", ");
-    const footer =
-      `\n\n---\n**Summarized toolCallIds**: ${idList}\n` +
-      `Use \`context_tree_query\` with these IDs to retrieve the original full outputs.`;
-
     return {
-      summaryText: llmText + footer,
+      summaryText: llmText,
       usage: response.usage,
     };
   } catch (err: any) {

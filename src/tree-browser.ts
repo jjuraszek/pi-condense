@@ -5,6 +5,7 @@ import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import type { ToolCallRecord } from "./types.js";
 import { CUSTOM_TYPE_SUMMARY } from "./types.js";
+import { normalizeSummaryToolCallRefs } from "./summary-refs.js";
 import type { ToolCallIndexer } from "./indexer.js";
 
 // ── Tree node types ─────────────────────────────────────────────────────────
@@ -103,21 +104,22 @@ export function buildPruneTree(
     if (customEntry.customType !== CUSTOM_TYPE_SUMMARY) continue;
 
     const details = customEntry.details as {
-      toolCallIds: string[];
+      toolCallRefs?: { shortId: string; toolCallId: string }[];
+      toolCallIds?: string[];
       toolNames: string[];
       turnIndex: number;
       timestamp: number;
     } | undefined;
 
-    const toolCallIds = details?.toolCallIds ?? [];
+    const toolCallRefs = normalizeSummaryToolCallRefs(details);
     const turnIndex = details?.turnIndex ?? "?";
     const timestamp = details?.timestamp
       ? new Date(details.timestamp).toLocaleString()
       : "";
 
     const children: TreeNode[] = [];
-    for (const id of toolCallIds) {
-      const record = indexer.getRecord(id);
+    for (const ref of toolCallRefs) {
+      const record = indexer.getRecord(ref.toolCallId);
       if (!record) continue;
       children.push(toolCallNode(record, 1));
     }
