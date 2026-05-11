@@ -223,6 +223,7 @@ Settings are saved to ~/.pi/agent/context-prune/settings.json`;
 // ── Pruner progress widget ────────────────────────────────────────────────────
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const SPINNER_INTERVAL_MS = 120;
 
 type RowStatus = "pending" | "running" | "done" | "skipped";
 
@@ -257,18 +258,52 @@ function startPrunerWidget(
 
   // Capture tui reference from the factory so updateRow can call requestRender.
   let requestRender: (() => void) | undefined;
+  let animationTimer: ReturnType<typeof setInterval> | undefined;
+
+  const hasRunningRows = () => rows.some((row) => row.status === "running");
+
+  const stopAnimationLoop = () => {
+    if (!animationTimer) return;
+    clearInterval(animationTimer);
+    animationTimer = undefined;
+  };
+
+  // The widget only re-renders when Pi is asked to draw again. Drive a tiny
+  // timer while any row is running so the spinner advances even before the
+  // summarizer streams its first text chunk.
+  const ensureAnimationLoop = () => {
+    if (animationTimer || !requestRender || !hasRunningRows()) return;
+    animationTimer = setInterval(() => {
+      if (!hasRunningRows()) {
+        stopAnimationLoop();
+        return;
+      }
+      requestRender?.();
+    }, SPINNER_INTERVAL_MS);
+    animationTimer.unref?.();
+  };
+
+  const syncAnimationLoop = () => {
+    if (hasRunningRows()) {
+      ensureAnimationLoop();
+    } else {
+      stopAnimationLoop();
+    }
+    requestRender?.();
+  };
 
   ctx.ui.setWidget(
     PROGRESS_WIDGET_ID,
     (tui, _theme) => {
       requestRender = () => tui.requestRender();
+      syncAnimationLoop();
       return {
         invalidate() {},
         render(_width: number): string[] {
           return rows.map((row) => {
             const count = `${row.toolCallCount} tool call${row.toolCallCount === 1 ? "" : "s"}`;
             if (row.status === "running") {
-              const frame = SPINNER_FRAMES[Math.floor(Date.now() / 120) % SPINNER_FRAMES.length];
+              const frame = SPINNER_FRAMES[Math.floor(Date.now() / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length];
               const chars =
                 row.receivedChars > 0
                   ? ` · ${formatCharProgress(row.receivedChars, row.rawChars)}`
@@ -293,10 +328,12 @@ function startPrunerWidget(
       if (index >= 0 && index < rows.length) {
         rows[index].status = status;
         if (chars !== undefined) rows[index].receivedChars = chars;
-        requestRender?.();
+        syncAnimationLoop();
       }
     },
     clearWidget() {
+      stopAnimationLoop();
+      requestRender = undefined;
       ctx.ui.setWidget(PROGRESS_WIDGET_ID, undefined);
     },
   };
