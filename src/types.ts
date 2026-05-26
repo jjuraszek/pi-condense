@@ -174,6 +174,13 @@ export interface ContextPruneConfig {
    *                     (all turns between two user messages are merged)
    */
   batchingMode: BatchingMode;
+  /**
+   * Suppress the UI notification emitted when a batch is skipped because the
+   * summary would have been larger than the raw tool-result text. The frontier
+   * still advances; only the notification is silenced. Useful for sessions
+   * dominated by small tool calls where this fires on nearly every turn.
+   */
+  quietOversizedSkips: boolean;
 }
 
 export const DEFAULT_CONFIG: ContextPruneConfig = {
@@ -184,6 +191,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   pruneOn: "agent-message",
   remindUnprunedCount: true,
   batchingMode: "turn",
+  quietOversizedSkips: false,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────

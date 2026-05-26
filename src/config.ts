@@ -36,6 +36,10 @@ export async function loadConfig(): Promise<ContextPruneConfig> {
         typeof merged.remindUnprunedCount === "boolean"
           ? merged.remindUnprunedCount
           : DEFAULT_CONFIG.remindUnprunedCount,
+      quietOversizedSkips:
+        typeof merged.quietOversizedSkips === "boolean"
+          ? merged.quietOversizedSkips
+          : DEFAULT_CONFIG.quietOversizedSkips,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

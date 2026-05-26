@@ -167,6 +167,14 @@ function pruneStatusLineDescription(config: ContextPruneConfig): string {
   return `Hide the prune footer status line and queued turn notifications. Currently ${base}.`;
 }
 
+function quietOversizedSkipsDescription(config: ContextPruneConfig): string {
+  const base = config.quietOversizedSkips ? "ON" : "OFF";
+  if (config.quietOversizedSkips) {
+    return `Suppress the 'skipped pruning … oversized' notification when a summary would have been larger than the raw tool output. The frontier still advances. Currently ${base}.`;
+  }
+  return `Show the 'skipped pruning … oversized' info notification when a summary would have been larger than the raw tool output. Currently ${base}.`;
+}
+
 const HELP_TEXT = `pruner — automatically summarizes tool-call outputs to keep context lean.
 
 Usage:
@@ -460,6 +468,13 @@ export function registerCommands(
               currentValue: config.batchingMode,
               description: batchingModeDescription(config.batchingMode),
             },
+            {
+              id: "quietOversizedSkips",
+              label: "Quiet oversized skips",
+              values: ["true", "false"],
+              currentValue: String(config.quietOversizedSkips),
+              description: quietOversizedSkipsDescription(config),
+            },
           ];
 
           let settingsList: SettingsList;
@@ -508,6 +523,12 @@ export function registerCommands(
               const batchingItem = items.find((item) => item.id === "batchingMode");
               if (batchingItem) {
                 batchingItem.description = batchingModeDescription(newConfig.batchingMode);
+              }
+            } else if (id === "quietOversizedSkips") {
+              newConfig.quietOversizedSkips = newValue === "true";
+              const quietItem = items.find((item) => item.id === "quietOversizedSkips");
+              if (quietItem) {
+                quietItem.description = quietOversizedSkipsDescription(newConfig);
               }
             }
             currentConfig.value = newConfig;
