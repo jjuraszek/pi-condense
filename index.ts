@@ -331,14 +331,17 @@ export default function (pi: ExtensionAPI) {
 
       setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
 
-      // Notify about any oversized batches that were skipped
+      // Notify about any oversized batches that were skipped. This is not an
+      // error condition — the pruner correctly chose not to grow context — so
+      // surface it as info, not a warning, to avoid alarming users on every
+      // small-turn session.
       for (const batch of oversizedBatches) {
         const batchRaw = batch.toolCalls.reduce((s, tc) => s + tc.resultText.length, 0);
         const batchSummaryLen = results[batches.indexOf(batch)]?.summaryText.length ?? 0;
         safeNotify(
           ctx,
           `pruner: skipped pruning turn ${batch.turnIndex} (${batch.toolCalls.length} tool call${batch.toolCalls.length === 1 ? "" : "s"}) — summary was ${batchSummaryLen} chars vs ${batchRaw} raw chars; frontier advanced past this range`,
-          "warning"
+          "info"
         );
       }
 
