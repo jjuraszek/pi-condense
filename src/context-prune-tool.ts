@@ -21,8 +21,10 @@ import { pruneProgressText } from "./progress-text.js";
  * @param flushPending  Shared flush function that summarizes + indexes pending batches
  */
 type FlushResult =
-  | { ok: true; reason: "flushed"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
-  | { ok: true; reason: "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
+  | { ok: true; reason: "flushed"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number; dedupedCount?: number }
+  | { ok: true; reason: "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number; dedupedCount?: number }
+  | { ok: true; reason: "skipped-trivial"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number; dedupedCount?: number }
+  | { ok: true; reason: "skipped-deduped"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number; dedupedCount?: number }
   | { ok: false; reason: string; error?: string };
 
 function sendToolProgress(
@@ -95,6 +97,31 @@ export function registerContextPruneTool(
               {
                 type: "text",
                 text: `Context prune skipped ${result.toolCallCount} tool call${result.toolCallCount === 1 ? "" : "s"}: the summary was ${result.summaryCharCount} chars while the raw tool results were ${result.rawCharCount} chars. The original tool results were kept, and the prune frontier advanced so the next prune starts after this range.`,
+              },
+            ],
+            details: result,
+          };
+        }
+
+        if (result.reason === "skipped-trivial") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Context prune skipped ${result.toolCallCount} trivial tool call${result.toolCallCount === 1 ? "" : "s"}: only ${result.rawCharCount} raw chars across the batch — below the minBatchChars threshold. No summarizer LLM call was made. The original tool results were kept, and the prune frontier advanced so the next prune starts after this range.`,
+              },
+            ],
+            details: result,
+          };
+        }
+
+        if (result.reason === "skipped-deduped") {
+          const n = result.dedupedCount ?? result.toolCallCount;
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Context prune deduplicated ${n} tool call${n === 1 ? "" : "s"} (${result.rawCharCount} raw chars) against earlier prunes — no summarizer LLM call was made. The originals are still available via context_tree_query with the dup's id. The prune frontier advanced past this range.`,
               },
             ],
             details: result,

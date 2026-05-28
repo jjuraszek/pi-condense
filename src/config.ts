@@ -50,6 +50,16 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       typeof merged.quietOversizedSkips === "boolean"
         ? merged.quietOversizedSkips
         : DEFAULT_CONFIG.quietOversizedSkips,
+    minBatchChars:
+      typeof merged.minBatchChars === "number" &&
+      Number.isFinite(merged.minBatchChars) &&
+      merged.minBatchChars >= 0
+        ? Math.floor(merged.minBatchChars)
+        : DEFAULT_CONFIG.minBatchChars,
+    dedupByContentHash:
+      typeof merged.dedupByContentHash === "boolean"
+        ? merged.dedupByContentHash
+        : DEFAULT_CONFIG.dedupByContentHash,
   };
 }
 

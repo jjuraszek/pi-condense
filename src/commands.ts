@@ -8,6 +8,8 @@ import {
   STATUS_WIDGET_ID,
   PROGRESS_WIDGET_ID,
   SUMMARIZER_THINKING_LEVELS,
+  MIN_BATCH_CHARS_PRESETS,
+  DEFAULT_CONFIG,
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { saveConfig } from "./config.js";
@@ -81,6 +83,9 @@ const SUBCOMMANDS = [
   { value: "stats",   label: "stats     — show cumulative summarizer token/cost stats" },
   { value: "tree",    label: "tree      — browse pruned tool calls in a foldable tree" },
   { value: "now",     label: "now       — flush pending tool calls immediately (widget progress)" },
+  { value: "protected-tools", label: "protected-tools — show or edit the never-pruned tool allowlist" },
+  { value: "min-batch-chars", label: "min-batch-chars — show or set the pre-flush trivial-batch threshold" },
+  { value: "dedup",   label: "dedup     — toggle pre-flush content-hash dedup (on/off/status)" },
   { value: "help",    label: "help      — show this help" },
 ] as const;
 
@@ -88,7 +93,7 @@ const SUBCOMMANDS = [
 
 const PRUNE_MODE_GUIDANCE: Record<ContextPruneConfig["pruneOn"], string> = {
   "every-turn": "Debugging only. Prunes after every tool turn, which is easiest to inspect but churns provider prompt caches the most.",
-  "on-context-tag": "Good for milestone-based workflows. Flushes when context_tag is called; requires the pi-context extension for automatic triggering.",
+  "on-context-tag": "Good for milestone-based workflows. Flushes when context_tag (legacy) or context_checkpoint (current) is called; requires the pi-context extension for automatic triggering.",
   "on-demand": "Maximum manual control. Nothing is pruned until you run /pruner now, so cache invalidation happens only when you choose.",
   "agent-message": "Recommended default. Batches tool work and prunes once after the final text reply, giving the best balance of automation, context savings, and cache stability.",
   "agentic-auto": "Useful for longer autonomous runs. Lets the model call context_prune, but depends on the model using it sparingly.",
@@ -170,9 +175,32 @@ function pruneStatusLineDescription(config: ContextPruneConfig): string {
 function quietOversizedSkipsDescription(config: ContextPruneConfig): string {
   const base = config.quietOversizedSkips ? "ON" : "OFF";
   if (config.quietOversizedSkips) {
-    return `Suppress the 'skipped pruning … oversized' notification when a summary would have been larger than the raw tool output. The frontier still advances. Currently ${base}.`;
+    return `Suppress all non-error 'skipped pruning' notifications — both 'oversized' (summary was larger than the raw output) and 'trivial' (batch was below minBatchChars, no LLM call made). The frontier still advances in both cases. Currently ${base}.`;
   }
-  return `Show the 'skipped pruning … oversized' info notification when a summary would have been larger than the raw tool output. Currently ${base}.`;
+  return `Show 'skipped pruning' info notifications when a batch is skipped — either because the summary would have been larger than the raw output (oversized) or because the batch was below minBatchChars (trivial, no LLM call). Currently ${base}.`;
+}
+
+function minBatchCharsDescription(config: ContextPruneConfig): string {
+  if (config.minBatchChars === 0) {
+    return `Pre-flush guard: skip batches whose total raw resultText is below this many chars (no LLM call, frontier advances anyway). Currently 0 — disabled, every batch is sent to the summarizer.`;
+  }
+  return `Pre-flush guard: skip batches whose total raw resultText is below this many chars (no LLM call, frontier advances anyway). Currently ${config.minBatchChars}. Useful for sessions with many tiny tool calls. Set to 0 to disable.`;
+}
+
+function protectedToolsDisplay(list: string[]): string {
+  return list.length === 0 ? "(none)" : list.join(", ");
+}
+
+function dedupByContentHashDescription(config: ContextPruneConfig): string {
+  const state = config.dedupByContentHash ? "ON" : "OFF";
+  if (config.dedupByContentHash) {
+    return `Pre-flush content-hash dedup. When a captured tool call's (toolName, normalized resultText) matches a record already in the indexer, the duplicate is registered as an alias of the original — no summarizer LLM call. Currently ${state}.`;
+  }
+  return `Pre-flush content-hash dedup. Currently ${state}. Identical re-reads will be sent to the summarizer like any other tool call.`;
+}
+
+function protectedToolsDescription(config: ContextPruneConfig): string {
+  return `Tool names whose outputs are NEVER pruned (kept verbatim in context). Currently: ${protectedToolsDisplay(config.protectedTools)}. Edit via \`/pruner protected-tools\` for an interactive prompt, or \`/pruner protected-tools <comma-separated names>\` to set directly. Common candidates: todowrite, todoread.`;
 }
 
 const HELP_TEXT = `pruner — automatically summarizes tool-call outputs to keep context lean.
@@ -189,7 +217,7 @@ Usage:
   /pruner thinking <level>                 Set summarizer thinking: default, off, minimal, low, medium, high, xhigh
   /pruner prune-on                         Show or interactively pick the trigger
   /pruner prune-on every-turn              Summarize after every tool-calling turn (debugging only; worst for prompt cache churn)
-  /pruner prune-on on-context-tag          Summarize when context_tag is called (requires pi-context extension)
+  /pruner prune-on on-context-tag          Summarize when context_tag (legacy) or context_checkpoint (current) is called (requires pi-context extension)
   /pruner prune-on on-demand               Only summarize when /pruner now runs
   /pruner prune-on agent-message           Summarize after the agent's final text reply (default; safest for cache stability)
   /pruner prune-on agentic-auto            LLM decides when to prune via context_prune tool
@@ -199,6 +227,12 @@ Usage:
   /pruner stats                            Show cumulative summarizer token/cost stats
   /pruner tree                             Browse pruned tool calls in a foldable tree (Ctrl-O opens selected summary)
   /pruner now                              Flush pending tool calls immediately (shows live footer progress)
+  /pruner protected-tools                  Interactively edit the never-pruned tool allowlist
+  /pruner protected-tools <names>          Set the allowlist (comma- or space-separated; 'none' clears)
+  /pruner min-batch-chars                  Show the current pre-flush trivial-batch threshold
+  /pruner min-batch-chars <n>              Set the threshold (non-negative integer; 0 disables)
+  /pruner dedup                            Show the current pre-flush content-hash dedup state
+  /pruner dedup on|off                     Enable or disable content-hash dedup
   /pruner help                             Show this help
 
 Agentic-auto reminder:
@@ -207,6 +241,39 @@ Agentic-auto reminder:
   LLM call telling the model how many unpruned tool calls have piled up. This
   helps the LLM decide when to call context_prune. Toggle via /pruner settings.
   This setting has no effect in any other prune-on mode.
+  Tools in the protected-tools allowlist are NOT counted toward this reminder.
+
+Trivial-batch skip (minBatchChars):
+  If the total raw resultText across a batch is below minBatchChars, the
+  batch is skipped: no summarizer LLM call is made, no summary message is
+  injected, and the prune frontier still advances so the same tool calls are
+  not reconsidered next flush. Default is 1000. Set to 0 to disable.
+  This runs BEFORE summarization, so it is cheaper than the post-LLM
+  skipped-oversized path that also rejects summaries larger than the raw
+  input. Both skip notifications are silenced by quietOversizedSkips.
+
+Protected tools:
+  Some tools' outputs must stay verbatim across turns — typically planning tools
+  like todowrite / todoread that carry state the agent re-reads later. List
+  those tool names in 'protectedTools' (settings) or via /pruner protected-tools.
+  Protected calls bypass the summarizer/index entirely: their raw
+  ToolResultMessage stays in context, and they are not counted toward the
+  agentic-auto unpruned-count reminder. Names that don't match any captured
+  tool call are silently ignored.
+
+Content-hash dedup (dedupByContentHash):
+  When ON (default), each captured tool call is hashed by
+  (toolName, normalize(resultText)) using SHA-1 and compared against records
+  already in the indexer. If an earlier prune already covered identical
+  content, the duplicate is registered as an alias of the original — no
+  summarizer LLM call is made, the duplicate's ToolResultMessage gets
+  stub-replaced via pruneMessages, and context_tree_query returns the
+  original record when asked with the duplicate's id. Normalization is
+  conservative: line endings, per-line trailing whitespace, and a final
+  trim() only. Internal whitespace and capitalization are preserved.
+  V1 dedupes only against records ALREADY in the indexer (from previous
+  flushes); intra-flush dedup is deferred to v2 to avoid dangling aliases
+  when a canonical batch is skipped as oversized / trivial.
 
 Batching mode:
   - turn (default): each assistant turn that used tools gets its own summary block. Small, granular.
@@ -215,7 +282,7 @@ Batching mode:
 
 Mode guidance:
   - every-turn: only for debugging / testing summary behavior. Rewrites earlier context too often and can repeatedly bust provider prompt caches.
-  - on-context-tag: good if you already use pi-context save-points. Prunes on explicit milestones via context_tag.
+  - on-context-tag: good if you already use pi-context save-points. Prunes on explicit milestones via context_tag (legacy name) or context_checkpoint (current name in pi-context).
   - on-demand: maximum manual control. Best when you want to decide exactly when to trade cache stability for shorter context.
   - agent-message: recommended default. Batches a whole tool-using run, then prunes once after the final text reply so future requests become cacheable again.
   - agentic-auto: useful for longer autonomous runs, but depends on the model using context_prune sparingly.
@@ -224,7 +291,7 @@ Why this matters:
   Frequent edits to earlier context can reduce prompt/prefix cache hits on providers that cache identical prefixes. Batched pruning is usually cheaper and faster than pruning every turn.
 
 Related:
-  - pi-context extension (provides context_tag): https://github.com/ttttmr/pi-context
+  - pi-context extension (provides context_tag / context_checkpoint): https://github.com/ttttmr/pi-context
   - Anthropic prompt caching docs: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
 
 Settings are saved under the "contextPrune" key in <agent-dir>/settings.json (where <agent-dir> is $PI_CODING_AGENT_DIR or ~/.pi/agent).`;
@@ -354,7 +421,7 @@ export function registerCommands(
   pi: ExtensionAPI,
   currentConfig: { value: ContextPruneConfig },
   flushPending: (ctx: ExtensionCommandContext, options?: FlushOptions) => Promise<
-    | { ok: true; reason: "flushed" | "skipped-oversized"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number }
+    | { ok: true; reason: "flushed" | "skipped-oversized" | "skipped-trivial" | "skipped-deduped"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number; dedupedCount?: number }
     | { ok: false; reason: string; error?: string }
   >,
   capturePendingBatches: (ctx: ExtensionCommandContext) => CapturedBatch[],
@@ -470,10 +537,36 @@ export function registerCommands(
             },
             {
               id: "quietOversizedSkips",
-              label: "Quiet oversized skips",
+              label: "Quiet skip notifications",
               values: ["true", "false"],
               currentValue: String(config.quietOversizedSkips),
               description: quietOversizedSkipsDescription(config),
+            },
+            {
+              id: "minBatchChars",
+              label: "Min batch chars",
+              values: MIN_BATCH_CHARS_PRESETS.map((p) => p.value),
+              currentValue: MIN_BATCH_CHARS_PRESETS.some((p) => p.value === String(config.minBatchChars))
+                ? String(config.minBatchChars)
+                : MIN_BATCH_CHARS_PRESETS[2].value, // fall back to "1000" if a custom value isn't in the preset cycle
+              description: minBatchCharsDescription(config),
+            },
+            {
+              id: "dedupByContentHash",
+              label: "Dedup by content hash",
+              values: ["true", "false"],
+              currentValue: String(config.dedupByContentHash),
+              description: dedupByContentHashDescription(config),
+            },
+            {
+              // Read-only display row. Editing goes through `/pruner protected-tools`
+              // because SettingsList.submenu requires a synchronous Component,
+              // while editing a free-form list needs `ctx.ui.input()` (async).
+              id: "protectedTools",
+              label: "Protected tools",
+              values: [protectedToolsDisplay(config.protectedTools)],
+              currentValue: protectedToolsDisplay(config.protectedTools),
+              description: protectedToolsDescription(config),
             },
           ];
 
@@ -481,6 +574,10 @@ export function registerCommands(
           let closeSettingsOverlay = () => {};
 
           const onChange = (id: string, newValue: string) => {
+            // Read-only row — SettingsList still fires onChange when the user
+            // presses Enter on a single-value item. Short-circuit so we don't
+            // do a redundant saveConfig / status-widget refresh on no-op presses.
+            if (id === "protectedTools") return;
             const newConfig = { ...currentConfig.value };
             if (id === "enabled") {
               newConfig.enabled = newValue === "true";
@@ -529,6 +626,19 @@ export function registerCommands(
               const quietItem = items.find((item) => item.id === "quietOversizedSkips");
               if (quietItem) {
                 quietItem.description = quietOversizedSkipsDescription(newConfig);
+              }
+            } else if (id === "minBatchChars") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.minBatchChars = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CONFIG.minBatchChars;
+              const mbItem = items.find((item) => item.id === "minBatchChars");
+              if (mbItem) {
+                mbItem.description = minBatchCharsDescription(newConfig);
+              }
+            } else if (id === "dedupByContentHash") {
+              newConfig.dedupByContentHash = newValue === "true";
+              const dedupItem = items.find((item) => item.id === "dedupByContentHash");
+              if (dedupItem) {
+                dedupItem.description = dedupByContentHashDescription(newConfig);
               }
             }
             currentConfig.value = newConfig;
@@ -594,7 +704,7 @@ export function registerCommands(
             ? `\n  --- summarizer ---\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`
             : "\n  (no summarizer calls yet)";
           ctx.ui.notify(
-            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}\n  remind:   ${cfg.remindUnprunedCount ? "on" : "off"} (agentic-auto only)${statsLine}`,
+            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}\n  remind:   ${cfg.remindUnprunedCount ? "on" : "off"} (agentic-auto only)${statsLine}`,
           );
           break;
         }
@@ -778,10 +888,113 @@ export function registerCommands(
             break;
           }
 
+          if (result.reason === "skipped-trivial") {
+            ctx.ui.notify(
+              `pruner: skipped ${result.toolCallCount} trivial tool call${result.toolCallCount === 1 ? "" : "s"} — only ${result.rawCharCount} raw chars below minBatchChars=${currentConfig.value.minBatchChars}; no LLM call made; frontier advanced past this range`,
+              "info"
+            );
+            break;
+          }
+
+          if (result.reason === "skipped-deduped") {
+            const n = result.dedupedCount ?? result.toolCallCount;
+            ctx.ui.notify(
+              `pruner: deduplicated ${n} tool call${n === 1 ? "" : "s"} (${result.rawCharCount} raw chars) against earlier prunes; no LLM call made; frontier advanced past this range`,
+              "info"
+            );
+            break;
+          }
+
           ctx.ui.notify(
             `pruner: pruned ${result.toolCallCount} tool call${result.toolCallCount === 1 ? "" : "s"} from ${result.batchCount} batch${result.batchCount === 1 ? "" : "es"} — summary ${result.summaryCharCount} chars vs ${result.rawCharCount} raw chars`,
             "info"
           );
+          break;
+        }
+
+        // ── /pruner protected-tools [list] ──
+        // Bare form opens ctx.ui.input() so the user can edit the list
+        // interactively (pre-filled with the current value).  Argument form
+        // accepts a comma- and/or whitespace-separated list, or the sentinels
+        // `none` / `clear` to empty the list.
+        case "protected-tools": {
+          const raw = subArgs.join(" ").trim();
+          let nextList: string[] | undefined;
+
+          if (!raw) {
+            const currentDisplay =
+              currentConfig.value.protectedTools.length === 0
+                ? ""
+                : currentConfig.value.protectedTools.join(", ");
+            const entered = await ctx.ui.input(
+              "Protected tools (comma-separated tool names; empty or 'none' to clear)",
+              currentDisplay,
+            );
+            if (entered === undefined) return; // user cancelled
+            const trimmed = entered.trim();
+            if (trimmed === "" || trimmed.toLowerCase() === "none" || trimmed.toLowerCase() === "clear") {
+              nextList = [];
+            } else {
+              nextList = trimmed.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+            }
+          } else if (raw.toLowerCase() === "none" || raw.toLowerCase() === "clear") {
+            nextList = [];
+          } else {
+            nextList = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+          }
+
+          currentConfig.value = { ...currentConfig.value, protectedTools: nextList };
+          saveConfig(currentConfig.value);
+          ctx.ui.notify(`Protected tools: ${protectedToolsDisplay(nextList)}`);
+          break;
+        }
+
+        // ── /pruner min-batch-chars [value] ──
+        // Bare form shows the current value. Numeric form sets it directly
+        // (any non-negative integer accepted; not restricted to the preset
+        // cycle exposed in the SettingsList). `0` disables the pre-flush
+        // guard.
+        case "min-batch-chars": {
+          const arg = subArgs[0];
+          if (!arg) {
+            const cur = currentConfig.value.minBatchChars;
+            const state = cur === 0 ? "disabled" : `${cur} chars`;
+            ctx.ui.notify(`Current minBatchChars: ${state}.`);
+            break;
+          }
+          const parsed = Number.parseInt(arg, 10);
+          if (!Number.isFinite(parsed) || parsed < 0) {
+            ctx.ui.notify(`Invalid minBatchChars: "${arg}". Expected a non-negative integer (0 disables).`, "warning");
+            break;
+          }
+          currentConfig.value = { ...currentConfig.value, minBatchChars: parsed };
+          saveConfig(currentConfig.value);
+          ctx.ui.notify(
+            parsed === 0
+              ? "minBatchChars set to 0 — pre-flush trivial-batch skipping disabled."
+              : `minBatchChars set to ${parsed}.`,
+          );
+          break;
+        }
+
+        // ── /pruner dedup [on|off|status] ──
+        // Bare form shows current state; `on`/`off` flip and persist;
+        // `status` is an explicit synonym for bare.
+        case "dedup": {
+          const arg = (subArgs[0] ?? "").toLowerCase();
+          if (!arg || arg === "status") {
+            const state = currentConfig.value.dedupByContentHash ? "ON" : "OFF";
+            ctx.ui.notify(`Content-hash dedup is ${state}. ${dedupByContentHashDescription(currentConfig.value)}`);
+            break;
+          }
+          if (arg !== "on" && arg !== "off" && arg !== "true" && arg !== "false") {
+            ctx.ui.notify(`Invalid dedup value: "${arg}". Expected on, off, status, true, or false.`, "warning");
+            break;
+          }
+          const next = arg === "on" || arg === "true";
+          currentConfig.value = { ...currentConfig.value, dedupByContentHash: next };
+          saveConfig(currentConfig.value);
+          ctx.ui.notify(`Content-hash dedup turned ${next ? "ON" : "OFF"}.`);
           break;
         }
 

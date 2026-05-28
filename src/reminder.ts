@@ -33,8 +33,19 @@ const PRUNER_NOTE_CLOSE = "</pruner-note>";
  * summarized. A tool call is considered "unpruned" when its `toolCallId`
  * appears as an `AssistantMessage` `toolCall` content block but is absent
  * from the indexer.
+ *
+ * `protectedTools` (optional) is the user's allowlist of tool names that are
+ * never pruned. Calls to those tools are skipped here so the reminder does
+ * not nudge the LLM to prune things that the extension itself will refuse to
+ * touch — keeping the displayed unpruned count consistent with what
+ * `context_prune` would actually act on.
  */
-export function countUnprunedToolCalls(messages: any[], indexer: ToolCallIndexer): number {
+export function countUnprunedToolCalls(
+  messages: any[],
+  indexer: ToolCallIndexer,
+  protectedTools: string[] = [],
+): number {
+  const protectedSet = protectedTools.length > 0 ? new Set(protectedTools) : null;
   let count = 0;
   for (const msg of messages) {
     if (msg?.role !== "assistant") continue;
@@ -43,6 +54,7 @@ export function countUnprunedToolCalls(messages: any[], indexer: ToolCallIndexer
       if (block?.type !== "toolCall") continue;
       const id = block.toolCallId ?? block.id;
       if (!id) continue;
+      if (protectedSet && block.name && protectedSet.has(block.name)) continue;
       if (!indexer.isSummarized(id)) count++;
     }
   }

@@ -56,6 +56,17 @@ export const CUSTOM_TYPE_STATS = "context-prune-stats";
 /** customType for prune-frontier persistence entries (NOT in LLM context) */
 export const CUSTOM_TYPE_FRONTIER = "context-prune-frontier";
 
+/**
+ * customType for content-hash dedup alias entries (NOT in LLM context).
+ *
+ * One entry per duplicate tool call detected by the pre-flush dedup pass.
+ * The new toolCallId is registered as an alias of an already-indexed
+ * original toolCallId. The original's record (in CUSTOM_TYPE_INDEX) is
+ * the source of truth for the result text. See
+ * src/content-hash.ts and src/indexer.ts for the dedup machinery.
+ */
+export const CUSTOM_TYPE_DEDUP_ALIAS = "context-prune-dedup-alias";
+
 /** Footer status widget ID */
 export const STATUS_WIDGET_ID = "context-prune";
 
@@ -97,7 +108,7 @@ What happens when you call context_prune:
 /**
  * When summarization (and context pruning) is triggered.
  * - "every-turn"     : after every assistant turn that calls tools
- * - "on-context-tag" : batches up turns and flushes when the model calls context_tag
+ * - "on-context-tag" : batches up turns and flushes when the model calls context_tag (legacy) or context_checkpoint (current, ttttmr/pi-context)
  * - "on-demand"      : only when the user runs /pruner now
  * - "agent-message"  : batches up turns and flushes when the agent sends a final text response
  *                       (a turn with no tool calls), or when the agent loop ends (default)
@@ -132,6 +143,19 @@ export const SUMMARIZER_THINKING_LEVELS: { value: SummarizerThinking; label: str
 export const BATCHING_MODES: { value: BatchingMode; label: string }[] = [
   { value: "turn", label: "Per turn" },
   { value: "agent-message", label: "Per agent message" },
+];
+
+/**
+ * Cycling preset values for the `minBatchChars` setting in the SettingsList.
+ * Stored as strings because SettingsList cycles string values; converted to
+ * number when applied. `"0"` is the disabled sentinel.
+ */
+export const MIN_BATCH_CHARS_PRESETS: { value: string; label: string }[] = [
+  { value: "0", label: "0 (disabled)" },
+  { value: "500", label: "500" },
+  { value: "1000", label: "1000 (default)" },
+  { value: "2000", label: "2000" },
+  { value: "5000", label: "5000" },
 ];
 
 /** Choices for the prune-on setting (used by commands and settings overlay) */
@@ -175,12 +199,79 @@ export interface ContextPruneConfig {
    */
   batchingMode: BatchingMode;
   /**
-   * Suppress the UI notification emitted when a batch is skipped because the
-   * summary would have been larger than the raw tool-result text. The frontier
-   * still advances; only the notification is silenced. Useful for sessions
-   * dominated by small tool calls where this fires on nearly every turn.
+   * Suppress the UI notification emitted when a batch is skipped — for either
+   * reason: (a) the summary would have been larger than the raw tool-result
+   * text (oversized), or (b) the batch was below `minBatchChars` and never
+   * sent to the summarizer (trivial). The frontier still advances in both
+   * cases; only the notification is silenced. Useful for sessions dominated
+   * by small tool calls where one or both fire on nearly every turn.
    */
   quietOversizedSkips: boolean;
+  /**
+   * Pre-flush guard. If the total raw `resultText` character count across all
+   * tool calls in a batch is below this threshold, the batch is skipped: no
+   * summarizer LLM call is made, no index entry is written, no summary
+   * message is injected, and the prune frontier advances past the batch so
+   * the same tool calls are not reconsidered on the next flush.
+   *
+   * Rationale: a short summary like "Tool X did Y" can already be 50–150
+   * chars per call. For very small batches (e.g. a 200-byte file read) the
+   * summary is near-identical in size or even larger than the raw input, so
+   * calling the LLM is wasted cost. The existing post-call `skipped-oversized`
+   * mechanism catches this AFTER the LLM round-trip; `minBatchChars` catches
+   * the obvious cases BEFORE it, at zero LLM cost.
+   *
+   * Set to `0` to disable the pre-flush guard entirely (every batch is sent
+   * to the summarizer; oversized skipping still applies after the fact).
+   *
+   * Default: 1000.
+   */
+  minBatchChars: number;
+  /**
+   * Tool names whose outputs must NEVER be pruned or summarized. Tool calls
+   * with matching `toolName` are filtered out of the pruning capture path so
+   * their original `ToolResultMessage` stays verbatim in future LLM context.
+   * They are also excluded from the agentic-auto `<pruner-note>`
+   * unpruned-count reminder so the LLM is not nudged to prune them.
+   *
+   * Use for tools whose raw output the agent must keep reading verbatim
+   * across turns — for example `todowrite` / `todoread` carrying plan state,
+   * or any tool returning a structured handle the agent expects to find
+   * unchanged later.
+   *
+   * Default is `[]` (empty) so behavior is preserved for existing configs and
+   * we do not assume which skill-provided tools (e.g. todo*) the user has
+   * loaded. Users opt in via `/pruner protected-tools` or the settings file.
+   *
+   * Matched names are compared by exact tool name; missing / typoed names
+   * are silently ignored (they simply never match any captured tool call).
+   */
+  protectedTools: string[];
+  /**
+   * Pre-flush content-hash dedup pass. When `true`, each captured tool call
+   * is hashed by `(toolName, normalize(resultText))` and compared against
+   * records already in the indexer. Matches are registered as aliases of the
+   * original via `CUSTOM_TYPE_DEDUP_ALIAS` and removed from the batch BEFORE
+   * any summarizer LLM call. The duplicate's `ToolResultMessage` is then
+   * stub-replaced by `pruneMessages` using the original's short ref, and
+   * `context_tree_query` resolves the duplicate's id back to the original
+   * record via the alias map.
+   *
+   * Normalization is conservative: line-ending normalization (`\r\n` → `\n`),
+   * per-line trailing whitespace stripping, plus a final `trim()`. Internal
+   * whitespace, tabs, and capitalization are preserved so hashes only match
+   * for exact-content duplicates.
+   *
+   * V1 deliberately dedupes only against records ALREADY in the indexer
+   * (i.e. from earlier flushes). Intra-flush dedup is not yet implemented to
+   * avoid the case where a "canonical" batch is skipped as oversized or
+   * trivial, leaving dangling aliases.
+   *
+   * Default: `true` — low-risk free win. Set to `false` if you want to keep
+   * redundant raw outputs verbatim (e.g. debugging two reads of the same
+   * file).
+   */
+  dedupByContentHash: boolean;
 }
 
 export const DEFAULT_CONFIG: ContextPruneConfig = {
@@ -192,6 +283,9 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   remindUnprunedCount: true,
   batchingMode: "turn",
   quietOversizedSkips: false,
+  minBatchChars: 1000,
+  protectedTools: [],
+  dedupByContentHash: true,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────
@@ -254,6 +348,27 @@ export interface IndexEntryData {
 }
 
 /**
+ * Data stored via pi.appendEntry(CUSTOM_TYPE_DEDUP_ALIAS, data).
+ *
+ * Each entry maps a duplicate toolCallId to the original (already-indexed)
+ * toolCallId whose (toolName, normalized resultText) hash it matched.
+ *
+ *  - pruneMessages stub-replaces the duplicate's ToolResultMessage using the
+ *    original's short ref (via the indexer's toolCallIdToAlias map).
+ *  - context_tree_query resolves the duplicate's id back to the original
+ *    record via the indexer's dedup alias map.
+ *
+ * `hash` is optional and stored only for debugging; reconstruction works
+ * without it because the original record is re-hashed when its
+ * CUSTOM_TYPE_INDEX entry is replayed.
+ */
+export interface DedupAliasEntryData {
+  newToolCallId: string;
+  originalToolCallId: string;
+  hash?: string;
+}
+
+/**
  * Short alias used in the summary message text plus the real toolCallId it
  * maps back to for future recovery through context_tree_query.
  */
@@ -292,7 +407,11 @@ export interface SummarizerStats {
 }
 
 /** Outcome of the most recent completed prune attempt. */
-export type PruneFrontierOutcome = "summarized" | "skipped-oversized";
+export type PruneFrontierOutcome =
+  | "summarized"
+  | "skipped-oversized"
+  | "skipped-trivial"
+  | "skipped-deduped";
 
 /**
  * Snapshot of the last successfully completed prune attempt boundary.

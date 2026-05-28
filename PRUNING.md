@@ -167,7 +167,7 @@ graph TB
 **Key points:**
 
 - The `AssistantMessage` tool-call blocks are **kept** (they carry `toolCallId`s the model may reference later)
-- Only `ToolResultMessage` entries are **removed** from future context
+- `ToolResultMessage` entries for summarized tool calls are **replaced with a small stub** (`[Summarized in pruner summary, ref \`tN\`. Use context_tree_query to retrieve full output.]`) — they keep `role: "toolResult"` and the original `toolCallId`, so role alternation is preserved and pi-ai no longer injects a synthetic `isError: true` "No result provided" result
 - Every pruned tool call is also copied into the pruner's runtime/session index with its `toolCallId`, tool name, args, status, turn index, timestamp, and full `resultText`
 - A summary message is injected as a "steer" (guaranteed to land before the next LLM call)
 - The session file retains the original history, and the pruner keeps an index of summarized tool outputs — pruning affects only what the *next* request sees in active context
@@ -262,9 +262,17 @@ So after pruning, the model is working with a **two-layer memory**:
 | Part of old turn | After pruning | Why |
 |---|---|---|
 | Assistant tool-call block | **Kept in context** | Preserves the `toolCallId` anchors the model can reference |
-| Tool result message | **Removed from active context** | Saves tokens (unless the summary is larger than the raw text, in which case pruning is skipped) |
+| Tool result message | **Replaced by a short stub in active context** | Saves tokens (typical 50–100× reduction per call) while keeping the `toolCallId` anchor and giving the model an explicit `context_tree_query` breadcrumb; unless the summary is larger than the raw text, in which case pruning is skipped and the original is kept |
 | Summary message | **Added to context** | Gives the model a compact description of what happened |
 | Indexed tool-call record | **Stored in pruner index** | Lets the model re-open the original raw output later |
+
+### Content-hash dedup (pre-flush)
+
+When `dedupByContentHash` is on (the default), `flushPending` runs a SHA-1 hash over each tool call's `(toolName, normalize(resultText))` BEFORE handing batches to the summarizer. A hit against the indexer's `contentHashToOriginal` map means an earlier prune already covered identical content. The duplicate is registered as an alias of the original (persisted as `context-prune-dedup-alias`), removed from the batch, and stub-replaced in the next `context` event using the original's short ref. **No summarizer LLM call is made** for dedup'd tool calls, and the original record is recovered via `context_tree_query` whether the model passes the original or the duplicate's `toolCallId`.
+
+Normalization is conservative — line-ending normalization (`\r\n` → `\n`), per-line trailing whitespace stripping, and a final `trim()`. Internal whitespace, tabs, and capitalization are preserved so two genuinely different outputs do **not** collide.
+
+Typical wins: re-reading an unchanged file, repeated `git status` / `ls`, retries of the same command. v1 only matches against records already in the indexer (cross-flush dedup); intra-flush dedup is deferred so canonicals that get skipped as oversized / trivial never produce dangling aliases.
 
 ## How the Model Re-reads Raw Outputs
 
