@@ -158,7 +158,7 @@ The extension registers the `/pruner` command:
 4. **Summarizer model** — press Enter to open a searchable submenu listing `"default"` plus all available models
 5. **Summarizer thinking** — cycle through the thinking/reasoning level used for summarizer calls
 
-All changes are saved immediately to `<agent-dir>/context-prune/settings.json` and reflected in the footer status widget when it is enabled. `<agent-dir>` is whatever pi resolves for the current session — `$PI_CODING_AGENT_DIR` if set (with tilde expansion), otherwise `~/.pi/agent`. Each preset directory therefore gets its own settings file, including its own summarizer model.
+All changes are saved immediately to `<agent-dir>/settings.json` under the `contextPrune` key and reflected in the footer status widget when it is enabled. `<agent-dir>` is whatever pi resolves for the current session — `$PI_CODING_AGENT_DIR` if set (with tilde expansion), otherwise `~/.pi/agent`. Each preset directory therefore gets its own settings file, including its own summarizer model.
 
 ## Tools
 
@@ -187,16 +187,19 @@ The tool is guided by a system prompt that instructs the model to use it after c
 
 ## Configuration
 
-Config is stored in `<agent-dir>/context-prune/settings.json` (project-independent, but scoped to the active pi agent directory — `$PI_CODING_AGENT_DIR` or `~/.pi/agent`):
+Config lives under the `contextPrune` key in `<agent-dir>/settings.json` (project-independent, but scoped to the active pi agent directory — `$PI_CODING_AGENT_DIR` or `~/.pi/agent`). This mirrors pi's own conventions for `compaction`, `retry`, and `branchSummary`. Pi preserves unknown top-level keys on rewrites, so sharing the file is safe.
 
 ```json
 {
-  "enabled": false,
-  "showPruneStatusLine": true,
-  "summarizerModel": "default",
-  "summarizerThinking": "default",
-  "pruneOn": "agent-message",
-  "remindUnprunedCount": true
+  "defaultProvider": "anthropic",
+  "contextPrune": {
+    "enabled": false,
+    "showPruneStatusLine": true,
+    "summarizerModel": "default",
+    "summarizerThinking": "default",
+    "pruneOn": "agent-message",
+    "remindUnprunedCount": true
+  }
 }
 ```
 
@@ -244,12 +247,14 @@ Set it with:
 /pruner settings
 ```
 
-Or directly in `<agent-dir>/context-prune/settings.json`:
+Or directly under `contextPrune` in `<agent-dir>/settings.json`:
 
 ```json
 {
-  "summarizerModel": "openrouter/qwen/qwen3-30b-a3b",
-  "summarizerThinking": "low"
+  "contextPrune": {
+    "summarizerModel": "openrouter/qwen/qwen3-30b-a3b",
+    "summarizerThinking": "low"
+  }
 }
 ```
 
@@ -259,7 +264,7 @@ Or directly in `<agent-dir>/context-prune/settings.json`:
 index.ts                    — entry point, wires events + modules
 src/
   types.ts                  — shared types, constants, PruneOn modes
-  config.ts                 — load/save <agent-dir>/context-prune/settings.json (honors PI_CODING_AGENT_DIR)
+  config.ts                 — load/save <agent-dir>/settings.json `contextPrune` namespace (honors PI_CODING_AGENT_DIR)
   batch-capture.ts          — serialize turn_end event → CapturedBatch
   summarizer.ts             — resolve model, call LLM, build summary text
   indexer.ts                — Map<toolCallId, ToolCallRecord> + session persistence
@@ -276,7 +281,7 @@ src/
 
 ```
 session_start
-  └─► loadConfig()              read <agent-dir>/context-prune/settings.json
+  └─► loadConfig()              read <agent-dir>/settings.json `contextPrune`
   └─► indexer.reconstruct()     rebuild Map from session branch entries
   └─► statsAccum.reconstruct()  rebuild stats from session branch entries
   └─► frontier.reconstruct()    rebuild last prune-attempt boundary from session entries
@@ -322,7 +327,7 @@ before_agent_start (agentic-auto mode)
 
 ### Session persistence
 
-- **Config** lives in `<agent-dir>/context-prune/settings.json` — the extension's own file, independent of Pi's project settings. `<agent-dir>` resolves through pi's `getAgentDir()` so it honors `PI_CODING_AGENT_DIR` (default `~/.pi/agent`)
+- **Config** lives under the `contextPrune` key in `<agent-dir>/settings.json` (pi's primary global settings file). `<agent-dir>` resolves through pi's `getAgentDir()` so it honors `PI_CODING_AGENT_DIR` (default `~/.pi/agent`). Pi preserves unknown top-level keys when rewriting settings, so the namespace coexists safely with pi's own settings.
 - **Index** is persisted via `pi.appendEntry("context-prune-index", { toolCalls })` — one entry per summarized batch, NOT in LLM context
 - **Prune frontier** is persisted via `pi.appendEntry("context-prune-frontier", ...)` — it records the last attempted prune boundary even when an oversized summary is rejected
 - **Summaries** are injected as `custom_message` entries with `customType: "context-prune-summary"` — these ARE in LLM context (replacing the raw outputs only when pruning is accepted). Their visible text uses short refs, while the `details.toolCallRefs` metadata keeps the full `toolCallId` mapping for later recovery.
