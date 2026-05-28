@@ -4,33 +4,45 @@ A [Pi coding-agent](https://github.com/badlogic/pi-mono) extension that summariz
 
 The session JSONL file is never modified — pruning only affects what each *next* request sees.
 
+Fork of [`championswimmer/pi-context-prune`](https://github.com/championswimmer/pi-context-prune) with additional pre-flush safeguards, agent-message batching, and tag-pinned release flow.
+
 📖 For the algorithm, design rationale, prompt-cache interaction, and the research behind summarization-based context management, see **[PRUNING.md](PRUNING.md)**.
 
 ## Install
 
-The package is published on npm and can also be installed straight from this repo.
+This fork is consumed as a pi package via a **git tag pin** — same scheme as sibling [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers).
+
+**User scope** (all repos under your pi profile):
 
 ```bash
-# Stable npm release (recommended for normal use)
-pi install npm:pi-context-prune                # all projects
-pi install -l npm:pi-context-prune             # current project only
-
-# Cutting-edge from main
-pi install git:github.com/championswimmer/pi-context-prune
-
-# Try without installing
-pi -e npm:pi-context-prune
-
-# From source
-git clone https://github.com/championswimmer/pi-context-prune
-cd pi-context-prune
-pi -e .
-
-# Upgrade — re-run install
-# Remove — pi remove pi-context-prune
+pi install git:github.com/jjuraszek/pi-context-prune@v0.11.1
 ```
 
-Once installed the extension auto-loads on every `pi` invocation; no flags needed.
+**Project scope** (current repo only, committable via `.pi/settings.json`):
+
+```bash
+pi install -l git:github.com/jjuraszek/pi-context-prune@v0.11.1
+```
+
+**Try without installing**:
+
+```bash
+pi -e git:github.com/jjuraszek/pi-context-prune@v0.11.1
+```
+
+**From a local checkout** (for hacking on the extension itself):
+
+```bash
+git clone git@github.com:jjuraszek/pi-context-prune.git ~/repos/pi-context-prune
+cd ~/path/to/your/repo
+pi install -l ~/repos/pi-context-prune
+# or one-shot, no install:
+pi -e ~/repos/pi-context-prune/index.ts
+```
+
+Upgrade by re-running `pi install` with a newer `@vX.Y.Z`. Remove with `pi remove pi-context-prune`. Once installed, the extension auto-loads on every `pi` invocation; no flags needed.
+
+> Upstream `championswimmer/pi-context-prune` does publish to npm. This fork **does not** — pin a tag instead. See [CHANGELOG.md](CHANGELOG.md) for what diverges.
 
 ## Quick start
 
