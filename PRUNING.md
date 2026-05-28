@@ -106,7 +106,7 @@ In a long session this can grow to **30k–100k+ tokens**. The model pays for ev
 │               an API and displays it in a table...                      │
 │                                                                         │
 │  [summary]    ╔════════════════════════════════════════════╗            │
-│               ║ ⚃  [pruner] Turn 1 summary (5 tools)       ║            │
+│               ║ ⚃  [pruner] Turn 1–5 summary (7 tools)     ║            │
 │               ║                                            ║            │
 │               ║ • Read existing App.tsx and package.json   ║            │
 │               ║ • Searched React Table docs; decided on    ║            │
@@ -116,8 +116,8 @@ In a long session this can grow to **30k–100k+ tokens**. The model pays for ev
 │               ║ • Build failed: circular dependency in     ║            │
 │               ║   utils/index.ts → fix by inlining helpers ║            │
 │               ║                                            ║            │
-│               ║ Summarized toolCallIds: tc-001..tc-007     ║            │
-│               ║ Use context_tree_query to retrieve original║            │
+│               ║ Summarized tool refs: t1..t7               ║            │
+│               ║ Use context_tree_query for raw outputs     ║            │
 │               ╚════════════════════════════════════════════╝            │
 │               ← ~200 tokens (was ~6,760 tokens)                         │
 │                                                                         │
@@ -203,15 +203,15 @@ That distinction is the core idea:
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  [summary]  ... build failed: circular dependency ...                   │
-│             Summarized toolCallIds: `tc-006`                            │
-│             Use context_tree_query to retrieve originals                │
+│             Summarized tool refs: `t1`                                  │
+│             Use `context_tree_query` with these refs                    │
 │                                                                         │
-│  ── LLM calls context_tree_query({ toolCallIds: ["tc-006"] }) ──        │
+│  ── LLM calls context_tree_query({ toolCallIds: ["t1"] }) ──            │
 │                                                                         │
 │  [tool]     ⌕  context_tree_query result                                │
 │             ┌─────────────────────────────────────────────────────┐     │
-│             │  Tool: bash (tc-006)                                │     │
-│             │  Status: done                                       │     │
+│             │  Tool: bash (t1)                                    │     │
+│             │  Status: OK                                         │     │
 │             │  ─────────────────────────────────────────────────  │     │
 │             │  $ npm run build                                    │     │
 │             │  > react-app@0.1.0 build                            │     │
@@ -223,7 +223,7 @@ That distinction is the core idea:
 │             │  [error] TS2345: Argument of type 'X' not assignable│     │
 │             │          to parameter of type 'Y'...                │     │
 │             │                                                     │     │
-│             │  (truncated to 8,000 bytes / 200 lines)             │     │
+│             │  [Output truncated: 200/512 lines shown]            │     │
 │             └─────────────────────────────────────────────────────┘     │
 │                                                                         │
 │  The LLM now has the full build log back in context, on demand,         │
@@ -236,7 +236,7 @@ That distinction is the core idea:
 
 When a batch is summarized, the extension writes a record for each tool call into `ToolCallIndexer` and persists that record into the session as a custom index entry.
 
-Conceptually, each indexed record looks like this:
+Conceptually, each indexed record looks like this (see `ToolCallRecord` in `src/types.ts`):
 
 ```ts
 {
@@ -246,7 +246,7 @@ Conceptually, each indexed record looks like this:
   resultText: "full original raw output...",
   isError: false,
   turnIndex: 5,
-  timestamp: "2026-04-21T12:34:56.000Z"
+  timestamp: 1745251200000 // epoch ms
 }
 ```
 
@@ -279,9 +279,9 @@ So after pruning, the model is working with a **two-layer memory**:
 The intended recovery flow is:
 
 1. The model reads a summary message.
-2. The summary lists the `toolCallId`s that were summarized.
+2. The summary lists the short refs (`t1`, `t2`, …) that were summarized.
 3. The model decides the summary is not enough and wants exact raw output.
-4. The model calls `context_tree_query({ toolCallIds: [...] })`.
+4. The model calls `context_tree_query({ toolCallIds: ["t1", ...] })`. The tool accepts short refs and full `toolCallId`s interchangeably (`indexer.resolveToolCallId`).
 5. The tool looks up those IDs in the pruner index.
 6. The tool returns the original stored output back into the current turn.
 7. The model can now inspect that raw result and continue reasoning.
@@ -298,7 +298,7 @@ raw tool results exist in context
 batch gets summarized
         │
         ├─► summary message added to context
-        │      └─► includes summarized toolCallIds
+        │      └─► includes short refs (`t1`, `t2`, …)
         │
         ├─► tool results indexed by toolCallId
         │      └─► full raw resultText stored in index/session
@@ -311,10 +311,10 @@ later...
 model sees summary and decides: "I need the exact old output"
         │
         ▼
-context_tree_query({ toolCallIds: ["tc-006"] })
+context_tree_query({ toolCallIds: ["t1"] })
         │
         ▼
-query tool loads indexed record for tc-006
+query tool resolves short ref / id and loads the indexed record
         │
         ▼
 original raw output is returned into the current turn
@@ -325,14 +325,12 @@ model continues with exact old context back in view
 
 ### Why this is important
 
-This is what makes pruning safe for real agent work:
-
 - summaries keep the default context small
-- `toolCallId`s keep old work addressable
+- short refs / `toolCallId`s keep old work addressable
 - `context_tree_query` makes the archive readable again
 - the model can "page in" exact old context only when it actually needs it
 
-So the extension is **not asking the model to trust summaries forever**. It is asking the model to use summaries as the default view, while keeping a precise escape hatch back to the original raw data.
+Summaries are the default view; raw data remains addressable through `context_tree_query`.
 
 ---
 
@@ -545,6 +543,7 @@ graph LR
 | `agent-message` | 1 | After batch | **Default** — best balance |
 | `on-context-tag` | ~1–2 | At milestones | Save-point workflows |
 | `on-demand` | 0–1 | When you say so | Maximum cache preservation |
+| `agentic-auto` | model-controlled | When the LLM calls `context_prune` | Long autonomous runs |
 
 > **Everything before the previous pruning point stays in the prefix cache.** The cached prefix is the stable foundation; only the new suffix (recent turns since last prune) changes per request.
 
@@ -775,7 +774,7 @@ ACON demonstrates that **compression not only saves tokens but can improve agent
 
 ### Recommended reading
 
-- Anthropic prompt caching docs: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+- Anthropic prompt caching docs: <https://docs.claude.com/en/docs/build-with-claude/prompt-caching>
 - OpenAI prompt caching docs: <https://platform.openai.com/docs/guides/prompt-caching>
 - `pi-context` extension (save-point navigation): <https://github.com/ttttmr/pi-context>
 - SUPO: <https://arxiv.org/abs/2510.06727>

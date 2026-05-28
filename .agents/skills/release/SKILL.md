@@ -44,24 +44,24 @@ If any of those checks fail, stop and explain why.
 
 ## Preferred execution path
 
-Use the helper script in this skill:
+Use the helper script in this skill (paths are relative to repo root):
 
 ```bash
-bash skills/release/scripts/release.sh <major|minor|patch>
+bash .agents/skills/release/scripts/release.sh <major|minor|patch>
 ```
 
 Examples:
 
 ```bash
-bash skills/release/scripts/release.sh patch
-bash skills/release/scripts/release.sh minor
-bash skills/release/scripts/release.sh major
+bash .agents/skills/release/scripts/release.sh patch
+bash .agents/skills/release/scripts/release.sh minor
+bash .agents/skills/release/scripts/release.sh major
 ```
 
 For a no-side-effects validation run, use:
 
 ```bash
-bash skills/release/scripts/release.sh --dry-run patch
+bash .agents/skills/release/scripts/release.sh --dry-run patch
 ```
 
 ## What the helper script does
