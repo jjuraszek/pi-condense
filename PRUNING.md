@@ -14,7 +14,14 @@
 6. [How Prefix Caching Works](#how-prefix-caching-works)
 7. [Why Frequent Pruning Busts Cache](#why-frequent-pruning-busts-cache)
 8. [The Sweet Spot: Batch and Prune](#the-sweet-spot-batch-and-prune)
-9. [Advanced Features & Safeguards](#advanced-features--safeguards)
+9. [Pre-flush Pipeline & Safeguards](#pre-flush-pipeline--safeguards)
+   - [Stub-replace instead of delete](#stub-replace-instead-of-delete)
+   - [Protected tools](#protected-tools)
+   - [Trivial-batch skip (minBatchChars)](#trivial-batch-skip-minbatchchars)
+   - [Content-hash dedup](#content-hash-dedup)
+   - [Oversized summary skip](#oversized-summary-skip)
+   - [Frontier persistence](#frontier-persistence)
+   - [Other UI / observability features](#other-ui--observability-features)
 10. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
    - [SUPO — Summarization augmented Policy Optimization](#supo--summarization-augmented-policy-optimization)
    - [ReSum — Recursive Summarization for Long-Horizon Agents](#resum--recursive-summarization-for-long-horizon-agents)
@@ -84,7 +91,7 @@ In a long session this can grow to **30k–100k+ tokens**. The model pays for ev
 
 ## What Pruning Does
 
-`pi-context-prune` intercepts completed tool-call batches, summarizes them, and replaces the raw outputs with compact summaries in future context. The original data is archived in the session index.
+`pi-context-prune` intercepts completed tool-call batches, summarizes them, and replaces each raw `ToolResultMessage` in future context with a small breadcrumb stub that points at `context_tree_query` for recovery. The original full output is archived in the session index.
 
 ### ASCII: The same session *after* pruning Turns 1–5
 
@@ -166,11 +173,11 @@ graph TB
 
 **Key points:**
 
-- The `AssistantMessage` tool-call blocks are **kept** (they carry `toolCallId`s the model may reference later)
-- `ToolResultMessage` entries for summarized tool calls are **replaced with a small stub** (`[Summarized in pruner summary, ref \`tN\`. Use context_tree_query to retrieve full output.]`) — they keep `role: "toolResult"` and the original `toolCallId`, so role alternation is preserved and pi-ai no longer injects a synthetic `isError: true` "No result provided" result
-- Every pruned tool call is also copied into the pruner's runtime/session index with its `toolCallId`, tool name, args, status, turn index, timestamp, and full `resultText`
-- A summary message is injected as a "steer" (guaranteed to land before the next LLM call)
-- The session file retains the original history, and the pruner keeps an index of summarized tool outputs — pruning affects only what the *next* request sees in active context
+- The `AssistantMessage` tool-call blocks are **kept** (they carry the `toolCallId`s the model uses to reference originals via `context_tree_query`).
+- `ToolResultMessage` entries for summarized tool calls are **replaced with a small stub** (`[Summarized in pruner summary, ref \`tN\`. Use context_tree_query to retrieve full output.]`) carrying `role: "toolResult"`, the original `toolCallId`/`toolName`/`timestamp`, and `isError: false`. The stub preserves role alternation, so pi-ai's `transformMessages.insertSyntheticToolResults` no longer injects a synthetic `{ isError: true, "No result provided" }` for the (no-longer-)orphaned tool call. See [Stub-replace instead of delete](#stub-replace-instead-of-delete).
+- Every pruned tool call is also copied into the pruner's runtime/session index with its `toolCallId`, tool name, args, status, turn index, timestamp, and full `resultText`.
+- A summary message is injected as a `"steer"` (`pi.sendMessage` runtime path) or appended directly via `sessionManager.appendCustomMessageEntry` (session path, used when Pi may already be shutting down). Both deliver before the next LLM call.
+- The session JSONL file retains the original tool-result entries unchanged — pruning only affects what the *next* request sees in active context.
 
 ---
 
@@ -261,18 +268,11 @@ So after pruning, the model is working with a **two-layer memory**:
 
 | Part of old turn | After pruning | Why |
 |---|---|---|
-| Assistant tool-call block | **Kept in context** | Preserves the `toolCallId` anchors the model can reference |
-| Tool result message | **Replaced by a short stub in active context** | Saves tokens (typical 50–100× reduction per call) while keeping the `toolCallId` anchor and giving the model an explicit `context_tree_query` breadcrumb; unless the summary is larger than the raw text, in which case pruning is skipped and the original is kept |
+| Assistant tool-call block | **Kept in context** | Preserves the `toolCallId` anchors the model uses to reference originals |
+| Tool result message | **Replaced by a short stub in active context** | Saves tokens (typical 50–100× reduction per call) while keeping the `toolCallId` anchor and giving the model an explicit `context_tree_query` breadcrumb. The stub keeps `role: "toolResult"` and `isError: false` so role alternation stays intact |
 | Summary message | **Added to context** | Gives the model a compact description of what happened |
-| Indexed tool-call record | **Stored in pruner index** | Lets the model re-open the original raw output later |
-
-### Content-hash dedup (pre-flush)
-
-When `dedupByContentHash` is on (the default), `flushPending` runs a SHA-1 hash over each tool call's `(toolName, normalize(resultText))` BEFORE handing batches to the summarizer. A hit against the indexer's `contentHashToOriginal` map means an earlier prune already covered identical content. The duplicate is registered as an alias of the original (persisted as `context-prune-dedup-alias`), removed from the batch, and stub-replaced in the next `context` event using the original's short ref. **No summarizer LLM call is made** for dedup'd tool calls, and the original record is recovered via `context_tree_query` whether the model passes the original or the duplicate's `toolCallId`.
-
-Normalization is conservative — line-ending normalization (`\r\n` → `\n`), per-line trailing whitespace stripping, and a final `trim()`. Internal whitespace, tabs, and capitalization are preserved so two genuinely different outputs do **not** collide.
-
-Typical wins: re-reading an unchanged file, repeated `git status` / `ls`, retries of the same command. v1 only matches against records already in the indexer (cross-flush dedup); intra-flush dedup is deferred so canonicals that get skipped as oversized / trivial never produce dangling aliases.
+| Indexed tool-call record | **Stored in pruner index** (`context-prune-index` session entry) | Lets the model re-open the original raw output later via `context_tree_query` |
+| Duplicate of an already-indexed record (same toolName + content) | **Aliased to the original; no new summary, no LLM call** (`context-prune-dedup-alias` session entry) | See [Content-hash dedup](#content-hash-dedup) |
 
 ## How the Model Re-reads Raw Outputs
 
@@ -550,14 +550,107 @@ graph LR
 
 ---
 
-## Advanced Features & Safeguards
+## Pre-flush Pipeline & Safeguards
 
-The `pi-context-prune` extension includes several mechanisms to ensure pruning is safe, transparent, and configurable:
+`flushPending` runs a deterministic pipeline BEFORE any summarizer LLM call. Each step is configurable and each one can drop a batch entirely, in which case the prune frontier still advances so the same tool calls are not reconsidered next flush.
 
-- **Oversized Summary Skipping (`skip-oversized`):** Occasionally, a batch of tool calls produces very little raw text, and the LLM's summary ends up being *larger* than the original content. When this happens, the pruner detects it and automatically skips pruning that batch. The frontier advances, but the original raw text remains in context to save tokens.
-- **Tree Browser (`/pruner tree`):** You can visually explore all pruned tool calls in your current session using an interactive, foldable tree UI. Selecting a summary lets you inspect its contents directly.
-- **Agentic-Auto Unpruned Count Reminder (`remindUnprunedCount`):** In `agentic-auto` mode, the agent decides when to prune. To help the LLM maintain a healthy cadence, the extension appends a tiny ephemeral `<pruner-note>` to the last tool result before each generation, reminding the model exactly how many unpruned tool calls have piled up in context.
-- **Configurable Summarizer Thinking (`summarizerThinking`):** You can control the reasoning effort used during summarization (e.g., `off`, `low`, `high`). This allows you to trade off between summarization speed, cost, and analytical depth.
+```
+captured batches (from turn_end or session scan)
+  │
+  ├─ 1. Protected-tools filter        (capture-time, see below)
+  │     tool calls whose toolName is in protectedTools never enter the batch
+  │
+  ├─ 2. Frontier trim                 (drop tool calls already past the frontier)
+  │
+  ├─ 3. Content-hash dedup            (config: dedupByContentHash, default ON)
+  │     identical (toolName, normalize(resultText)) → alias of original;
+  │     no LLM call; persist as context-prune-dedup-alias
+  │
+  ├─ 4. Trivial-batch skip            (config: minBatchChars, default 1000)
+  │     batches whose remaining raw chars < threshold → skip; no LLM call;
+  │     leave originals in context; advance frontier
+  │
+  ├─ 5. Summarizer LLM call           (parallel: one call per batch)
+  │     resolveModel + summarizeBatch / summarizeBatches
+  │
+  └─ 6. Oversized post-check          (summary >= raw? → skip; advance frontier)
+```
+
+The outcome label written into `context-prune-frontier` is one of `summarized`, `skipped-deduped`, `skipped-trivial`, or `skipped-oversized` so the audit trail captures *why* a range was passed over.
+
+### Stub-replace instead of delete
+
+Before v0.11.0 the pruner deleted summarized `ToolResultMessage` entries outright. This worked, but it left the matching `AssistantMessage.toolCall` blocks orphaned, and pi-ai's `transformMessages.insertSyntheticToolResults` would inject `{ isError: true, content: "No result provided" }` for every orphan at LLM call time. The model then saw a parade of fake "tool errors" before the unrelated summary user-message appeared later, which mildly confused larger reasoning models.
+
+The pruner now keeps the toolResult message but replaces its content with a small stub:
+
+```
+[Summarized in pruner summary, ref `tN`. Use context_tree_query to retrieve full output.]
+```
+
+Properties:
+- `role: "toolResult"` and the original `toolCallId` / `toolName` / `timestamp` are preserved — role alternation is intact; no synthetic-result injection.
+- `isError: false`, so the model does not interpret the stub as a tool failure.
+- The stub references the **short ref** (`t1`, `t2`, …) the indexer assigned at summary time. Legacy entries from before short-refs landed fall back to the raw `toolCallId`.
+- Deterministic per `toolCallId` — the stub text never changes across calls, so the prefix cache continues to hit on the pruned range.
+
+Implementation: `src/pruner.ts` `pruneMessages(messages, indexer)` returns `{ messages, pruned }`. When `pruned === false`, the original array reference is returned and the `context` handler skips reconstruction entirely.
+
+### Protected tools
+
+`protectedTools: string[]` (default `[]`) is an allowlist of tool names whose outputs must never be pruned. Matching tool calls are filtered out **at capture time** — they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context and the agentic-auto `<pruner-note>` reminder excludes them from its count.
+
+Who needs this:
+- Planning skills that maintain state via `todowrite` / `todoread` and expect the agent to re-read the verbatim plan across turns.
+- Tools whose output is a small handle the agent must reuse byte-for-byte (e.g. a session-id from an external service).
+
+Names that don't match any captured tool call are silently ignored, so adding a tool that isn't installed is a no-op. Edit with `/pruner protected-tools` (interactive prompt) or `/pruner protected-tools todowrite,todoread` (non-interactive).
+
+### Trivial-batch skip (minBatchChars)
+
+`minBatchChars: number` (default `1000`) is a pre-flush guard against "summary would be roughly the same size as the input" cases. If the total raw `resultText` across a batch is below the threshold, the batch is skipped: no summarizer LLM call, no `context-prune-index` entry, no `context-prune-summary` injection. The frontier still advances, so the same tool calls are not reconsidered next flush.
+
+Why it exists: a short LLM summary like "Tool X did Y" is itself ~50–150 chars per call. For a 200-byte file read or an `ls` of a short directory, the summary is the same size or larger than the input — the post-call `skipped-oversized` mechanism would catch it anyway, but only after the LLM round-trip and the cost. `minBatchChars` short-circuits the obvious cases at zero LLM cost.
+
+Set `minBatchChars: 0` to disable. The default `1000` skips obvious trivial batches (`git status`, small file reads, short directory listings) without affecting realistic tool outputs. Edit with `/pruner min-batch-chars <n>` or via the settings overlay.
+
+### Content-hash dedup
+
+`dedupByContentHash: boolean` (default `true`) catches re-reads of already-pruned tool outputs at zero LLM cost.
+
+Mechanism:
+1. When a batch enters `flushPending`, each tool call is hashed by `SHA-1(toolName + "\0" + normalize(resultText))`.
+2. The indexer's `contentHashToOriginal` map (populated by every earlier `addBatch` / `reconstructFromSession`) is consulted.
+3. A hit means an earlier prune already covered identical content. The duplicate is registered as an alias of the original via `indexer.registerDuplicate(newId, originalId, appendEntry)`:
+   - `dedupAliasToOriginal[newId] = originalId` (so `isSummarized(newId) === true` and `resolveToolCallId(newId) === originalId`).
+   - `toolCallIdToAlias[newId] = toolCallIdToAlias[originalId]` (so `getShortRefForToolCallId(newId)` returns the **same** `tN` as the original).
+   - A `context-prune-dedup-alias` custom entry is persisted so `reconstructFromSession` rebuilds the maps after a restart.
+4. The duplicate is removed from the batch — no summarizer call, no new index entry.
+5. Later, `pruneMessages` stub-replaces the duplicate's `ToolResultMessage` using the original's short ref, and `context_tree_query` returns the original's record whether the model passes the duplicate's id or the original's.
+
+Normalization is conservative: `\r\n` → `\n`, per-line trailing whitespace stripping, final `trim()`. Internal whitespace, tabs, and capitalization are preserved so two genuinely different outputs do **not** collide.
+
+Typical wins: re-reading an unchanged file, repeated `git status` / `ls`, retries of the same command. v1 only matches against records **already in the indexer** (cross-flush dedup); intra-flush dedup is deferred so canonicals that get skipped as oversized / trivial never produce dangling aliases.
+
+Edit with `/pruner dedup on|off|status` or the settings overlay.
+
+### Oversized summary skip
+
+Last-resort safeguard: if the summarizer LLM produces a summary longer than the raw tool-result text it would replace, the batch is left untouched — the original tool results stay in context, no summary is injected, and the frontier still advances so the next prune attempt starts after this range instead of retrying it. The `quietOversizedSkips` config silences the info notification (the skip itself still happens).
+
+This is rare in practice once `minBatchChars` is on, because the cases where summarization makes things bigger are exactly the cases the trivial-batch skip already catches earlier.
+
+### Frontier persistence
+
+The last attempted prune boundary is persisted as `context-prune-frontier` so `flushPending` knows where the previous attempt left off, even if that attempt was a skip rather than a real summary. Without this, a batch that's been skipped as oversized would be re-attempted (with the same LLM call, the same oversize result, the same skip) on every subsequent flush.
+
+### Other UI / observability features
+
+- **Tree browser (`/pruner tree`):** interactive, foldable tree of pruned tool calls grouped under their summaries. `Ctrl-O` on a summary node opens the full markdown summary in a bordered overlay.
+- **Agentic-auto unpruned-count reminder (`remindUnprunedCount`):** in `agentic-auto` mode the extension appends a small ephemeral `<pruner-note>` to the last tool result before each generation, reminding the LLM how many unpruned tool calls have piled up. Protected-tool calls are NOT counted.
+- **Configurable summarizer thinking (`summarizerThinking`):** trade summary cost / latency for quality (`off` / `minimal` / `low` / `medium` / `high` / `xhigh`). `default` omits the option entirely so the provider chooses.
+- **Cumulative stats:** `context-prune-stats` entries track input/output tokens and cost of every summarizer call; the totals surface in the footer (`prune: ON (…) │ ↑1.2k ↓340 $0.003`) and `/pruner stats`.
+- **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
 
 ---
 
@@ -649,8 +742,10 @@ ACON demonstrates that **compression not only saves tokens but can improve agent
 |---|---|
 | **Context grows without bound** | Replaces raw tool outputs (~thousands of tokens) with compact summaries (~hundreds) |
 | **Signal lost in noise** | Summaries surface the key decisions and facts; raw data is demoted to on-demand query |
-| **Cache performance** | Batch-then-prune modes (`agent-message`, `on-context-tag`) minimize cache invalidation |
-| **Data availability** | `context_tree_query` recovers full original outputs at any time |
+| **Cache performance** | Batch-then-prune modes (`agent-message`, `on-context-tag`) minimize cache invalidation; stub-replace keeps the pruned tail deterministic so it stays cacheable |
+| **Data availability** | `context_tree_query` recovers full original outputs at any time, including aliased duplicates |
+| **Wasted LLM calls** | Pre-flush content-hash dedup catches re-reads at zero cost; `minBatchChars` short-circuits batches too small to be worth summarizing |
+| **Plan / state churn** | `protectedTools` keeps allowlisted tool outputs verbatim across turns |
 | **Empirical benefit** | SUPO, ReSum, and ACON all show summarization improves or preserves task success while reducing context length 26–54% |
 
 ### Choosing a mode
