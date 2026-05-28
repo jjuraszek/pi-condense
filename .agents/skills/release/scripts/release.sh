@@ -57,11 +57,6 @@ if [[ ! -f package.json ]]; then
   exit 1
 fi
 
-if [[ ! -f .github/workflows/release.yml ]]; then
-  echo "error: expected release workflow .github/workflows/release.yml is missing" >&2
-  exit 1
-fi
-
 OLD_VERSION="$(node -p "require('./package.json').version")"
 CURRENT_BRANCH="$(git branch --show-current)"
 
@@ -99,11 +94,14 @@ NEW_VERSION="${NEW_TAG#v}"
 run git push origin main
 run git push origin "$NEW_TAG"
 
+NEW_SHA="$(git rev-parse HEAD)"
+
 cat <<EOF
 Release complete.
 Old version: $OLD_VERSION
 New version: $NEW_VERSION
 Tag: $NEW_TAG
+Commit: $NEW_SHA
 Pushed: origin/main and $NEW_TAG
-npm publish: triggered via .github/workflows/release.yml after tag push
+Next: bump any pi settings.json pins for this repo to $NEW_SHA.
 EOF

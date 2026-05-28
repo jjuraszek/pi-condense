@@ -1,6 +1,6 @@
 ---
 name: release
-description: Creates a repository release for this Pi package. Use when the user asks to do a major, minor, or patch release, bump the package version, create and push a git tag, and publish to npm through the repo's tag-driven GitHub Actions workflow.
+description: Creates a repository release for this Pi package. Use when the user asks to do a major, minor, or patch release, bump the package version, and create and push a git tag. This fork is consumed via git pins (`git:github.com/...@<sha>`); no npm publish step is involved.
 ---
 
 # Release
@@ -9,21 +9,18 @@ Use this skill when asked to release this package, especially through `/release 
 
 ## Repository-specific release model
 
-This repository already publishes to npm from GitHub Actions.
+This fork is consumed via git pins in pi `settings.json` (e.g.
+`"git:github.com/jjuraszek/pi-context-prune@<sha>"`), not via npm. A release
+here just means:
 
-- Workflow: `.github/workflows/release.yml`
-- Trigger: pushing a semver tag like `v1.2.3`
-- Publish mechanism: the GitHub Actions job runs `npm publish --access public --provenance`
+1. bump the version in `package.json`
+2. create the release commit and the matching `vX.Y.Z` git tag
+3. push `main` and the tag
+4. update any pi `settings.json` pins to the new release commit sha
 
-Because npm publishing is tag-driven in CI for this repo, **do not run `npm publish` locally during a normal release**. The correct way to "make npm publish happen" here is:
-
-1. bump the version
-2. create the release commit and git tag
-3. push `main`
-4. push the tag to GitHub
-5. optionally verify the GitHub Actions publish workflow started or succeeded
-
-Running `npm publish` locally as well would race with or duplicate the CI release.
+There is no CI publish workflow. **Do not run `npm publish`** — nothing
+consumes the npm package; running it would only publish under whatever
+account the local `npm` is logged into.
 
 ## Inputs
 
@@ -42,7 +39,6 @@ Before running the release script, confirm all of the following:
 - the release should go from `main`
 - the local checkout can fast-forward cleanly from `origin/main`
 - the current package version comes from `package.json`
-- the release workflow file still exists at `.github/workflows/release.yml`
 
 If any of those checks fail, stop and explain why.
 
@@ -82,7 +78,7 @@ The script is the authoritative release path for this repo. It:
 8. runs `npm version <type> -m "Release %s"`
 9. pushes `main`
 10. pushes the newly created tag
-11. prints the new version and reminds you that GitHub Actions will publish to npm
+11. prints the new version
 
 ## After the script succeeds
 
@@ -90,11 +86,11 @@ Report back with:
 
 - the old version
 - the new version
-- the created tag
+- the created tag (sha + name)
 - confirmation that `main` and the tag were pushed
-- a note that npm publication is performed by `.github/workflows/release.yml` after the tag push
-
-If `gh` is available and the user asked for verification, you may inspect the latest run for the `Release to npm` workflow. If not, state that the tag push has triggered the publish workflow and that final confirmation should come from GitHub Actions.
+- a note that any pi `~/.pi/agent.*/settings.json` pins for this repo should
+  be bumped to the new release commit sha so subsequent `pi update` runs
+  pick up the change
 
 ## Failure handling
 
