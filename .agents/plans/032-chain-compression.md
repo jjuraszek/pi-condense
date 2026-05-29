@@ -462,3 +462,17 @@ Each task is dispatched as a proposal subagent first, reviewed in fresh context,
 - [ ] integration smoke: isolated `PI_CODING_AGENT_DIR`, multi-step task touching >5 chains; verify `context-prune-chain` entries written; verify `context-prune-summary` entries within compressed ranges are suppressed at render time; verify `/pruner compact` works
 - [ ] AGENTS.md Code Structure section reflects all new files (`chain-detector`, `chain-range-prune`, `block-refs`, `chain-compressor`, `nested-placeholders`, `error-purge`)
 - [ ] no stale references to pre-existing scope that was cut (`cross-model-strip`)
+
+## Follow-up — effective-window off-by-one fix (post-0.12.0)
+
+**Symptom.** Corpus analysis (115 real sessions, 598 chains) showed `config K=3` retained **4** raw closed chains, not 3. Smoke test confirmed: 5 closed chains compressed only 1 (expected 2).
+
+**Root cause.** `flushPending`'s chain block reads `ctx.sessionManager.getBranch()`, but in agent-message mode the flush runs from `message_end`, which pi emits to extensions *before* persisting the message (`agent-session.js _processAgentEvent`: `await this._emitExtensionEvent(event)` precedes `this.sessionManager.appendMessage(event.message)`). So the just-closed final assistant is absent from the branch → `detectChains` sees the newest chain as open → `selectEligible` under-compresses by one → effective window = K+1.
+
+**Fix.** Thread the triggering `event.message` through `FlushOptions.closingMessage`; `index.ts` merges it via new pure `withClosingMessage(branchMessages, closing)` (chain-detector.ts) before `detectChains`. Identity = role+timestamp (no-op if a future pi persists before emitting). `/pruner compact` is unaffected (runs from a command, branch already complete).
+
+- [x] failing test: `detectChains` sees N−1 closed when closer absent; `withClosingMessage` + threading restores N (effective window = K)
+- [x] `withClosingMessage` helper + `FlushOptions.closingMessage` + message_end threading
+- [x] typecheck + `bun test src/` green (87 pass)
+- [x] smoke: 5 closed chains now compress 2 (b1+b2), first compression at the 4th close
+- [x] PRUNING.md "Rolling window" updated with the closing-message-threading note

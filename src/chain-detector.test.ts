@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectChains } from "./chain-detector.js";
+import { detectChains, withClosingMessage } from "./chain-detector.js";
 
 // ── Minimal message factories ──────────────────────────────────────────────
 
@@ -145,6 +145,23 @@ describe("detectChains", () => {
     expect(ranges[1].finalAssistantTimestamp).toBe(500);
   });
 
+  test("agent-message flush: closing assistant absent from branch → newest chain reads as open", () => {
+    // Reproduces the runtime state at message_end: pi emits the event to extensions
+    // BEFORE appending event.message, so the just-closed assistant is missing here.
+    const branch = [
+      userMsg(100),
+      assistantWithTools(200, ["tc1"]),
+      toolResult(300, "tc1"),
+      assistantText(400),
+      userMsg(500),
+      assistantWithTools(600, ["tc2"]),
+      toolResult(700, "tc2"),
+      // closing assistant for chain 2 not yet in branch
+    ];
+    const ranges = detectChains(branch);
+    expect(ranges).toHaveLength(1); // only chain 1 closed; chain 2 open → dropped
+  });
+
   test("middleToolCallIds contains all toolCallIds from assistant and toolResult messages", () => {
     const msgs = [
       userMsg(100),
@@ -157,5 +174,47 @@ describe("detectChains", () => {
     ];
     const [range] = detectChains(msgs);
     expect(range.middleToolCallIds.sort()).toEqual(["tc1", "tc2", "tc3"].sort());
+  });
+});
+
+describe("withClosingMessage", () => {
+  test("undefined closing returns the same array reference", () => {
+    const msgs = [userMsg(100)];
+    expect(withClosingMessage(msgs, undefined)).toBe(msgs);
+  });
+
+  test("appends closing when branch does not already end with it", () => {
+    const branch = [userMsg(100), assistantWithTools(200, ["tc1"]), toolResult(300, "tc1")];
+    const closing = assistantText(400);
+    const merged = withClosingMessage(branch, closing);
+    expect(merged).toHaveLength(4);
+    expect(merged[3]).toBe(closing);
+    expect(branch).toHaveLength(3); // original not mutated
+  });
+
+  test("does not double-append when branch already ends with the closing message (role+timestamp)", () => {
+    const closing = assistantText(400);
+    const branch = [userMsg(100), assistantWithTools(200, ["tc1"]), toolResult(300, "tc1"), closing];
+    expect(withClosingMessage(branch, closing)).toBe(branch);
+    // also dedups a distinct object with the same role+timestamp
+    const branch2 = [userMsg(100), assistantText(400)];
+    expect(withClosingMessage(branch2, assistantText(400))).toBe(branch2);
+  });
+
+  test("threading the closing message makes the newest chain close (effective window = K)", () => {
+    const branch = [
+      userMsg(100),
+      assistantWithTools(200, ["tc1"]),
+      toolResult(300, "tc1"),
+      assistantText(400),
+      userMsg(500),
+      assistantWithTools(600, ["tc2"]),
+      toolResult(700, "tc2"),
+    ];
+    const closing = assistantText(800);
+    const ranges = detectChains(withClosingMessage(branch, closing));
+    expect(ranges).toHaveLength(2);
+    expect(ranges[1].startUserTimestamp).toBe(500);
+    expect(ranges[1].finalAssistantTimestamp).toBe(800);
   });
 });

@@ -37,7 +37,7 @@ import { registerContextPruneTool } from "./src/context-prune-tool.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
-import { detectChains } from "./src/chain-detector.js";
+import { detectChains, withClosingMessage } from "./src/chain-detector.js";
 
 export default function (pi: ExtensionAPI) {
   // Shared mutable config reference — updated by /pruner commands
@@ -501,7 +501,9 @@ export default function (pi: ExtensionAPI) {
           const branchMessages = branch
             .filter((e: any) => e.type === "message" && e.message)
             .map((e: any) => e.message);
-          const chains = detectChains(branchMessages);
+          // message_end fires before pi persists the closing assistant, so thread it
+          // in here; otherwise the newest chain reads as open and K over-retains by 1.
+          const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage));
           const { compressedEntries } = compressEligible(
             chains,
             currentConfig.value.chainCompression.rollingWindow,
@@ -757,7 +759,7 @@ export default function (pi: ExtensionAPI) {
     if (!currentConfig.value.enabled) return;
     if (currentConfig.value.pruneOn !== "agent-message") return;
     if (!isFinalAssistantMessage(event.message)) return;
-    await flushPending(ctx, { delivery: "session" });
+    await flushPending(ctx, { delivery: "session", closingMessage: event.message });
   });
 
   // ── agent_end: last-chance cleanup only ─────────────────────────────────────

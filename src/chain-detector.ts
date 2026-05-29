@@ -86,3 +86,22 @@ export function detectChains(messages: any[]): ChainRange[] {
 
   return ranges;
 }
+
+/**
+ * Appends `closing` to a copy of `branchMessages` unless the array already ends with it.
+ *
+ * pi emits `message_end` to extensions BEFORE persisting the message to the session
+ * (agent-session.js `_processAgentEvent` runs `_emitExtensionEvent` ahead of
+ * `sessionManager.appendMessage`). At the agent-message flush boundary the just-closed
+ * final assistant is therefore still missing from `getBranch()`; without threading it
+ * in, the newest chain reads as open and the rolling window over-retains by one
+ * (effective K+1 instead of K). Identity is role+timestamp (AgentMessage has no id,
+ * matching the detector's own identity model), so a future pi that persists before
+ * emitting keeps this a no-op.
+ */
+export function withClosingMessage(branchMessages: any[], closing: any): any[] {
+  if (!closing) return branchMessages;
+  const last = branchMessages[branchMessages.length - 1];
+  if (last && last.role === closing.role && last.timestamp === closing.timestamp) return branchMessages;
+  return [...branchMessages, closing];
+}

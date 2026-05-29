@@ -612,6 +612,13 @@ export interface FlushOptions {
    * the frontier. All pending batches are restored so the next flush can retry.
    */
   signal?: AbortSignal;
+  /**
+   * The final text-only assistant message that triggered an agent-message flush.
+   * pi emits `message_end` to extensions before persisting it to the session, so it
+   * is threaded in here to close the newest chain for compression (see
+   * `withClosingMessage`). Only set on the message_end path.
+   */
+  closingMessage?: any;
 }
 
 /** Options for a single summarizeBatch() call. */
