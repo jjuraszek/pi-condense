@@ -2,6 +2,7 @@ import {
   type ContextPruneConfig,
   type SummarizerStats,
   type CapturedBatch,
+  type ChainCompressionEntry,
   type FlushOptions,
   PRUNE_ON_MODES,
   BATCHING_MODES,
@@ -9,6 +10,9 @@ import {
   PROGRESS_WIDGET_ID,
   SUMMARIZER_THINKING_LEVELS,
   MIN_BATCH_CHARS_PRESETS,
+  ROLLING_WINDOW_PRESETS,
+  PURGE_COOLDOWN_PRESETS,
+  PURGE_MIN_ARG_PRESETS,
   DEFAULT_CONFIG,
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
@@ -83,6 +87,7 @@ const SUBCOMMANDS = [
   { value: "stats",   label: "stats     — show cumulative summarizer token/cost stats" },
   { value: "tree",    label: "tree      — browse pruned tool calls in a foldable tree" },
   { value: "now",     label: "now       — flush pending tool calls immediately (widget progress)" },
+  { value: "compact", label: "compact   — retroactively compress all eligible closed chains" },
   { value: "protected-tools", label: "protected-tools — show or edit the never-pruned tool allowlist" },
   { value: "min-batch-chars", label: "min-batch-chars — show or set the pre-flush trivial-batch threshold" },
   { value: "dedup",   label: "dedup     — toggle pre-flush content-hash dedup (on/off/status)" },
@@ -231,6 +236,7 @@ Usage:
   /pruner protected-tools <names>          Set the allowlist (comma- or space-separated; 'none' clears)
   /pruner min-batch-chars                  Show the current pre-flush trivial-batch threshold
   /pruner min-batch-chars <n>              Set the threshold (non-negative integer; 0 disables)
+  /pruner compact                          Retroactively compress all closed chains (ignores rollingWindow; force-compresses every eligible chain)
   /pruner dedup                            Show the current pre-flush content-hash dedup state
   /pruner dedup on|off                     Enable or disable content-hash dedup
   /pruner help                             Show this help
@@ -428,6 +434,7 @@ export function registerCommands(
   syncToolActivation: () => void,
   getStats: () => SummarizerStats,
   indexer: ToolCallIndexer,
+  compactChains: (ctx: ExtensionCommandContext) => Promise<{ compressedEntries: ChainCompressionEntry[]; skipped: number }>,
 ): void {
   // Register the /pruner command
   pi.registerCommand("pruner", {
@@ -559,6 +566,56 @@ export function registerCommands(
               description: dedupByContentHashDescription(config),
             },
             {
+              id: "chainCompressionEnabled",
+              label: "Chain compression",
+              values: ["true", "false"],
+              currentValue: String(config.chainCompression.enabled),
+              description: `Range-compress closed chains beyond the rolling window (K=${config.chainCompression.rollingWindow}). Drops middle assistant turns + tool results, injects a synthetic summary. Currently ${config.chainCompression.enabled ? "ON" : "OFF"}.`,
+            },
+            {
+              id: "chainCompressionRollingWindow",
+              label: "Chain window (K)",
+              values: ROLLING_WINDOW_PRESETS.map((p) => p.value),
+              // Fall back to the closest preset if the persisted value isn't in the cycle
+              // (e.g. user hand-edited settings.json with a non-preset integer).
+              currentValue: ROLLING_WINDOW_PRESETS.some((p) => p.value === String(config.chainCompression.rollingWindow))
+                ? String(config.chainCompression.rollingWindow)
+                : ROLLING_WINDOW_PRESETS[2].value,
+              description: `Keep the K most-recently-closed chains raw; compress older ones. Currently ${config.chainCompression.rollingWindow}.`,
+            },
+            {
+              id: "chainCompressionStripThinking",
+              label: "Strip final thinking",
+              values: ["true", "false"],
+              currentValue: String(config.chainCompression.stripFinalAssistantThinking),
+              description: `Strip thinking blocks from the kept final text-only assistant message when compressing a chain. Currently ${config.chainCompression.stripFinalAssistantThinking ? "ON" : "OFF"}.`,
+            },
+            {
+              id: "purgeErrorsEnabled",
+              label: "Error purge",
+              values: ["true", "false"],
+              currentValue: String(config.purgeErrors.enabled),
+              description: `Replace failed toolCall argument bodies with compact stubs after a cooldown. Reclaims context from large write/edit args that will never succeed. Currently ${config.purgeErrors.enabled ? "ON" : "OFF"}.`,
+            },
+            {
+              id: "purgeErrorsCooldown",
+              label: "Error purge cooldown (turns)",
+              values: PURGE_COOLDOWN_PRESETS.map((p) => p.value),
+              currentValue: PURGE_COOLDOWN_PRESETS.some((p) => p.value === String(config.purgeErrors.cooldownTurns))
+                ? String(config.purgeErrors.cooldownTurns)
+                : PURGE_COOLDOWN_PRESETS[1].value,
+              description: `Wait this many turns after a tool error before purging its argument body. Currently ${config.purgeErrors.cooldownTurns}.`,
+            },
+            {
+              id: "purgeErrorsMinArgChars",
+              label: "Error purge min arg chars",
+              values: PURGE_MIN_ARG_PRESETS.map((p) => p.value),
+              currentValue: PURGE_MIN_ARG_PRESETS.some((p) => p.value === String(config.purgeErrors.minArgChars))
+                ? String(config.purgeErrors.minArgChars)
+                : PURGE_MIN_ARG_PRESETS[1].value,
+              description: `Only purge arg bodies at least this many chars. Currently ${config.purgeErrors.minArgChars}.`,
+            },
+            {
               // Read-only display row. Editing goes through `/pruner protected-tools`
               // because SettingsList.submenu requires a synchronous Component,
               // while editing a free-form list needs `ctx.ui.input()` (async).
@@ -640,6 +697,30 @@ export function registerCommands(
               if (dedupItem) {
                 dedupItem.description = dedupByContentHashDescription(newConfig);
               }
+            } else if (id === "chainCompressionEnabled") {
+              newConfig.chainCompression = { ...newConfig.chainCompression, enabled: newValue === "true" };
+            } else if (id === "chainCompressionRollingWindow") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.chainCompression = {
+                ...newConfig.chainCompression,
+                rollingWindow: Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_CONFIG.chainCompression.rollingWindow,
+              };
+            } else if (id === "chainCompressionStripThinking") {
+              newConfig.chainCompression = { ...newConfig.chainCompression, stripFinalAssistantThinking: newValue === "true" };
+            } else if (id === "purgeErrorsEnabled") {
+              newConfig.purgeErrors = { ...newConfig.purgeErrors, enabled: newValue === "true" };
+            } else if (id === "purgeErrorsCooldown") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.purgeErrors = {
+                ...newConfig.purgeErrors,
+                cooldownTurns: Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_CONFIG.purgeErrors.cooldownTurns,
+              };
+            } else if (id === "purgeErrorsMinArgChars") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.purgeErrors = {
+                ...newConfig.purgeErrors,
+                minArgChars: Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CONFIG.purgeErrors.minArgChars,
+              };
             }
             currentConfig.value = newConfig;
             saveConfig(newConfig);
@@ -733,11 +814,12 @@ export function registerCommands(
         // ── /pruner stats ──
         case "stats": {
           const s = getStats();
-          if (s.callCount === 0) {
+          if (s.callCount === 0 && s.chainsCompressed === 0) {
             ctx.ui.notify("pruner stats: no summarizer calls yet.");
           } else {
+            const chainsLine = s.chainsCompressed > 0 ? `\n  chains:      ${s.chainsCompressed} compressed` : "";
             ctx.ui.notify(
-              `pruner stats:\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`,
+              `pruner stats:\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}${chainsLine}`,
             );
           }
           break;
@@ -834,6 +916,40 @@ export function registerCommands(
           }
           saveConfig(currentConfig.value);
           ctx.ui.notify(`Batching mode set to: ${batchingModeLabel(currentConfig.value.batchingMode)}`);
+          break;
+        }
+
+        // ── /pruner compact ──
+        // Runs regardless of chainCompression.enabled — that flag gates automatic compression;
+        // the user invoking /pruner compact is explicit intent.
+        case "compact": {
+          try {
+            const { compressedEntries, skipped } = await compactChains(ctx);
+            if (compressedEntries.length === 0) {
+              ctx.ui.notify(
+                skipped > 0
+                  ? `pruner: no chains eligible for compaction (${skipped} skipped — no per-batch summary available)`
+                  : "pruner: no chains eligible for compaction",
+                "info",
+              );
+              break;
+            }
+            // Coarse estimate: uses original (unstubbed) toolResult sizes which overstates
+            // tool-result savings; but assistant-message savings (thinking + toolCall args + text)
+            // are not counted at all, so the two errors partly cancel. Treat as a rough proxy.
+            const droppedChars = compressedEntries.reduce((total, entry) => {
+              const records = indexer.lookupToolCalls(entry.droppedToolCallIds);
+              return total + records.reduce((s, r) => s + r.resultText.length, 0);
+            }, 0);
+            const reclaimedTokens = Math.ceil(droppedChars / 4);
+            const ids = compressedEntries.map((e) => e.blockId).join(", ");
+            ctx.ui.notify(
+              `pruner: compacted ${compressedEntries.length} chain${compressedEntries.length === 1 ? "" : "s"} (${ids}), reclaimed ~${reclaimedTokens} tokens`,
+              "info",
+            );
+          } catch (err) {
+            ctx.ui.notify(`pruner: compact failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+          }
           break;
         }
 

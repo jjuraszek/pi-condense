@@ -67,6 +67,15 @@ export const CUSTOM_TYPE_FRONTIER = "context-prune-frontier";
  */
 export const CUSTOM_TYPE_DEDUP_ALIAS = "context-prune-dedup-alias";
 
+/**
+ * customType for chain-compression entries (NOT in LLM context).
+ *
+ * One entry per closed chain that has been range-dropped from LLM context.
+ * Rebuilt on `session_start` to repopulate the chain registry.
+ * Written by `chain-compressor.compressEligible` at the tail of `flushPending` and via `/pruner compact`.
+ */
+export const CUSTOM_TYPE_CHAIN = "context-prune-chain";
+
 /** Footer status widget ID */
 export const STATUS_WIDGET_ID = "context-prune";
 
@@ -139,10 +148,40 @@ export const SUMMARIZER_THINKING_LEVELS: { value: SummarizerThinking; label: str
   { value: "xhigh", label: "XHigh" },
 ];
 
+/** Cycling presets for the `purgeErrors.cooldownTurns` setting. */
+export const PURGE_COOLDOWN_PRESETS: { value: string; label: string }[] = [
+  { value: "1", label: "1" },
+  { value: "2", label: "2 (default)" },
+  { value: "3", label: "3" },
+  { value: "5", label: "5" },
+  { value: "10", label: "10" },
+];
+
+/** Cycling presets for the `purgeErrors.minArgChars` setting. */
+export const PURGE_MIN_ARG_PRESETS: { value: string; label: string }[] = [
+  { value: "100", label: "100" },
+  { value: "500", label: "500 (default)" },
+  { value: "1000", label: "1000" },
+  { value: "5000", label: "5000" },
+];
+
 /** Choices for the batching-mode setting (used by commands and settings overlay) */
 export const BATCHING_MODES: { value: BatchingMode; label: string }[] = [
   { value: "turn", label: "Per turn" },
   { value: "agent-message", label: "Per agent message" },
+];
+
+/**
+ * Cycling preset values for the `chainCompression.rollingWindow` setting.
+ * Stored as strings because SettingsList cycles string values; converted to
+ * number when applied.
+ */
+export const ROLLING_WINDOW_PRESETS: { value: string; label: string }[] = [
+  { value: "1", label: "1" },
+  { value: "2", label: "2" },
+  { value: "3", label: "3 (default)" },
+  { value: "5", label: "5" },
+  { value: "10", label: "10" },
 ];
 
 /**
@@ -247,6 +286,10 @@ export interface ContextPruneConfig {
    * are silently ignored (they simply never match any captured tool call).
    */
   protectedTools: string[];
+  /** Chain-level range compression for old closed chains beyond the rolling window. */
+  chainCompression: ChainCompressionConfig;
+  /** Replace failed toolCall argument bodies with compact stubs after a cooldown window. */
+  purgeErrors: ErrorPurgeConfig;
   /**
    * Pre-flush content-hash dedup pass. When `true`, each captured tool call
    * is hashed by `(toolName, normalize(resultText))` and compared against
@@ -274,6 +317,75 @@ export interface ContextPruneConfig {
   dedupByContentHash: boolean;
 }
 
+/**
+ * Detected (pre-decision) shape emitted by chain-detector.
+ * Distinct from ChainCompressionEntry (the persisted post-decision shape).
+ *
+ * NOTE: AgentMessage has no `.id` field, so chains are identified by
+ * `timestamp` (for user/final-assistant boundaries) and `toolCallId` sets
+ * (for middle tool-using turns). The chain-compressor promotes ChainRange
+ * into a ChainCompressionEntry by adding blockId, toolRefs, and compressedAt.
+ */
+export interface ChainRange {
+  /** Timestamp of the user message that opens the chain. */
+  startUserTimestamp: number;
+  /**
+   * All toolCallIds in the chain's middle (deduplicated).
+   * Collected from both AssistantMessage ToolCall blocks AND matching
+   * ToolResultMessages. Used to: (1) drop ToolResultMessages, (2) identify
+   * and drop middle AssistantMessages, (3) suppress per-batch summary
+   * CustomMessages whose toolCallRefs overlap.
+   */
+  middleToolCallIds: string[];
+  /** Timestamp of the final text-only assistant message, or null if truncated/open. */
+  finalAssistantTimestamp: number | null;
+}
+
+/**
+ * Persisted per chain that has been range-dropped from LLM context.
+ * Written via pi.appendEntry(CUSTOM_TYPE_CHAIN, entry).
+ * Rebuilt into the chain registry on session_start.
+ */
+export interface ChainCompressionEntry {
+  /** Stable block ID, monotonic per session: "b1", "b2", ... */
+  blockId: string;
+  /** Timestamp of the user message that opens the chain. Keep raw; synthetic inserted after. */
+  startUserTimestamp: number;
+  /**
+   * ToolCallIds of all dropped middle messages.
+   * Used at context-transform time to: drop matching ToolResultMessages,
+   * drop AssistantMessages that contain any of these as ToolCall blocks,
+   * and suppress per-batch summary messages whose toolCallRefs overlap.
+   */
+  droppedToolCallIds: string[];
+  /**
+   * Timestamp of the final text-only assistant in the chain.
+   * Kept in context but with thinking blocks stripped.
+   * Null when the chain was truncated (no text-only close found).
+   */
+  finalAssistantTimestamp: number | null;
+  /** Short t<N> refs for the tool calls in this chain, surfaced in the synthetic message's `tools="..."` attribute. */
+  toolRefs: string[];
+  /** Epoch ms when the compression decision was recorded. */
+  compressedAt: number;
+}
+
+export interface ChainCompressionConfig {
+  enabled: boolean;
+  /** Number of most-recently-closed chains to keep raw (not compressed). Default 3. */
+  rollingWindow: number;
+  /** Strip thinking blocks from the kept final text-only assistant. Default true. */
+  stripFinalAssistantThinking: boolean;
+}
+
+export interface ErrorPurgeConfig {
+  enabled: boolean;
+  /** Wait this many turns after the error before purging the toolCall argument body. Default 2. */
+  cooldownTurns: number;
+  /** Only purge arg bodies larger than this many chars. Default 500. */
+  minArgChars: number;
+}
+
 export const DEFAULT_CONFIG: ContextPruneConfig = {
   enabled: false,
   showPruneStatusLine: true,
@@ -285,6 +397,16 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   quietOversizedSkips: false,
   minBatchChars: 1000,
   protectedTools: [],
+  chainCompression: {
+    enabled: true,
+    rollingWindow: 3,
+    stripFinalAssistantThinking: true,
+  },
+  purgeErrors: {
+    enabled: true,
+    cooldownTurns: 2,
+    minArgChars: 500,
+  },
   dedupByContentHash: true,
 };
 
@@ -391,7 +513,7 @@ export interface SummaryMessageDetails {
 // ── Summarizer stats ────────────────────────────────────────────────────────
 
 /**
- * Cumulative token/cost stats for summarizer LLM calls.
+ * Cumulative token/cost stats for summarizer LLM calls and chain compression.
  * Persisted via pi.appendEntry(CUSTOM_TYPE_STATS, ...) so stats survive
  * restarts and branch navigation.
  */
@@ -404,6 +526,8 @@ export interface SummarizerStats {
   totalCost: number;
   /** Number of summarizer LLM calls made */
   callCount: number;
+  /** Cumulative number of chains range-compressed across all flushes */
+  chainsCompressed: number;
 }
 
 /** Outcome of the most recent completed prune attempt. */

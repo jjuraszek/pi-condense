@@ -1,11 +1,13 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type {
   CapturedBatch,
+  ChainCompressionEntry,
   DedupAliasEntryData,
   IndexEntryData,
   ToolCallRecord,
 } from "./types.js";
 import {
+  CUSTOM_TYPE_CHAIN,
   CUSTOM_TYPE_DEDUP_ALIAS,
   CUSTOM_TYPE_INDEX,
   CUSTOM_TYPE_SUMMARY,
@@ -38,6 +40,15 @@ export class ToolCallIndexer {
    * resolves dup ids to the original record.
    */
   private dedupAliasToOriginal = new Map<string, string>();
+  /**
+   * Per-batch summary bodies for chain-compression summary text lookup.
+   * Each entry maps a set of toolCallIds to the summary's markdown body.
+   * Populated from CUSTOM_TYPE_SUMMARY entries at rebuild time and via
+   * `registerSummaryBody` after a successful flush.
+   */
+  private summaryBodies: Array<{ toolCallIds: string[]; text: string }> = [];
+  /** Compressed chains, keyed on startUserTimestamp for O(1) dedup checks. */
+  private chainRegistry = new Map<number, ChainCompressionEntry>();
 
   /**
    * Rebuilds the in-memory index from session history by scanning all
@@ -50,6 +61,8 @@ export class ToolCallIndexer {
     this.contentHashToOriginal.clear();
     this.dedupAliasToOriginal.clear();
     this.nextShortAliasNumber = 1;
+    this.summaryBodies = [];
+    this.chainRegistry.clear();
 
     // Two passes so dedup aliases land AFTER the original short refs they
     // need to reuse, regardless of the underlying append order.
@@ -76,6 +89,27 @@ export class ToolCallIndexer {
       if (entry.type === "custom_message" && (entry as any).customType === CUSTOM_TYPE_SUMMARY) {
         const refs = normalizeSummaryToolCallRefs((entry as any).details);
         this.registerSummaryRefs(refs);
+        const raw = (entry as any).content;
+        const text =
+          typeof raw === "string"
+            ? raw
+            : Array.isArray(raw)
+              ? raw
+                  .filter((c: any) => c.type === "text")
+                  .map((c: any) => c.text as string)
+                  .join("\n")
+              : "";
+        if (text) {
+          this.summaryBodies.push({ toolCallIds: refs.map((r) => r.toolCallId), text });
+        }
+        continue;
+      }
+
+      if (entry.type === "custom" && (entry as any).customType === CUSTOM_TYPE_CHAIN) {
+        const data = (entry as any).data as ChainCompressionEntry;
+        if (data?.blockId && typeof data.startUserTimestamp === "number") {
+          this.chainRegistry.set(data.startUserTimestamp, data);
+        }
         continue;
       }
 
@@ -236,6 +270,74 @@ export class ToolCallIndexer {
     }
     const payload: DedupAliasEntryData = { newToolCallId, originalToolCallId };
     appendEntry(CUSTOM_TYPE_DEDUP_ALIAS, payload);
+  }
+
+  /**
+   * Stores summary body text keyed by the toolCallIds it covers.
+   * Called after a successful flush so `getPerBatchSummaryTextForToolCallIds`
+   * can serve chain summaries without re-scanning session entries.
+   */
+  registerSummaryBody(toolCallIds: string[], text: string): void {
+    if (text && toolCallIds.length > 0) {
+      this.summaryBodies.push({ toolCallIds, text });
+    }
+  }
+
+  /** Returns true if at least one stored summary covers any of the given toolCallIds. */
+  hasPerBatchSummaryCoveringAny(toolCallIds: string[]): boolean {
+    if (toolCallIds.length === 0) return false;
+    const idSet = new Set(toolCallIds);
+    return this.summaryBodies.some((s) => s.toolCallIds.some((id) => idSet.has(id)));
+  }
+
+  /**
+   * Returns the concatenated summary text for all per-batch summaries whose
+   * toolCallIds overlap the given set, joined with "\n\n".
+   * Used by chain-range-prune to build the synthetic chain message body.
+   */
+  getPerBatchSummaryTextForToolCallIds(toolCallIds: string[]): string {
+    if (toolCallIds.length === 0) return "";
+    const idSet = new Set(toolCallIds);
+    const texts: string[] = [];
+    const seen = new Set<string>();
+    for (const s of this.summaryBodies) {
+      if (s.toolCallIds.some((id) => idSet.has(id)) && !seen.has(s.text)) {
+        seen.add(s.text);
+        texts.push(s.text);
+      }
+    }
+    return texts.join("\n\n");
+  }
+
+  /**
+   * Returns the short t<N> refs for the given toolCallIds.
+   * Skips ids with no registered short ref (tool calls not yet summarized).
+   */
+  getToolRefsForToolCallIds(toolCallIds: string[]): string[] {
+    const refs: string[] = [];
+    for (const id of toolCallIds) {
+      const ref = this.toolCallIdToAlias.get(id);
+      if (ref) refs.push(ref);
+    }
+    return refs;
+  }
+
+  /** Registers a chain entry in the in-memory registry. Called by chain-compressor after persisting. */
+  registerChain(entry: ChainCompressionEntry): void {
+    this.chainRegistry.set(entry.startUserTimestamp, entry);
+  }
+
+  /** Returns all compressed chain entries sorted by startUserTimestamp ascending. */
+  getChainEntries(): ChainCompressionEntry[] {
+    return [...this.chainRegistry.values()].sort((a, b) => a.startUserTimestamp - b.startUserTimestamp);
+  }
+
+  /** O(n) scan over the chain registry by blockId. Registry is small (bounded by session chain count). */
+  findChainEntryByBlockId(blockId: string): ChainCompressionEntry | undefined {
+    for (const entry of this.chainRegistry.values()) {
+      if (entry.blockId === blockId) return entry;
+    }
+    return undefined;
   }
 
   /**

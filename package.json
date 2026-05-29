@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "echo 'nothing to build'",
-    "check": "echo 'nothing to check'"
+    "check": "echo 'nothing to check'",
+    "test": "bun test src/"
   },
   "keywords": [
     "pi-package"

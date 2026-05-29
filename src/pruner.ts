@@ -1,9 +1,13 @@
 import type { ToolCallIndexer } from "./indexer.js";
+import type { ChainCompressionConfig, ErrorPurgeConfig } from "./types.js";
+import { applyChainCompressions } from "./chain-range-prune.js";
+import { purgeErroredArgs } from "./error-purge.js";
 
 /**
- * Transforms the `context` event message array, replacing summarized
- * ToolResultMessage entries with short stub messages that point the
- * model at `context_tree_query` for recovery.
+ * Transforms the `context` event message array in two passes:
+ *
+ * Phase 1 — stub-replace: ToolResultMessages for summarized tool calls are
+ * replaced with short stubs pointing the model at `context_tree_query`.
  *
  * Why stubs instead of dropping the message entirely:
  *   - Dropping orphans the matching `toolCall` block inside the
@@ -17,9 +21,18 @@ import type { ToolCallIndexer } from "./indexer.js";
  *     to recovery is present on the toolResult itself, not only in the
  *     separate summary message.
  *
+ * Phase 2 — error purge: replaces failed toolCall arg bodies with stubs after a
+ * cooldown, reclaiming context from large `write`/`edit` arguments that will
+ * never succeed. The toolResult error message stays visible.
+ *
+ * Phase 3 — chain range prune: closed chains older than the rolling window
+ * are dropped (middle assistant + toolResult messages) and replaced with a
+ * synthetic user message wrapping the existing per-batch summary text.
+ * Only runs when `chainCompression.enabled` and chain entries exist.
+ *
  * Return shape:
- *   - `pruned: true`  — at least one stub-replacement happened; the
- *     returned `messages` is a freshly allocated array.
+ *   - `pruned: true`  — at least one change happened; the returned
+ *     `messages` is a freshly allocated array.
  *   - `pruned: false` — nothing matched; the returned `messages` is the
  *     **original input array reference** so the caller can cheaply skip
  *     the reconstruction path.
@@ -31,7 +44,10 @@ import type { ToolCallIndexer } from "./indexer.js";
 export function pruneMessages(
   messages: any[],
   indexer: ToolCallIndexer,
+  chainCompression?: ChainCompressionConfig,
+  errorPurge?: ErrorPurgeConfig,
 ): { messages: any[]; pruned: boolean } {
+  // Phase 1: stub-replace summarized tool results
   let pruned = false;
   const next = messages.map((msg) => {
     if (msg.role === "toolResult" && indexer.isSummarized(msg.toolCallId)) {
@@ -53,5 +69,40 @@ export function pruneMessages(
     }
     return msg;
   });
-  return { messages: pruned ? next : messages, pruned };
+
+  let current: any[] = pruned ? next : messages;
+
+  // Phase 2: error purge — replace failed toolCall arg bodies after cooldown
+  if (errorPurge?.enabled) {
+    const afterPurge = purgeErroredArgs(current, errorPurge);
+    if (afterPurge !== current) {
+      current = afterPurge;
+      pruned = true;
+    }
+  }
+
+  // Phase 3: chain range prune — drop closed chains beyond the rolling window
+  if (chainCompression?.enabled) {
+    const chainEntries = indexer.getChainEntries();
+    if (chainEntries.length > 0) {
+      const blockSummaryLookup = (blockId: string): string | undefined => {
+        const entry = indexer.findChainEntryByBlockId(blockId);
+        if (!entry) return undefined;
+        return indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedToolCallIds) || undefined;
+      };
+      const compressed = applyChainCompressions(
+        current,
+        chainEntries,
+        (entry) => indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedToolCallIds),
+        chainCompression.stripFinalAssistantThinking,
+        blockSummaryLookup,
+      );
+      if (compressed !== current) {
+        current = compressed;
+        pruned = true;
+      }
+    }
+  }
+
+  return { messages: current, pruned };
 }

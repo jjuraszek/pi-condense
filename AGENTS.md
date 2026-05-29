@@ -57,14 +57,27 @@ If the source contradicts an assumption, the source wins. If the source is missi
 ## Project Layout
 
 ```
-index.ts                # extension entry point, wires events
-src/                    # one concern per file; names describe the concern
-.agents/plans/          # numbered plan docs (planning skill)
-.agents/skills/         # in-repo skills (planning, release)
-.agents/investigations/ # exploratory writeups
-PRUNING.md              # algorithm + design rationale + research refs
-README.md               # install + config + command reference
-package.json            # pi-extension manifest (declares `./index.ts`)
+index.ts                           # extension entry point, wires all events
+src/
+  chain-detector.ts                # pure: AgentMessage[] → ChainRange[] (detects closed chains)
+  chain-range-prune.ts             # pure: applies ChainCompressionEntry[] to messages in-flight
+  chain-compressor.ts              # orchestrator: rolling-window eligibility, persistence
+  block-refs.ts                    # monotonic b<N> issuer + rebuild from session
+  indexer.ts                       # tool-call index + chain registry + summary body tracking
+  nested-placeholders.ts           # pure: {bN} substitution in chain summary text
+  error-purge.ts                   # pure: replace failed toolCall arg bodies with stubs after cooldown
+  pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune
+  commands.ts                      # /pruner subcommands, settings overlay, status widget
+  summarizer.ts                    # LLM summarization calls
+  stats.ts                         # StatsAccumulator + formatting helpers
+  types.ts                         # all shared types, constants, DEFAULT_CONFIG
+  (other src/*.ts)                 # frontier, config, dedup, tree-browser, context-prune-tool
+.agents/plans/                     # numbered plan docs (planning skill)
+.agents/skills/                    # in-repo skills (planning, release)
+.agents/investigations/            # exploratory writeups
+PRUNING.md                         # algorithm + design rationale + research refs
+README.md                          # install + config + command reference
+package.json                       # pi-extension manifest (declares `./index.ts`)
 ```
 
 Custom session entry types written by the extension (NOT in LLM context unless noted):
@@ -76,3 +89,4 @@ Custom session entry types written by the extension (NOT in LLM context unless n
 | `context-prune-stats` | `statsAccum.persist` | Cumulative summarizer token/cost snapshot |
 | `context-prune-frontier` | `flushPending` | Last attempted prune boundary (advances even on `skipped-oversized` / `skipped-trivial` / `skipped-deduped`) |
 | `context-prune-dedup-alias` | `indexer.registerDuplicate` | One entry per content-hash dedup hit; rebuilt on `session_start` to repopulate `dedupAliasToOriginal` |
+| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context. Rebuilt on `session_start` to repopulate the chain registry. |

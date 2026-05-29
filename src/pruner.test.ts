@@ -1,0 +1,307 @@
+import { describe, expect, it } from "bun:test";
+import { pruneMessages } from "./pruner.js";
+import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
+
+// Minimal mock exposing only the ToolCallIndexer surface that pruneMessages calls.
+function makeMockIndexer({
+  summarized = new Set<string>(),
+  shortRefs = new Map<string, string>(),
+  chainEntries = [] as ChainCompressionEntry[],
+  summaryBodyMap = new Map<string, string>(),
+}: {
+  summarized?: Set<string>;
+  shortRefs?: Map<string, string>;
+  chainEntries?: ChainCompressionEntry[];
+  summaryBodyMap?: Map<string, string>;
+} = {}) {
+  return {
+    isSummarized: (id: string) => summarized.has(id),
+    getShortRefForToolCallId: (id: string) => shortRefs.get(id),
+    getChainEntries: () => chainEntries,
+    getPerBatchSummaryTextForToolCallIds: (ids: string[]) => {
+      for (const id of ids) {
+        const text = summaryBodyMap.get(id);
+        if (text) return text;
+      }
+      return "";
+    },
+  } as any;
+}
+
+const enabledCC: ChainCompressionConfig = {
+  enabled: true,
+  rollingWindow: 0,
+  stripFinalAssistantThinking: true,
+};
+
+describe("pruneMessages", () => {
+  it("stub-replaces a summarized tool result", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1"]),
+      shortRefs: new Map([["tc1", "t1"]]),
+    });
+    const messages = [
+      {
+        role: "toolResult",
+        toolCallId: "tc1",
+        toolName: "bash",
+        content: [{ type: "text", text: "big output" }],
+        isError: false,
+        timestamp: 1,
+      },
+    ];
+    const { messages: out, pruned } = pruneMessages(messages, indexer);
+    expect(pruned).toBe(true);
+    expect(out[0].content[0].text).toContain("`t1`");
+    expect(out[0].content[0].text).toContain("context_tree_query");
+  });
+
+  it("returns original array reference when nothing is summarized or compressed", () => {
+    const indexer = makeMockIndexer();
+    const messages = [{ role: "user", content: "hello", timestamp: 1 }];
+    const { messages: out, pruned } = pruneMessages(messages, indexer, enabledCC);
+    expect(pruned).toBe(false);
+    expect(out).toBe(messages);
+  });
+
+  it("applies chain compression after stub-replace", () => {
+    const toolCallId = "tc-mid";
+    const chainEntry: ChainCompressionEntry = {
+      blockId: "b1",
+      startUserTimestamp: 100,
+      droppedToolCallIds: [toolCallId],
+      finalAssistantTimestamp: 300,
+      toolRefs: ["t1"],
+      compressedAt: 999,
+    };
+    const summaryText = "ran bash, got results";
+    const indexer = makeMockIndexer({
+      summarized: new Set([toolCallId]),
+      shortRefs: new Map([[toolCallId, "t1"]]),
+      chainEntries: [chainEntry],
+      summaryBodyMap: new Map([[toolCallId, summaryText]]),
+    });
+
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "do it" }], timestamp: 100 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: toolCallId, name: "bash", arguments: {} }],
+        timestamp: 200,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId,
+        toolName: "bash",
+        content: [{ type: "text", text: "output" }],
+        isError: false,
+        timestamp: 210,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        timestamp: 300,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "end_turn",
+      },
+    ];
+
+    const { messages: out, pruned } = pruneMessages(messages, indexer, enabledCC);
+    expect(pruned).toBe(true);
+
+    // Middle assistant + toolResult are dropped
+    const roles = out.map((m: any) => m.role);
+    expect(roles.filter((r: string) => r === "toolResult")).toHaveLength(0);
+
+    // Synthetic chain message injected after the start user message
+    const synthetic = out.find(
+      (m: any) =>
+        m.role === "user" && typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"),
+    );
+    expect(synthetic).toBeDefined();
+    expect(synthetic.content[0].text).toContain('id="b1"');
+    expect(synthetic.content[0].text).toContain('tools="t1"');
+    expect(synthetic.content[0].text).toContain(summaryText);
+
+    // Start user message still present
+    const startUser = out.find((m: any) => m.role === "user" && m.timestamp === 100);
+    expect(startUser).toBeDefined();
+
+    // Final assistant kept (no thinking block to strip here)
+    const finalAsst = out.find((m: any) => m.role === "assistant" && m.timestamp === 300);
+    expect(finalAsst).toBeDefined();
+
+    // Ordering: start user → synthetic → final assistant
+    const startIdx = out.indexOf(startUser);
+    const synthIdx = out.indexOf(synthetic);
+    const finalIdx = out.indexOf(finalAsst);
+    expect(startIdx).toBeLessThan(synthIdx);
+    expect(synthIdx).toBeLessThan(finalIdx);
+  });
+
+  it("strips thinking blocks from final assistant when stripFinalAssistantThinking is true", () => {
+    const toolCallId = "tc-think";
+    const chainEntry: ChainCompressionEntry = {
+      blockId: "b2",
+      startUserTimestamp: 100,
+      droppedToolCallIds: [toolCallId],
+      finalAssistantTimestamp: 300,
+      toolRefs: ["t2"],
+      compressedAt: 888,
+    };
+    const indexer = makeMockIndexer({
+      summarized: new Set([toolCallId]),
+      shortRefs: new Map([[toolCallId, "t2"]]),
+      chainEntries: [chainEntry],
+      summaryBodyMap: new Map([[toolCallId, "summary"]]),
+    });
+
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "think" }], timestamp: 100 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: toolCallId, name: "bash", arguments: {} }],
+        timestamp: 200,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId,
+        toolName: "bash",
+        content: [{ type: "text", text: "out" }],
+        isError: false,
+        timestamp: 210,
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "deep thoughts", thinkingSignature: "sig123" },
+          { type: "text", text: "answer" },
+        ],
+        timestamp: 300,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "end_turn",
+      },
+    ];
+
+    const { messages: out } = pruneMessages(messages, indexer, enabledCC);
+    const finalAsst = out.find((m: any) => m.role === "assistant" && m.timestamp === 300);
+    expect(finalAsst).toBeDefined();
+    const contentTypes = finalAsst.content.map((c: any) => c.type);
+    expect(contentTypes).not.toContain("thinking");
+    expect(contentTypes).toContain("text");
+  });
+
+  it("purges errored toolCall args through errorPurge wiring", () => {
+    const indexer = makeMockIndexer();
+    const largeArgs = { content: "x".repeat(200) };
+    const messages: any[] = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc-err", name: "write", arguments: largeArgs }],
+        timestamp: 100,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc-err",
+        toolName: "write",
+        content: [{ type: "text", text: "Error: permission denied" }],
+        isError: true,
+        timestamp: 110,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc2", name: "bash", arguments: { cmd: "ls" } }],
+        timestamp: 200,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc2",
+        toolName: "bash",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: 210,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc3", name: "bash", arguments: { cmd: "pwd" } }],
+        timestamp: 300,
+        api: "anthropic",
+        provider: "anthropic",
+        model: "x",
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc3",
+        toolName: "bash",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: 310,
+      },
+    ];
+    const { messages: out, pruned } = pruneMessages(
+      messages,
+      indexer,
+      { enabled: false, rollingWindow: 3, stripFinalAssistantThinking: true },
+      { enabled: true, cooldownTurns: 2, minArgChars: 100 },
+    );
+    expect(pruned).toBe(true);
+    const errAsst = out.find((m: any) => m.role === "assistant" && m.timestamp === 100) as any;
+    expect(errAsst).toBeDefined();
+    expect(errAsst.content[0].arguments._purged).toMatch(/^<purged-errored-args size=/);
+  });
+
+  it("skips chain compression when disabled", () => {
+    const chainEntry: ChainCompressionEntry = {
+      blockId: "b1",
+      startUserTimestamp: 100,
+      droppedToolCallIds: ["tc-x"],
+      finalAssistantTimestamp: 200,
+      toolRefs: [],
+      compressedAt: 999,
+    };
+    const indexer = makeMockIndexer({ chainEntries: [chainEntry] });
+    const messages = [
+      { role: "user", content: "hi", timestamp: 100 },
+      {
+        role: "toolResult",
+        toolCallId: "tc-x",
+        toolName: "bash",
+        content: [],
+        isError: false,
+        timestamp: 150,
+      },
+    ];
+    const disabled: ChainCompressionConfig = { ...enabledCC, enabled: false };
+    const { pruned } = pruneMessages(messages, indexer, disabled);
+    // tc-x is not in summarized set, so stub-replace doesn't fire; chain disabled
+    expect(pruned).toBe(false);
+  });
+});

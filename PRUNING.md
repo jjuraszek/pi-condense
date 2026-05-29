@@ -22,11 +22,12 @@
    - [Oversized summary skip](#oversized-summary-skip)
    - [Frontier persistence](#frontier-persistence)
    - [Other UI / observability features](#other-ui--observability-features)
-10. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
-   - [SUPO — Summarization augmented Policy Optimization](#supo--summarization-augmented-policy-optimization)
-   - [ReSum — Recursive Summarization for Long-Horizon Agents](#resum--recursive-summarization-for-long-horizon-agents)
-   - [ACON — Agent Context Optimization](#acon--agent-context-optimization)
-11. [Summary](#summary)
+10. [Chain Compression](#chain-compression)
+11. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
+    - [SUPO — Summarization augmented Policy Optimization](#supo--summarization-augmented-policy-optimization)
+    - [ReSum — Recursive Summarization for Long-Horizon Agents](#resum--recursive-summarization-for-long-horizon-agents)
+    - [ACON — Agent Context Optimization](#acon--agent-context-optimization)
+12. [Summary](#summary)
 
 ---
 
@@ -732,6 +733,126 @@ ACON is a unified framework that compresses **both** environment observations an
 
 **Why this matters for Pi:**
 ACON demonstrates that **compression not only saves tokens but can improve agent performance** — especially for smaller models, where long noisy context actively degrades reasoning quality. The failure-driven optimization approach shows that even simple summarization, when guided by task structure, preserves critical signals.
+
+---
+
+## Chain Compression
+
+Chain compression is a second layer on top of the per-batch tool-result stub pruner. It operates on entire closed conversation chains rather than individual tool results, reclaiming the tokens that the stub pruner cannot touch: assistant thinking blocks, encrypted thinking signatures, and tool-call argument bodies.
+
+### What a closed chain is
+
+A **closed chain** is a span of messages from one user message through any number of tool-using assistant turns and their results, ending in a final text-only assistant reply:
+
+```
+[user msg]                         ← chain start (kept raw)
+[assistant: thinking + toolCalls]  ← middle (dropped)
+[toolResult]                       ← middle (dropped)
+[assistant: thinking + toolCalls]  ← middle (dropped)
+[toolResult]                       ← middle (dropped)
+[assistant: text-only]             ← chain close (kept, thinking stripped)
+```
+
+### What gets dropped vs. kept
+
+| Part | After chain compression |
+|---|---|
+| Start user message | **Kept raw** |
+| Middle assistant turns (all) | **Dropped** — assistant thinking + signatures + toolCall argument blocks |
+| Middle tool results (all) | **Dropped** — already stub-replaced by the per-batch pruner; now fully removed |
+| Per-batch summary message(s) for this chain | **Suppressed** — replaced by the chain-level synthetic |
+| Final text-only assistant | **Kept**, thinking blocks stripped (safe — no following tool cycle depends on the signature) |
+| Synthetic `<compressed-chain>` user message | **Injected** immediately after the start user message |
+
+### Transform composition order
+
+```
+raw messages from session
+  │
+  ├─ [1] tool-result stub-replace   (per-batch; existing)
+  ├─ [2] error-purge                (phase 2)
+  └─ [3] chain-range-prune          (this feature; runs AFTER stubs)
+           for each compressed chain:
+             drop middle assistants (by toolCallId overlap)
+             drop middle toolResults (by toolCallId)
+             suppress per-batch summaries (by toolCallRefs overlap)
+             inject <compressed-chain> after start user
+             strip thinking from final assistant
+```
+
+### Identification model
+
+Pi-ai's `Message` union (`UserMessage | AssistantMessage | ToolResultMessage`) has no `.id` field. Chain compression uses:
+- `timestamp: number` to identify user / final-assistant boundary messages
+- `toolCallId` sets to identify middle assistant turns and their tool results
+
+This is why the persisted `ChainCompressionEntry` stores `startUserTimestamp` + `droppedToolCallIds` rather than message IDs.
+
+### Rolling window
+
+`chainCompression.rollingWindow` (default `3`) controls how many recently-closed chains stay raw. Once the (K+1)-th chain closes, the oldest chain beyond the window is compressed.
+
+- With K=3: the three most-recently-closed chains stay as-is; the fourth triggers compression of the oldest.
+- `/pruner compact` bypasses the window and compresses every eligible chain immediately (retroactive).
+
+### Synthetic message format
+
+The injected user message body:
+
+```
+<compressed-chain id="b1" tools="t3,t4,t5">
+[existing per-batch summary text]
+</compressed-chain>
+```
+
+- `id="b1"` is a stable monotonic block ID (`b1`, `b2`, …) assigned at compression time and persisted in the `context-prune-chain` session entry.
+- `tools="t3,t4,t5"` lists the short `tN` refs from the per-batch index so the model can call `context_tree_query` to recover individual tool outputs.
+- The body is the existing `context-prune-summary` text, reused verbatim (no new LLM call in Phase 1).
+
+### Cache impact
+
+Each new chain compression busts the prefix cache from the affected chain's start-user-message onward. Mitigation: the rolling window concentrates compression decisions at predictable points (one event per chain close), so cache is only invalidated when an old chain ages out of the window — not on every turn.
+
+### Recovery
+
+Chain compression does not delete data from the session JSONL. The original tool outputs remain in `context-prune-index` entries and are recoverable via `context_tree_query`. To undo compression of a specific chain, delete the matching `context-prune-chain` entry from the session file — the chain will re-appear in context on next load.
+
+---
+
+## Error Purge
+
+Failed tool calls often embed large argument bodies in the assistant message — a `write` call with a 30 KB file body, an `edit` call with a multiline diff. The error result is small (e.g. `"Error: file not found"`), but the original `arguments` stay in the assistant turn indefinitely.
+
+Error purge replaces those arg bodies with compact stubs after the error has cooled down:
+
+```
+{ "_purged": "<purged-errored-args size=\"N\"/>" }
+```
+
+**What triggers a purge:**
+- The matching `ToolResultMessage` has `isError: true`.
+- The error occurred at least `purgeErrors.cooldownTurns` assistant turns ago (default 2). The cooldown gives the model 1–2 turns to retry before context is mutated.
+- The JSON-stringified argument body is at least `purgeErrors.minArgChars` characters long (default 500). Small args are not worth the substitution.
+
+**What error purge does NOT touch:**
+- The `ToolResultMessage` content — the error message stays visible so the model can see what went wrong.
+- Non-errored `toolCall` argument bodies.
+- Argument bodies below `minArgChars`.
+- Anything when `purgeErrors.enabled` is `false`.
+
+**Transform position:** Error purge runs in Phase 2, after stub-replace and before chain range prune.
+
+```
+[stub-replace] → [error-purge] → [chain-range-prune]
+```
+
+**Config keys:**
+
+| Key | Default | Description |
+|---|---|---|
+| `purgeErrors.enabled` | `true` | Master toggle |
+| `purgeErrors.cooldownTurns` | `2` | Turns to wait after error before purging |
+| `purgeErrors.minArgChars` | `500` | Minimum argument body size to purge |
 
 ---
 

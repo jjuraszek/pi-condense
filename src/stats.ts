@@ -33,6 +33,7 @@ export class StatsAccumulator {
     totalOutputTokens: 0,
     totalCost: 0,
     callCount: 0,
+    chainsCompressed: 0,
   };
 
   /** Add usage data from one summarizer LLM call. */
@@ -48,6 +49,11 @@ export class StatsAccumulator {
     return { ...this.stats };
   }
 
+  /** Increment the chain-compression counter. */
+  addChainsCompressed(n: number): void {
+    this.stats.chainsCompressed += n;
+  }
+
   /** Reset all accumulated stats to zero. */
   reset(): void {
     this.stats = {
@@ -55,6 +61,7 @@ export class StatsAccumulator {
       totalOutputTokens: 0,
       totalCost: 0,
       callCount: 0,
+      chainsCompressed: 0,
     };
   }
 
@@ -70,6 +77,7 @@ export class StatsAccumulator {
       totalOutputTokens: data.totalOutputTokens ?? 0,
       totalCost: data.totalCost ?? 0,
       callCount: data.callCount ?? 0,
+      chainsCompressed: data.chainsCompressed ?? 0,
     };
   }
 

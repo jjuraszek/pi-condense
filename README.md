@@ -86,7 +86,12 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "quietOversizedSkips": false,
     "minBatchChars": 1000,
     "protectedTools": [],
-    "dedupByContentHash": true
+    "dedupByContentHash": true,
+    "chainCompression": {
+      "enabled": true,
+      "rollingWindow": 3,
+      "stripFinalAssistantThinking": true
+    }
   }
 }
 ```
@@ -104,6 +109,14 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard — batches smaller than this skip the LLM entirely |
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`) |
 | `dedupByContentHash` | `true` / `false` | `true` | Re-reads of identical (toolName, content) skip the LLM and alias the original |
+| `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
+| `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
+| `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
+| `purgeErrors.enabled` | `true` / `false` | `true` | Replace failed toolCall argument bodies with compact stubs after cooldown |
+| `purgeErrors.cooldownTurns` | positive integer | `2` | Turns to wait after a tool error before purging its argument body |
+| `purgeErrors.minArgChars` | non-negative integer | `500` | Only purge arg bodies at least this many characters long |
+
+See [PRUNING.md § Chain Compression](PRUNING.md#chain-compression) and [PRUNING.md § Error Purge](PRUNING.md#error-purge) for the full algorithms.
 
 The three pre-flush features (`minBatchChars`, `protectedTools`, `dedupByContentHash`) are explained in [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards). They run BEFORE any summarizer LLM call and can each drop a batch outright while still advancing the prune frontier.
 
@@ -144,6 +157,7 @@ Set it from the slash command (saves immediately):
 | `/pruner min-batch-chars [n]` | Show or set the pre-flush trivial-batch threshold (`0` disables) |
 | `/pruner dedup [on\|off\|status]` | Toggle pre-flush content-hash dedup |
 | `/pruner tree` | Foldable browser of pruned tool calls; `Ctrl-O` opens the full summary in an overlay |
+| `/pruner compact` | Retroactively compress every eligible closed chain (bypasses `rollingWindow`) |
 | `/pruner now` | Flush pending batches immediately with a multi-row progress widget above the input |
 | `/pruner help` | Full help text |
 

@@ -35,6 +35,9 @@ import {
 import { StatsAccumulator } from "./src/stats.js";
 import { registerContextPruneTool } from "./src/context-prune-tool.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
+import { BlockRefIssuer } from "./src/block-refs.js";
+import { compressEligible } from "./src/chain-compressor.js";
+import { detectChains } from "./src/chain-detector.js";
 
 export default function (pi: ExtensionAPI) {
   // Shared mutable config reference — updated by /pruner commands
@@ -50,6 +53,10 @@ export default function (pi: ExtensionAPI) {
 
   // Shared prune frontier — tracks the last completed prune attempt boundary
   const frontier = new PruneFrontierTracker();
+
+  // Shared block-ref issuer — issues monotonic b<N> IDs for compressed chains;
+  // rebuilt from session on session_start / session_tree
+  const blockRefs = new BlockRefIssuer();
 
   // Pending batches — accumulated until the prune trigger fires
   const pendingBatches: CapturedBatch[] = [];
@@ -380,6 +387,7 @@ export default function (pi: ExtensionAPI) {
         try {
           if (!shouldSkipOversized) {
             // Write one summary message per turn and index its tool calls.
+            const batchToolCallIds = batch.toolCalls.map((tc) => tc.toolCallId);
             if (delivery === "runtime") {
               pi.sendMessage(
                 { customType: CUSTOM_TYPE_SUMMARY, content: summaryText, display: true, details: batchDetails },
@@ -392,6 +400,9 @@ export default function (pi: ExtensionAPI) {
               indexer.registerSummaryRefs(summaryRefs);
               indexer.addBatch(batch, appendEntry);
             }
+            // Keep the in-memory summary-body registry current so chain compression
+            // can build synthetic chain messages without rescanning session entries.
+            indexer.registerSummaryBody(batchToolCallIds, summaryText);
           } else {
             oversizedBatches.push(batch);
           }
@@ -480,6 +491,42 @@ export default function (pi: ExtensionAPI) {
       }
 
       setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
+
+      // Chain compression — compress closed chains beyond the rolling window.
+      // Runs after the per-batch summarization so summaryBodies are up to date.
+      // Non-fatal: a failure here does not roll back the successful summarization.
+      if (currentConfig.value.chainCompression.enabled) {
+        try {
+          const branch = ctx.sessionManager.getBranch();
+          const branchMessages = branch
+            .filter((e: any) => e.type === "message" && e.message)
+            .map((e: any) => e.message);
+          const chains = detectChains(branchMessages);
+          const { compressedEntries } = compressEligible(
+            chains,
+            currentConfig.value.chainCompression.rollingWindow,
+            {
+              indexer,
+              blockRefs,
+              appendEntry: persistAlias,
+              now: () => Date.now(),
+            },
+          );
+          if (compressedEntries.length > 0) {
+            statsAccum.addChainsCompressed(compressedEntries.length);
+            statsAccum.persist(pi);
+            safeNotify(
+              ctx,
+              `pruner: compressed ${compressedEntries.length} chain${compressedEntries.length === 1 ? "" : "s"} (${compressedEntries.map((e) => e.blockId).join(", ")})`,
+              "info",
+            );
+          }
+        } catch (err) {
+          if (!isStaleContextError(err)) {
+            safeNotify(ctx, `pruner: chain compression failed: ${errorMessage(err)}`, "warning");
+          }
+        }
+      }
 
       // Notify about any batches that were skipped — either oversized or
       // trivial. Neither is an error: the pruner correctly chose not to grow
@@ -588,6 +635,9 @@ export default function (pi: ExtensionAPI) {
     // Rebuild in-memory index from persisted session entries
     indexer.reconstructFromSession(ctx);
 
+    // Rebuild block-ref counter so new chain IDs don't collide with existing ones
+    blockRefs.rebuildFrom(indexer.getChainEntries().map((e) => e.blockId));
+
     // Rebuild stats accumulator from persisted session entries
     statsAccum.reconstructFromSession(ctx);
 
@@ -612,6 +662,7 @@ export default function (pi: ExtensionAPI) {
   // Rebuild index and stats after tree navigation too (branch may have different history)
   pi.on("session_tree", async (_event, ctx) => {
     indexer.reconstructFromSession(ctx);
+    blockRefs.rebuildFrom(indexer.getChainEntries().map((e) => e.blockId));
     statsAccum.reconstructFromSession(ctx);
     frontier.reconstructFromSession(ctx);
     // Pending batches belong to the old branch — discard them
@@ -722,12 +773,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("context", async (event, _ctx) => {
     if (!currentConfig.value.enabled) return undefined;
 
-    const indexEmpty = indexer.getIndex().size === 0;
     let messages = event.messages;
     let changed = false;
 
-    if (!indexEmpty) {
-      const result = pruneMessages(messages, indexer);
+    // pruneMessages is the single source of truth for "is there work to do".
+    // It fast-paths (returns the original array reference) when both the
+    // tool-call index and chain registry are empty, so calling it
+    // unconditionally is safe and avoids a split gate here.
+    {
+      const result = pruneMessages(
+        messages,
+        indexer,
+        currentConfig.value.chainCompression,
+        currentConfig.value.purgeErrors,
+      );
       if (result.pruned) {
         messages = result.messages;
         changed = true;
@@ -773,5 +832,28 @@ export default function (pi: ExtensionAPI) {
   registerContextPruneTool(pi, (ctx, options) => flushPending(ctx, { delivery: "runtime", ...options }));
 
   // ── Register /pruner command + summary message renderer ────────────
-  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, syncToolActivation, () => statsAccum.getStats(), indexer);
+  const compactChains = async (ctx: any) => {
+    const branch = ctx.sessionManager.getBranch();
+    const branchMessages = branch
+      .filter((e: any) => e.type === "message" && e.message)
+      .map((e: any) => e.message);
+    const chains = detectChains(branchMessages);
+    const result = compressEligible(
+      chains,
+      0, // effectiveK=0: compress every closed chain not already compressed
+      {
+        indexer,
+        blockRefs,
+        appendEntry: (type: string, data: unknown) => pi.appendEntry(type, data),
+        now: () => Date.now(),
+      },
+    );
+    if (result.compressedEntries.length > 0) {
+      statsAccum.addChainsCompressed(result.compressedEntries.length);
+      statsAccum.persist(pi);
+    }
+    return { compressedEntries: result.compressedEntries, skipped: result.skipped.filter((s) => s.reason === "no-summary").length };
+  };
+
+  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, syncToolActivation, () => statsAccum.getStats(), indexer, compactChains);
 }
