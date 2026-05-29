@@ -788,6 +788,7 @@ export default function (pi: ExtensionAPI) {
         indexer,
         currentConfig.value.chainCompression,
         currentConfig.value.purgeErrors,
+        currentConfig.value.thinkingStrip,
       );
       if (result.pruned) {
         messages = result.messages;

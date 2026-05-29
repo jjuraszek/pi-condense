@@ -304,4 +304,40 @@ describe("pruneMessages", () => {
     // tc-x is not in summarized set, so stub-replace doesn't fire; chain disabled
     expect(pruned).toBe(false);
   });
+
+  it("composes stub-replace (Phase 1) with thinking-strip (Phase 4)", () => {
+    const indexer = makeMockIndexer({ summarized: new Set(["c10"]), shortRefs: new Map([["c10", "t1"]]) });
+    const mkAsst = (ts: number) => ({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "t", thinkingSignature: "s" },
+        { type: "text", text: "x" },
+        { type: "toolCall", id: `c${ts}`, name: "bash", arguments: {} },
+      ],
+      timestamp: ts,
+      usage: {},
+      stopReason: "tool_use",
+    });
+    const messages: any[] = [{ role: "user", content: [{ type: "text", text: "go" }], timestamp: 1 }];
+    for (let i = 0; i < 5; i++) {
+      const id = `c${10 + i}`;
+      messages.push(mkAsst(10 + i));
+      messages.push({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text: "o" }], isError: false, timestamp: 100 + i });
+    }
+    const { messages: out, pruned } = pruneMessages(messages, indexer, undefined, undefined, {
+      enabled: true,
+      keepLastTurns: 2,
+    });
+    expect(pruned).toBe(true);
+
+    // Phase 1: c10 toolResult stub-replaced
+    const tr = out.find((m: any) => m.role === "toolResult" && m.toolCallId === "c10") as any;
+    expect(tr.content[0].text).toContain("`t1`");
+
+    // Phase 4: oldest 3 assistant turns stripped, last 2 keep thinking
+    const assistants = out.filter((m: any) => m.role === "assistant");
+    const hasThinking = (m: any) => m.content.some((c: any) => c.type === "thinking");
+    expect(assistants.slice(0, 3).every((a: any) => !hasThinking(a))).toBe(true);
+    expect(assistants.slice(-2).every((a: any) => hasThinking(a))).toBe(true);
+  });
 });

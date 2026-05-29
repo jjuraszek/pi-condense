@@ -91,6 +91,10 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
       "enabled": true,
       "rollingWindow": 3,
       "stripFinalAssistantThinking": true
+    },
+    "thinkingStrip": {
+      "enabled": true,
+      "keepLastTurns": 16
     }
   }
 }
@@ -115,8 +119,10 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `purgeErrors.enabled` | `true` / `false` | `true` | Replace failed toolCall argument bodies with compact stubs after cooldown |
 | `purgeErrors.cooldownTurns` | positive integer | `2` | Turns to wait after a tool error before purging its argument body |
 | `purgeErrors.minArgChars` | non-negative integer | `500` | Only purge arg bodies at least this many characters long |
+| `thinkingStrip.enabled` | `true` / `false` | `true` | Strip `thinking` blocks from assistant turns older than the last `keepLastTurns` |
+| `thinkingStrip.keepLastTurns` | positive integer | `16` | Keep thinking on the last N assistant turns; strip older. Counts assistant turns, not chains. No-op under N turns |
 
-See [PRUNING.md § Chain Compression](PRUNING.md#chain-compression) and [PRUNING.md § Error Purge](PRUNING.md#error-purge) for the full algorithms.
+See [PRUNING.md § Chain Compression](PRUNING.md#chain-compression), [PRUNING.md § Error Purge](PRUNING.md#error-purge), and [PRUNING.md § Main-loop Thinking Strip](PRUNING.md#main-loop-thinking-strip) for the full algorithms.
 
 The three pre-flush features (`minBatchChars`, `protectedTools`, `dedupByContentHash`) are explained in [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards). They run BEFORE any summarizer LLM call and can each drop a batch outright while still advancing the prune frontier.
 

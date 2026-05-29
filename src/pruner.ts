@@ -1,7 +1,8 @@
 import type { ToolCallIndexer } from "./indexer.js";
-import type { ChainCompressionConfig, ErrorPurgeConfig } from "./types.js";
+import type { ChainCompressionConfig, ErrorPurgeConfig, ThinkingStripConfig } from "./types.js";
 import { applyChainCompressions } from "./chain-range-prune.js";
 import { purgeErroredArgs } from "./error-purge.js";
+import { stripOldThinking } from "./thinking-strip.js";
 
 /**
  * Transforms the `context` event message array in two passes:
@@ -30,6 +31,12 @@ import { purgeErroredArgs } from "./error-purge.js";
  * synthetic user message wrapping the existing per-batch summary text.
  * Only runs when `chainCompression.enabled` and chain entries exist.
  *
+ * Phase 4 — thinking strip: keep `thinking` blocks only on the last
+ * `keepLastTurns` assistant turns; strip them from older assistant messages
+ * (preserving text + toolCall). Runs last so the window counts the assistant
+ * turns that actually survive to the LLM. Only runs when
+ * `thinkingStrip.enabled`.
+ *
  * Return shape:
  *   - `pruned: true`  — at least one change happened; the returned
  *     `messages` is a freshly allocated array.
@@ -46,6 +53,7 @@ export function pruneMessages(
   indexer: ToolCallIndexer,
   chainCompression?: ChainCompressionConfig,
   errorPurge?: ErrorPurgeConfig,
+  thinkingStrip?: ThinkingStripConfig,
 ): { messages: any[]; pruned: boolean } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
@@ -101,6 +109,15 @@ export function pruneMessages(
         current = compressed;
         pruned = true;
       }
+    }
+  }
+
+  // Phase 4: thinking strip — keep thinking only on the last K assistant turns
+  if (thinkingStrip?.enabled) {
+    const afterStrip = stripOldThinking(current, thinkingStrip);
+    if (afterStrip !== current) {
+      current = afterStrip;
+      pruned = true;
     }
   }
 

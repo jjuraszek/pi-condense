@@ -185,6 +185,19 @@ export const ROLLING_WINDOW_PRESETS: { value: string; label: string }[] = [
 ];
 
 /**
+ * Cycling preset values for the `thinkingStrip.keepLastTurns` setting.
+ * Stored as strings because SettingsList cycles string values; converted to
+ * number when applied. Counts ASSISTANT turns (messages), not closed chains.
+ */
+export const KEEP_LAST_TURNS_PRESETS: { value: string; label: string }[] = [
+  { value: "4", label: "4" },
+  { value: "8", label: "8" },
+  { value: "16", label: "16 (default)" },
+  { value: "32", label: "32" },
+  { value: "64", label: "64" },
+];
+
+/**
  * Cycling preset values for the `minBatchChars` setting in the SettingsList.
  * Stored as strings because SettingsList cycles string values; converted to
  * number when applied. `"0"` is the disabled sentinel.
@@ -290,6 +303,8 @@ export interface ContextPruneConfig {
   chainCompression: ChainCompressionConfig;
   /** Replace failed toolCall argument bodies with compact stubs after a cooldown window. */
   purgeErrors: ErrorPurgeConfig;
+  /** Rolling main-loop thinking-block strip: keep thinking only on the last K assistant turns. */
+  thinkingStrip: ThinkingStripConfig;
   /**
    * Pre-flush content-hash dedup pass. When `true`, each captured tool call
    * is hashed by `(toolName, normalize(resultText))` and compared against
@@ -386,6 +401,18 @@ export interface ErrorPurgeConfig {
   minArgChars: number;
 }
 
+export interface ThinkingStripConfig {
+  enabled: boolean;
+  /**
+   * Keep `thinking` blocks on the last K assistant turns; strip them from
+   * older assistant messages (preserving text + toolCall blocks). Counts
+   * assistant messages, not closed chains. Clamped to >= 1 so the most-recent
+   * assistant turn always keeps its thinking (Anthropic requires the last
+   * assistant turn's thinking during tool use). Default 16.
+   */
+  keepLastTurns: number;
+}
+
 export const DEFAULT_CONFIG: ContextPruneConfig = {
   enabled: false,
   showPruneStatusLine: true,
@@ -406,6 +433,10 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
     enabled: true,
     cooldownTurns: 2,
     minArgChars: 500,
+  },
+  thinkingStrip: {
+    enabled: true,
+    keepLastTurns: 16,
   },
   dedupByContentHash: true,
 };
