@@ -291,12 +291,12 @@ export class ToolCallIndexer {
   }
 
   /**
-   * Returns the concatenated summary text for all per-batch summaries whose
-   * toolCallIds overlap the given set, joined with "\n\n".
-   * Used by chain-range-prune to build the synthetic chain message body.
+   * Returns the distinct per-batch summary texts whose toolCallIds overlap the
+   * given set (dedup'd by text). Used to build the synthetic chain body and as
+   * the fusion input for the range summarizer; the >= 2 count gates fusion.
    */
-  getPerBatchSummaryTextForToolCallIds(toolCallIds: string[]): string {
-    if (toolCallIds.length === 0) return "";
+  getPerBatchSummariesForToolCallIds(toolCallIds: string[]): string[] {
+    if (toolCallIds.length === 0) return [];
     const idSet = new Set(toolCallIds);
     const texts: string[] = [];
     const seen = new Set<string>();
@@ -306,7 +306,16 @@ export class ToolCallIndexer {
         texts.push(s.text);
       }
     }
-    return texts.join("\n\n");
+    return texts;
+  }
+
+  /**
+   * Returns the concatenated summary text for all per-batch summaries whose
+   * toolCallIds overlap the given set, joined with "\n\n".
+   * Used by chain-range-prune to build the synthetic chain message body.
+   */
+  getPerBatchSummaryTextForToolCallIds(toolCallIds: string[]): string {
+    return this.getPerBatchSummariesForToolCallIds(toolCallIds).join("\n\n");
   }
 
   /**

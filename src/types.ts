@@ -383,6 +383,14 @@ export interface ChainCompressionEntry {
   toolRefs: string[];
   /** Epoch ms when the compression decision was recorded. */
   compressedAt: number;
+  /**
+   * Cohesive LLM range summary fusing the chain's per-batch summaries
+   * (set when `chainCompression.fuseRangeSummary` is on and the span has >= 2
+   * per-batch summaries to fuse). When present, the renderer uses this as the
+   * synthetic `<compressed-chain>` body instead of the per-batch concatenation.
+   * Absent on fusion failure / single-batch spans → renderer falls back to concat.
+   */
+  rangeSummaryText?: string;
 }
 
 export interface ChainCompressionConfig {
@@ -391,6 +399,13 @@ export interface ChainCompressionConfig {
   rollingWindow: number;
   /** Strip thinking blocks from the kept final text-only assistant. Default true. */
   stripFinalAssistantThinking: boolean;
+  /**
+   * Fuse a compressed chain's per-batch summaries into one cohesive LLM range
+   * summary (one extra summarizer call per multi-batch span at compression
+   * time). Off → the synthetic message keeps the per-batch concatenation.
+   * Default true.
+   */
+  fuseRangeSummary: boolean;
 }
 
 export interface ErrorPurgeConfig {
@@ -428,6 +443,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
     enabled: true,
     rollingWindow: 3,
     stripFinalAssistantThinking: true,
+    fuseRangeSummary: true,
   },
   purgeErrors: {
     enabled: true,
@@ -559,6 +575,8 @@ export interface SummarizerStats {
   callCount: number;
   /** Cumulative number of chains range-compressed across all flushes */
   chainsCompressed: number;
+  /** Cumulative number of chains given a fused LLM range summary */
+  rangesSummarized: number;
 }
 
 /** Outcome of the most recent completed prune attempt. */

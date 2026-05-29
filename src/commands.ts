@@ -592,6 +592,13 @@ export function registerCommands(
               description: `Strip thinking blocks from the kept final text-only assistant message when compressing a chain. Currently ${config.chainCompression.stripFinalAssistantThinking ? "ON" : "OFF"}.`,
             },
             {
+              id: "chainCompressionFuseRange",
+              label: "Fuse range summary",
+              values: ["true", "false"],
+              currentValue: String(config.chainCompression.fuseRangeSummary),
+              description: `Fuse a compressed chain's per-batch summaries into one cohesive LLM summary (one extra summarizer call per multi-batch span). Off keeps the per-batch concatenation. Currently ${config.chainCompression.fuseRangeSummary ? "ON" : "OFF"}.`,
+            },
+            {
               id: "thinkingStripEnabled",
               label: "Thinking strip",
               values: ["true", "false"],
@@ -724,6 +731,8 @@ export function registerCommands(
               };
             } else if (id === "chainCompressionStripThinking") {
               newConfig.chainCompression = { ...newConfig.chainCompression, stripFinalAssistantThinking: newValue === "true" };
+            } else if (id === "chainCompressionFuseRange") {
+              newConfig.chainCompression = { ...newConfig.chainCompression, fuseRangeSummary: newValue === "true" };
             } else if (id === "thinkingStripEnabled") {
               newConfig.thinkingStrip = { ...newConfig.thinkingStrip, enabled: newValue === "true" };
             } else if (id === "thinkingStripKeepLastTurns") {

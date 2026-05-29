@@ -19,6 +19,12 @@ For each tool call provide:
 
 Keep each tool call to 1-3 bullet points. Be concise.`;
 
+const RANGE_SYSTEM_PROMPT = `You are fusing several per-step summaries of one CLOSED sub-task from an AI coding assistant's history into a SINGLE cohesive summary.
+- Merge overlapping or repeated information; do not restate each step separately.
+- Preserve concrete outcomes, decisions, file paths, identifiers, and anything later work needs to remember.
+- Keep any reference tokens like \`t12\` or \`b3\` intact.
+- Be concise: a short narrative or a few grouped bullets, not one bullet per step.`;
+
 export function summarizerThinkingOptions(config: ContextPruneConfig): Record<string, unknown> {
   const level: SummarizerThinking = config.summarizerThinking;
   if (level === "default") {
@@ -73,17 +79,20 @@ function receivedTextChars(message: AssistantMessage): number {
 }
 
 /**
- * Summarizes a captured batch. Returns formatted markdown string, or null on failure.
- * Shows user-visible errors via ctx.ui.notify.
+ * Shared LLM-call machinery for both per-batch and range summarization.
+ * `userMessage` already embeds the relevant system prompt as leading text
+ * (the summarizer is a single-user-message call). Returns the formatted text
+ * + usage, or null on failure. Abort errors are re-thrown so flushPending can
+ * detect options.signal.aborted and restore state without a UI error.
  */
-export async function summarizeBatch(
-  batch: CapturedBatch,
+async function runSummarization(
+  userMessage: string,
   config: ContextPruneConfig,
   ctx: ExtensionContext,
-  options: SummarizeBatchOptions = {}
+  options: SummarizeBatchOptions
 ): Promise<SummarizeResult | null> {
   // Fast-fail if already aborted before we even start.
-  if (options.signal?.aborted) throw new Error("summarizeBatch: aborted before start");
+  if (options.signal?.aborted) throw new Error("summarize: aborted before start");
 
   try {
     const model = resolveModel(config, ctx);
@@ -94,10 +103,6 @@ export async function summarizeBatch(
       ctx.ui.notify(`pruner: summarization failed: ${authMessage}`, "error");
       return null;
     }
-
-    const serialized = serializeBatchForSummarizer(batch);
-    const userMessage =
-      SYSTEM_PROMPT + "\n\n<tool-call-batch>\n" + serialized + "\n</tool-call-batch>";
 
     // Pass the abort signal so the underlying fetch is cancelled immediately
     // when the user presses Esc while the tool is running.
@@ -135,7 +140,7 @@ export async function summarizeBatch(
 
     // If signal fired while we were iterating, propagate the abort so
     // flushPending can detect it and restore batches.
-    if (options.signal?.aborted) throw new Error("summarizeBatch: aborted during stream");
+    if (options.signal?.aborted) throw new Error("summarize: aborted during stream");
 
     const response = await responseStream.result();
     reportTextProgress(response);
@@ -143,7 +148,7 @@ export async function summarizeBatch(
     // fired just before the final chunk). Treat identically to the signal check
     // above — throw so flushPending's catch can detect options.signal.aborted.
     if (response.stopReason === "aborted") {
-      throw new Error("summarizeBatch: stream stopped with reason aborted");
+      throw new Error("summarize: stream stopped with reason aborted");
     }
     if (response.stopReason === "error") {
       throw new Error(response.errorMessage ?? "Summarizer stopped with reason: error");
@@ -168,6 +173,40 @@ export async function summarizeBatch(
     );
     return null;
   }
+}
+
+/**
+ * Summarizes a captured batch. Returns formatted markdown string, or null on failure.
+ * Shows user-visible errors via ctx.ui.notify.
+ */
+export async function summarizeBatch(
+  batch: CapturedBatch,
+  config: ContextPruneConfig,
+  ctx: ExtensionContext,
+  options: SummarizeBatchOptions = {}
+): Promise<SummarizeResult | null> {
+  const serialized = serializeBatchForSummarizer(batch);
+  const userMessage =
+    SYSTEM_PROMPT + "\n\n<tool-call-batch>\n" + serialized + "\n</tool-call-batch>";
+  return runSummarization(userMessage, config, ctx, options);
+}
+
+/**
+ * Fuses a closed chain's already-computed per-batch summaries into one cohesive
+ * range summary (recursive summarization). Input is the span's per-batch summary
+ * text — small and already pruned — so this never re-sends raw tool output.
+ * Returns the fused text + usage, or null on failure. Used by chain compression
+ * to replace the concatenated per-batch body with a single coherent summary.
+ */
+export async function summarizeRange(
+  perBatchSummaryText: string,
+  config: ContextPruneConfig,
+  ctx: ExtensionContext,
+  options: SummarizeBatchOptions = {}
+): Promise<SummarizeResult | null> {
+  const userMessage =
+    RANGE_SYSTEM_PROMPT + "\n\n<sub-task-summaries>\n" + perBatchSummaryText + "\n</sub-task-summaries>";
+  return runSummarization(userMessage, config, ctx, options);
 }
 
 /**

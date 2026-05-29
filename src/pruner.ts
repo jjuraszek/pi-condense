@@ -93,15 +93,19 @@ export function pruneMessages(
   if (chainCompression?.enabled) {
     const chainEntries = indexer.getChainEntries();
     if (chainEntries.length > 0) {
+      // Prefer the cohesive LLM range summary (B) when present; fall back to the
+      // per-batch concatenation for spans compressed before fusion / on failure.
+      const chainSummaryText = (entry: typeof chainEntries[number]): string =>
+        entry.rangeSummaryText ?? indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedToolCallIds);
       const blockSummaryLookup = (blockId: string): string | undefined => {
         const entry = indexer.findChainEntryByBlockId(blockId);
         if (!entry) return undefined;
-        return indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedToolCallIds) || undefined;
+        return chainSummaryText(entry) || undefined;
       };
       const compressed = applyChainCompressions(
         current,
         chainEntries,
-        (entry) => indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedToolCallIds),
+        chainSummaryText,
         chainCompression.stripFinalAssistantThinking,
         blockSummaryLookup,
       );

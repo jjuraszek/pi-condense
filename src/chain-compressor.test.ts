@@ -92,10 +92,12 @@ describe("compressEligible", () => {
     chainEntries?: ChainCompressionEntry[];
     hasSummary?: boolean;
     toolRefs?: string[];
+    perBatchSummaries?: string[];
   } = {}): ChainCompressorIndexerDeps {
     return {
       getChainEntries: () => opts.chainEntries ?? [],
       hasPerBatchSummaryCoveringAny: (_ids: string[]) => opts.hasSummary ?? true,
+      getPerBatchSummariesForToolCallIds: (_ids: string[]) => opts.perBatchSummaries ?? [],
       getToolRefsForToolCallIds: (_ids: string[]) => opts.toolRefs ?? [],
       registerChain: (_entry: ChainCompressionEntry) => {},
     } satisfies ChainCompressorIndexerDeps;
@@ -106,10 +108,10 @@ describe("compressEligible", () => {
     return { issue: () => ids[i++] ?? `b${i}` } satisfies Pick<import("./block-refs.js").BlockRefIssuer, "issue">;
   }
 
-  test("compresses eligible chains and returns entries", () => {
+  test("compresses eligible chains and returns entries", async () => {
     const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
     const appended: unknown[] = [];
-    const result = compressEligible(chains, 3, {
+    const result = await compressEligible(chains, 3, {
       indexer: makeIndexer({ hasSummary: true }),
       blockRefs: makeBlockRefs(["b1"]),
       appendEntry: (_type, data) => appended.push(data),
@@ -122,9 +124,9 @@ describe("compressEligible", () => {
     expect(appended).toHaveLength(1);
   });
 
-  test("skips chain with no summary and records reason", () => {
+  test("skips chain with no summary and records reason", async () => {
     const chains = [closed(100, ["tc1"]), closed(300, ["tc2"]), closed(500), closed(700)];
-    const result = compressEligible(chains, 3, {
+    const result = await compressEligible(chains, 3, {
       indexer: makeIndexer({ hasSummary: false }),
       blockRefs: makeBlockRefs(),
       appendEntry: () => {},
@@ -135,7 +137,7 @@ describe("compressEligible", () => {
     expect(result.skipped[0]).toEqual({ startUserTimestamp: 100, reason: "no-summary" });
   });
 
-  test("reports already-compressed chains in skipped list", () => {
+  test("reports already-compressed chains in skipped list", async () => {
     const existing: ChainCompressionEntry = {
       blockId: "b1",
       startUserTimestamp: 100,
@@ -146,7 +148,7 @@ describe("compressEligible", () => {
     };
     // 4 closed chains, K=3, chain@100 already compressed → none newly eligible
     const chains = [closed(100), closed(300), closed(500), closed(700)];
-    const result = compressEligible(chains, 3, {
+    const result = await compressEligible(chains, 3, {
       indexer: makeIndexer({ chainEntries: [existing] }),
       blockRefs: makeBlockRefs(),
       appendEntry: () => {},
@@ -158,10 +160,10 @@ describe("compressEligible", () => {
     expect(result.skipped[0]).toEqual({ startUserTimestamp: 100, reason: "already-compressed" });
   });
 
-  test("appendEntry is called with CUSTOM_TYPE_CHAIN as the type argument", () => {
+  test("appendEntry is called with CUSTOM_TYPE_CHAIN as the type argument", async () => {
     const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
     const calls: Array<{ type: string; data: unknown }> = [];
-    compressEligible(chains, 3, {
+    await compressEligible(chains, 3, {
       indexer: makeIndexer({ hasSummary: true }),
       blockRefs: makeBlockRefs(["b1"]),
       appendEntry: (type, data) => calls.push({ type, data }),
@@ -169,5 +171,78 @@ describe("compressEligible", () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0].type).toBe(CUSTOM_TYPE_CHAIN);
+  });
+
+  test("fuses range summary when >=2 per-batch summaries and fuseRange is provided", async () => {
+    const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
+    const fuseCalls: string[] = [];
+    const result = await compressEligible(chains, 3, {
+      indexer: makeIndexer({ hasSummary: true, perBatchSummaries: ["s1", "s2"] }),
+      blockRefs: makeBlockRefs(["b1"]),
+      appendEntry: () => {},
+      now: () => 1,
+      fuseRange: async (text) => {
+        fuseCalls.push(text);
+        return "FUSED";
+      },
+    });
+    expect(fuseCalls).toEqual(["s1\n\ns2"]);
+    expect(result.compressedEntries[0].rangeSummaryText).toBe("FUSED");
+  });
+
+  test("does not fuse a single per-batch summary", async () => {
+    const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
+    let fuseCalled = false;
+    const result = await compressEligible(chains, 3, {
+      indexer: makeIndexer({ hasSummary: true, perBatchSummaries: ["only-one"] }),
+      blockRefs: makeBlockRefs(["b1"]),
+      appendEntry: () => {},
+      now: () => 1,
+      fuseRange: async () => {
+        fuseCalled = true;
+        return "FUSED";
+      },
+    });
+    expect(fuseCalled).toBe(false);
+    expect(result.compressedEntries[0].rangeSummaryText).toBeUndefined();
+  });
+
+  test("fusion returning null falls back to no rangeSummaryText (still compresses)", async () => {
+    const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
+    const result = await compressEligible(chains, 3, {
+      indexer: makeIndexer({ hasSummary: true, perBatchSummaries: ["s1", "s2"] }),
+      blockRefs: makeBlockRefs(["b1"]),
+      appendEntry: () => {},
+      now: () => 1,
+      fuseRange: async () => null,
+    });
+    expect(result.compressedEntries).toHaveLength(1);
+    expect(result.compressedEntries[0].rangeSummaryText).toBeUndefined();
+  });
+
+  test("fusion throwing is non-fatal — chain still compresses via fallback", async () => {
+    const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
+    const result = await compressEligible(chains, 3, {
+      indexer: makeIndexer({ hasSummary: true, perBatchSummaries: ["s1", "s2"] }),
+      blockRefs: makeBlockRefs(["b1"]),
+      appendEntry: () => {},
+      now: () => 1,
+      fuseRange: async () => {
+        throw new Error("boom");
+      },
+    });
+    expect(result.compressedEntries).toHaveLength(1);
+    expect(result.compressedEntries[0].rangeSummaryText).toBeUndefined();
+  });
+
+  test("no fuseRange provided → no rangeSummaryText (concat fallback at render)", async () => {
+    const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
+    const result = await compressEligible(chains, 3, {
+      indexer: makeIndexer({ hasSummary: true, perBatchSummaries: ["s1", "s2"] }),
+      blockRefs: makeBlockRefs(["b1"]),
+      appendEntry: () => {},
+      now: () => 1,
+    });
+    expect(result.compressedEntries[0].rangeSummaryText).toBeUndefined();
   });
 });

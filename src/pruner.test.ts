@@ -147,6 +147,33 @@ describe("pruneMessages", () => {
     expect(synthIdx).toBeLessThan(finalIdx);
   });
 
+  it("prefers rangeSummaryText over per-batch concat in the synthetic body (B)", () => {
+    const toolCallId = "tc-range";
+    const chainEntry: ChainCompressionEntry = {
+      blockId: "b9",
+      startUserTimestamp: 100,
+      droppedToolCallIds: [toolCallId],
+      finalAssistantTimestamp: 300,
+      toolRefs: ["t9"],
+      compressedAt: 777,
+      rangeSummaryText: "FUSED cohesive summary",
+    };
+    const indexer = makeMockIndexer({
+      chainEntries: [chainEntry],
+      summaryBodyMap: new Map([[toolCallId, "per-batch concat body"]]),
+    });
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "do it" }], timestamp: 100 },
+      { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "bash", arguments: {} }], timestamp: 200, usage: {}, stopReason: "tool_use" },
+      { role: "toolResult", toolCallId, toolName: "bash", content: [{ type: "text", text: "output" }], isError: false, timestamp: 210 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 300, usage: {}, stopReason: "end_turn" },
+    ];
+    const { messages: out } = pruneMessages(messages, indexer, enabledCC);
+    const synthetic = out.find((m: any) => m.role === "user" && m.content?.[0]?.text?.startsWith("<compressed-chain"));
+    expect(synthetic.content[0].text).toContain("FUSED cohesive summary");
+    expect(synthetic.content[0].text).not.toContain("per-batch concat body");
+  });
+
   it("strips thinking blocks from final assistant when stripFinalAssistantThinking is true", () => {
     const toolCallId = "tc-think";
     const chainEntry: ChainCompressionEntry = {

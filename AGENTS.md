@@ -61,7 +61,7 @@ index.ts                           # extension entry point, wires all events
 src/
   chain-detector.ts                # pure: AgentMessage[] → ChainRange[] (detects closed chains)
   chain-range-prune.ts             # pure: applies ChainCompressionEntry[] to messages in-flight
-  chain-compressor.ts              # orchestrator: rolling-window eligibility, persistence
+  chain-compressor.ts              # orchestrator: rolling-window eligibility, persistence, range-summary fusion (async)
   block-refs.ts                    # monotonic b<N> issuer + rebuild from session
   indexer.ts                       # tool-call index + chain registry + summary body tracking
   nested-placeholders.ts           # pure: {bN} substitution in chain summary text
@@ -69,7 +69,7 @@ src/
   thinking-strip.ts                # pure: keep thinking on last K assistant turns, strip older (main-loop)
   pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune → thinking-strip
   commands.ts                      # /pruner subcommands, settings overlay, status widget
-  summarizer.ts                    # LLM summarization calls
+  summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
   stats.ts                         # StatsAccumulator + formatting helpers
   types.ts                         # all shared types, constants, DEFAULT_CONFIG
   (other src/*.ts)                 # frontier, config, dedup, tree-browser, context-prune-tool
@@ -90,4 +90,4 @@ Custom session entry types written by the extension (NOT in LLM context unless n
 | `context-prune-stats` | `statsAccum.persist` | Cumulative summarizer token/cost snapshot |
 | `context-prune-frontier` | `flushPending` | Last attempted prune boundary (advances even on `skipped-oversized` / `skipped-trivial` / `skipped-deduped`) |
 | `context-prune-dedup-alias` | `indexer.registerDuplicate` | One entry per content-hash dedup hit; rebuilt on `session_start` to repopulate `dedupAliasToOriginal` |
-| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context. Rebuilt on `session_start` to repopulate the chain registry. |
+| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context; carries optional `rangeSummaryText` (fused LLM range summary) when `fuseRangeSummary` is on. Rebuilt on `session_start` to repopulate the chain registry. |

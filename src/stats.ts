@@ -34,6 +34,7 @@ export class StatsAccumulator {
     totalCost: 0,
     callCount: 0,
     chainsCompressed: 0,
+    rangesSummarized: 0,
   };
 
   /** Add usage data from one summarizer LLM call. */
@@ -54,6 +55,11 @@ export class StatsAccumulator {
     this.stats.chainsCompressed += n;
   }
 
+  /** Increment the fused-range-summary counter. */
+  addRangesSummarized(n: number): void {
+    this.stats.rangesSummarized += n;
+  }
+
   /** Reset all accumulated stats to zero. */
   reset(): void {
     this.stats = {
@@ -62,6 +68,7 @@ export class StatsAccumulator {
       totalCost: 0,
       callCount: 0,
       chainsCompressed: 0,
+      rangesSummarized: 0,
     };
   }
 
@@ -78,6 +85,7 @@ export class StatsAccumulator {
       totalCost: data.totalCost ?? 0,
       callCount: data.callCount ?? 0,
       chainsCompressed: data.chainsCompressed ?? 0,
+      rangesSummarized: data.rangesSummarized ?? 0,
     };
   }
 

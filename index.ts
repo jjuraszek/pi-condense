@@ -16,7 +16,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
 import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode } from "./src/batch-capture.js";
-import { summarizeBatch, summarizeBatches } from "./src/summarizer.js";
+import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
 import { annotateWithUnprunedCount, countUnprunedToolCalls } from "./src/reminder.js";
@@ -147,6 +147,21 @@ export default function (pi: ExtensionAPI) {
   // steer messages at protocol-safe boundaries. Session delivery is used only for
   // agent-message's final-message flush, where print-mode Pi may invalidate pi.*
   // while the summarizer LLM call is in flight.
+  // Range-summary fuser injected into compressEligible (B). Returns undefined
+  // when fuseRangeSummary is off so the compressor keeps the per-batch concat.
+  // Each successful fusion folds its usage + bumps the rangesSummarized counter.
+  const makeFuseRange = (ctx: any): ((text: string) => Promise<string | null>) | undefined => {
+    if (!currentConfig.value.chainCompression.fuseRangeSummary) return undefined;
+    return async (text: string) => {
+      const r = await summarizeRange(text, currentConfig.value, ctx, {});
+      if (r) {
+        statsAccum.add(r.usage);
+        statsAccum.addRangesSummarized(1);
+      }
+      return r?.summaryText ?? null;
+    };
+  };
+
   const flushPending = async (ctx: any, options: FlushOptions = {}): Promise<FlushResult> => {
     if (isFlushing) return { ok: false, reason: "already-flushing" };
 
@@ -504,7 +519,7 @@ export default function (pi: ExtensionAPI) {
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
           const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage));
-          const { compressedEntries } = compressEligible(
+          const { compressedEntries } = await compressEligible(
             chains,
             currentConfig.value.chainCompression.rollingWindow,
             {
@@ -512,6 +527,7 @@ export default function (pi: ExtensionAPI) {
               blockRefs,
               appendEntry: persistAlias,
               now: () => Date.now(),
+              fuseRange: makeFuseRange(ctx),
             },
           );
           if (compressedEntries.length > 0) {
@@ -841,7 +857,7 @@ export default function (pi: ExtensionAPI) {
       .filter((e: any) => e.type === "message" && e.message)
       .map((e: any) => e.message);
     const chains = detectChains(branchMessages);
-    const result = compressEligible(
+    const result = await compressEligible(
       chains,
       0, // effectiveK=0: compress every closed chain not already compressed
       {
@@ -849,6 +865,7 @@ export default function (pi: ExtensionAPI) {
         blockRefs,
         appendEntry: (type: string, data: unknown) => pi.appendEntry(type, data),
         now: () => Date.now(),
+        fuseRange: makeFuseRange(ctx),
       },
     );
     if (result.compressedEntries.length > 0) {

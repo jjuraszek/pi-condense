@@ -36,6 +36,7 @@ export function selectEligible(
 export interface ChainCompressorIndexerDeps {
   getChainEntries(): import("./types.js").ChainCompressionEntry[];
   hasPerBatchSummaryCoveringAny(toolCallIds: string[]): boolean;
+  getPerBatchSummariesForToolCallIds(toolCallIds: string[]): string[];
   getToolRefsForToolCallIds(toolCallIds: string[]): string[];
   registerChain(entry: import("./types.js").ChainCompressionEntry): void;
 }
@@ -47,6 +48,13 @@ export interface CompressEligibleDeps {
   appendEntry: (customType: string, data: unknown) => void;
   /** Injectable clock for deterministic tests */
   now: () => number;
+  /**
+   * Optional range-summary fuser (B). When present, a span with >= 2 per-batch
+   * summaries gets one LLM call fusing them into a cohesive `rangeSummaryText`.
+   * Returning null (or throwing) is non-fatal: the chain still compresses and
+   * the renderer falls back to the per-batch concatenation.
+   */
+  fuseRange?: (perBatchSummaryText: string) => Promise<string | null>;
 }
 
 export interface CompressEligibleResult {
@@ -59,11 +67,11 @@ export interface CompressEligibleResult {
  * Reads existing chain state from the indexer so calls are safe to repeat
  * (already-compressed chains are detected and reported, not double-compressed).
  */
-export function compressEligible(
+export async function compressEligible(
   chains: ChainRange[],
   rollingWindow: number,
   deps: CompressEligibleDeps,
-): CompressEligibleResult {
+): Promise<CompressEligibleResult> {
   const alreadyCompressedTimestamps = new Set(
     deps.indexer.getChainEntries().map((e) => e.startUserTimestamp),
   );
@@ -88,6 +96,22 @@ export function compressEligible(
 
     const blockId = deps.blockRefs.issue();
     const toolRefs = deps.indexer.getToolRefsForToolCallIds(chain.middleToolCallIds);
+
+    // B: fuse this span's per-batch summaries into one cohesive summary.
+    // Gated on >= 2 summaries (nothing to fuse otherwise). Non-fatal.
+    let rangeSummaryText: string | undefined;
+    if (deps.fuseRange) {
+      const summaries = deps.indexer.getPerBatchSummariesForToolCallIds(chain.middleToolCallIds);
+      if (summaries.length >= 2) {
+        try {
+          const fused = await deps.fuseRange(summaries.join("\n\n"));
+          if (fused && fused.trim()) rangeSummaryText = fused;
+        } catch {
+          // fall back to the per-batch concatenation at render time
+        }
+      }
+    }
+
     const entry: ChainCompressionEntry = {
       blockId,
       startUserTimestamp: chain.startUserTimestamp,
@@ -95,6 +119,7 @@ export function compressEligible(
       finalAssistantTimestamp: chain.finalAssistantTimestamp,
       toolRefs,
       compressedAt: deps.now(),
+      ...(rangeSummaryText ? { rangeSummaryText } : {}),
     };
 
     deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);

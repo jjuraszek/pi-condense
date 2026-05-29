@@ -812,7 +812,16 @@ The injected user message body:
 
 - `id="b1"` is a stable monotonic block ID (`b1`, `b2`, …) assigned at compression time and persisted in the `context-prune-chain` session entry.
 - `tools="t3,t4,t5"` lists the short `tN` refs from the per-batch index so the model can call `context_tree_query` to recover individual tool outputs.
-- The body is the existing `context-prune-summary` text, reused verbatim (no new LLM call in Phase 1).
+- The body is the cohesive LLM **range summary** when present (see below), else the existing `context-prune-summary` text reused verbatim.
+
+### Range summary fusion
+
+By default (`chainCompression.fuseRangeSummary`, default `true`) a compressed chain's per-batch summaries are fused into ONE cohesive summary by a single summarizer call at compression time, persisted as `rangeSummaryText` on the `context-prune-chain` entry and used as the synthetic body. This is recursive summarization (summary-of-summaries): the input is the already-pruned per-batch summary text, so it never re-sends raw tool output.
+
+- **Gate:** only spans with >= 2 distinct per-batch summaries are fused (nothing to fuse otherwise); single-summary spans use that summary directly.
+- **Non-fatal:** if the fusion call fails or returns empty, the entry stores no `rangeSummaryText` and the renderer falls back to the per-batch concatenation — the chain still compresses.
+- **Cost:** one extra summarizer call per multi-batch span, charged to the same summarizer model and folded into the usage stats (`rangesSummarized` counter). Set `fuseRangeSummary: false` to keep the zero-LLM concatenation.
+- **Recovery:** unchanged — the span's tool outputs stay in `context-prune-index` and are recoverable via `context_tree_query`; the raw span text stays in the session JSONL.
 
 ### Cache impact
 
@@ -821,6 +830,11 @@ Each new chain compression busts the prefix cache from the affected chain's star
 ### Recovery
 
 Chain compression does not delete data from the session JSONL. The original tool outputs remain in `context-prune-index` entries and are recoverable via `context_tree_query`. To undo compression of a specific chain, delete the matching `context-prune-chain` entry from the session file — the chain will re-appear in context on next load.
+
+### Deferred
+
+- **Model-driven trigger.** The compressor is autonomous (rolling window). A model-callable compress tool (DCP-style: the model compresses a sub-task as it closes), surfaced via `pruneOn: "agentic-auto"` + the `context_prune` tool, is scaffolded but not yet wired to range compression.
+- **Multi-turn span merging.** Each compressed span maps 1:1 to a closed chain (one user -> text-only-assistant round). Merging several consecutive closed spans into one topic summary is future work.
 
 ---
 
