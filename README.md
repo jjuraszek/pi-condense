@@ -87,6 +87,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "minBatchChars": 1000,
     "protectedTools": [],
     "dedupByContentHash": true,
+    "autoBudgetThreshold": null,
     "chainCompression": {
       "enabled": true,
       "rollingWindow": 3,
@@ -112,8 +113,9 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `remindUnprunedCount` | `true` / `false` | `true` | `agentic-auto` only — appends a tiny `<pruner-note>` reminding the LLM of unpruned count |
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard — batches smaller than this skip the LLM entirely |
-| `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`) |
+| `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` — protected outputs are never lost. |
 | `dedupByContentHash` | `true` / `false` | `true` | Re-reads of identical (toolName, content) skip the LLM and alias the original |
+| `autoBudgetThreshold` | fraction `0`–`1`, or `null` | `null` | Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of `pruneOn`. `0.8` = 80%, not `80`. `null` = off. See [Token-budget auto-flush](#token-budget-auto-flush) |
 | `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
@@ -127,6 +129,17 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 See [PRUNING.md § Chain Compression](PRUNING.md#chain-compression), [PRUNING.md § Error Purge](PRUNING.md#error-purge), and [PRUNING.md § Main-loop Thinking Strip](PRUNING.md#main-loop-thinking-strip) for the full algorithms.
 
 The three pre-flush features (`minBatchChars`, `protectedTools`, `dedupByContentHash`) are explained in [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards). They run BEFORE any summarizer LLM call and can each drop a batch outright while still advancing the prune frontier.
+
+### Token-budget auto-flush
+
+When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks context usage at the end of every tool-using turn. If `tokens / contextWindow` reaches the threshold, ALL pending batches are flushed immediately — regardless of `pruneOn` mode. This is an **additional** trigger layered on top of `pruneOn`, not a replacement; `every-turn` mode already flushes every turn so the budget check is skipped there.
+
+- `0.8` means 80% of the context window — it is a **fraction**, not a percentage. `0.8 ≠ 80`.
+- The trigger is a no-op when `tokens` is `null` (right after a provider-side compaction); it resumes once usage is known again.
+- Editable live via `/pruner settings` (row "Auto-flush at context %", presets Off / 60 / 70 / 80 / 90%).
+- Default `null` = off.
+
+Inspired by DCP's `maxContextLimit` nudging; simplified to a single threshold that forces a flush rather than separate nudge/force levels.
 
 ### Choosing a summarizer model
 

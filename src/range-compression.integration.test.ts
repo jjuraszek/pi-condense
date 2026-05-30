@@ -78,6 +78,63 @@ describe("range compression integration", () => {
     expect(out.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
   });
 
+  test("protected tool output is relocated into synthetic block", async () => {
+    const indexer = new ToolCallIndexer();
+    const blockRefs = new BlockRefIssuer();
+
+    // tc1 = bash (non-protected), tc2 = todowrite (protected)
+    indexer.registerSummaryRefs([{ shortId: "t1", toolCallId: "tc1" }]);
+    indexer.registerSummaryBody(["tc1"], "bash output summary");
+
+    const chain: ChainRange = {
+      startUserTimestamp: 100,
+      middleToolCallIds: ["tc1", "tc2"],
+      finalAssistantTimestamp: 400,
+      protectedToolCallIds: ["tc2"],
+    };
+
+    const { compressedEntries } = await compressEligible([chain], 0, {
+      indexer,
+      blockRefs,
+      appendEntry: () => {},
+      now: () => 999,
+    });
+
+    expect(compressedEntries).toHaveLength(1);
+    // protectedToolCallIds round-trips through the real registry
+    expect(indexer.getChainEntries()[0].protectedToolCallIds).toEqual(["tc2"]);
+
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 100 },
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", arguments: {} }], timestamp: 200, usage: {}, stopReason: "tool_use" },
+      { role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "bash-result" }], isError: false, timestamp: 210 },
+      { role: "assistant", content: [{ type: "toolCall", id: "tc2", name: "todowrite", arguments: {} }], timestamp: 300, usage: {}, stopReason: "tool_use" },
+      { role: "toolResult", toolCallId: "tc2", toolName: "todowrite", content: [{ type: "text", text: "PLAN-STATE-XYZ" }], isError: false, timestamp: 310 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 400, usage: {}, stopReason: "end_turn" },
+    ];
+
+    const cc: ChainCompressionConfig = {
+      enabled: true,
+      rollingWindow: 0,
+      stripFinalAssistantThinking: true,
+      fuseRangeSummary: false,
+    };
+    const { messages: out, pruned } = pruneMessages(messages, indexer, cc);
+    expect(pruned).toBe(true);
+
+    const synthetic = out.find(
+      (m: any) => m.role === "user" && typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"),
+    );
+    expect(synthetic).toBeDefined();
+    // Protected output is embedded in the synthetic block
+    expect(synthetic.content[0].text).toContain('<protected-output tool="todowrite">');
+    expect(synthetic.content[0].text).toContain("PLAN-STATE-XYZ");
+    // Protected toolResult is no longer a standalone message
+    expect(out.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
+    // protected tool has no short ref in production → absent from the tools= attribute
+    expect(synthetic.content[0].text).not.toContain("t2");
+  });
+
   test("falls back to per-batch concat when fuseRange is absent", async () => {
     const indexer = new ToolCallIndexer();
     const blockRefs = new BlockRefIssuer();

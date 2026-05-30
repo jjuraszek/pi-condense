@@ -22,7 +22,9 @@
    - [Oversized summary skip](#oversized-summary-skip)
    - [Frontier persistence](#frontier-persistence)
    - [Other UI / observability features](#other-ui--observability-features)
+   - [Token-budget auto-flush trigger](#token-budget-auto-flush-trigger)
 10. [Chain Compression](#chain-compression)
+    - [Protected-output relocation](#protected-output-relocation)
 11. [Error Purge](#error-purge)
 12. [Main-loop Thinking Strip](#main-loop-thinking-strip)
 13. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
@@ -736,6 +738,14 @@ ACON is a unified framework that compresses **both** environment observations an
 **Why this matters for Pi:**
 ACON demonstrates that **compression not only saves tokens but can improve agent performance** — especially for smaller models, where long noisy context actively degrades reasoning quality. The failure-driven optimization approach shows that even simple summarization, when guided by task structure, preserves critical signals.
 
+### Token-budget auto-flush trigger
+
+`autoBudgetThreshold` (default `null`) is an ADDITIONAL flush trigger orthogonal to `pruneOn`. When set to a fraction in `(0, 1]`, the extension evaluates `tokens / contextWindow` at the end of every tool-using turn; when the ratio meets the threshold, all pending batches are flushed immediately regardless of the configured `pruneOn` mode. `every-turn` mode already flushes every turn, so the budget check is skipped there to avoid redundant work.
+
+Why we compute the ratio ourselves rather than using `ContextUsage.percent`: the provider's `percent` field is a 0–100 value, and both it and `tokens` are `null` immediately after a provider-side compaction. Using `tokens / contextWindow` directly gives a 0–1 fraction that matches the config unit and is independently null-safe — a `null` tokens value makes the trigger a no-op until usage is reported again.
+
+Lineage: simplified take on DCP's `maxContextLimit` nudging — a single threshold that forces a flush rather than separate nudge/force thresholds.
+
 ---
 
 ## Chain Compression
@@ -830,6 +840,25 @@ Each new chain compression busts the prefix cache from the affected chain's star
 ### Recovery
 
 Chain compression does not delete data from the session JSONL. The original tool outputs remain in `context-prune-index` entries and are recoverable via `context_tree_query`. To undo compression of a specific chain, delete the matching `context-prune-chain` entry from the session file — the chain will re-appear in context on next load.
+
+### Protected-output relocation
+
+**Contract:** `protectedTools` outputs must never be pruned from LLM context. The per-batch pipeline honours this at capture time (protected tool calls never enter the batch). Chain compression, however, operates at the *message range* level and drops entire middle turns wholesale — which would silently remove any protected-tool `ToolResultMessage` residing in those turns.
+
+**Mechanism:** detection (`detectChains`) records which middle tool-call ids are protected on the `ChainRange`; `compressEligible` copies that id list onto the persisted `ChainCompressionEntry.protectedToolCallIds` (it stores ids only, no text). At render time, `applyChainCompressions` pulls each protected `ToolResultMessage`'s verbatim text live from the raw branch and embeds it inside the synthetic `<compressed-chain>` block:
+
+```
+<compressed-chain id="b1" tools="t3,t4,t5">
+[range summary text]
+<protected-output tool="todoread">...verbatim output...</protected-output>
+</compressed-chain>
+```
+
+The protected output is relocated (moved), not copied — the original `ToolResultMessage` is dropped with the rest of the middle turns. The text stays in LLM context because it is embedded in the surviving synthetic block. It is NOT registered in the tool-call index and is NOT recoverable via `context_tree_query`; it does not need to be, because it is present verbatim.
+
+The `context-prune-chain` session entry carries the matching `protectedToolCallIds` array so `session_start` reconstruction can re-embed the outputs on reload.
+
+**Rejected alternative:** skip compression for any chain that contains a protected tool. Rejected because `todowrite`/`todoread` recur in most chains for opted-in users, so this strategy would forfeit most chain compression for the people who most need `protectedTools`.
 
 ### Deferred
 

@@ -60,6 +60,13 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       typeof merged.dedupByContentHash === "boolean"
         ? merged.dedupByContentHash
         : DEFAULT_CONFIG.dedupByContentHash,
+    autoBudgetThreshold:
+      typeof merged.autoBudgetThreshold === "number" &&
+      Number.isFinite(merged.autoBudgetThreshold) &&
+      merged.autoBudgetThreshold > 0 &&
+      merged.autoBudgetThreshold <= 1
+        ? merged.autoBudgetThreshold
+        : DEFAULT_CONFIG.autoBudgetThreshold,
   };
 }
 

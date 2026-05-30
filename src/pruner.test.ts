@@ -32,6 +32,7 @@ const enabledCC: ChainCompressionConfig = {
   enabled: true,
   rollingWindow: 0,
   stripFinalAssistantThinking: true,
+  fuseRangeSummary: false,
 };
 
 describe("pruneMessages", () => {
@@ -296,7 +297,7 @@ describe("pruneMessages", () => {
     const { messages: out, pruned } = pruneMessages(
       messages,
       indexer,
-      { enabled: false, rollingWindow: 3, stripFinalAssistantThinking: true },
+      { enabled: false, rollingWindow: 3, stripFinalAssistantThinking: true, fuseRangeSummary: false },
       { enabled: true, cooldownTurns: 2, minArgChars: 100 },
     );
     expect(pruned).toBe(true);

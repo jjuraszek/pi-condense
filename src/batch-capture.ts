@@ -1,5 +1,14 @@
 import type { CapturedBatch, CapturedToolCall, BatchingMode } from "./types.js";
 
+/** Joins the text blocks of a ToolResultMessage into a single string. */
+export function extractToolResultText(msg: any): string {
+  const content: any[] = Array.isArray(msg?.content) ? msg.content : [];
+  return content
+    .filter((c: any) => c.type === "text")
+    .map((c: any) => c.text)
+    .join("\n");
+}
+
 /**
  * Converts turn_end event data into a CapturedBatch.
  * @param message      AssistantMessage (content: Array of TextContent|ThinkingContent|ToolCall)
@@ -30,11 +39,7 @@ export function captureBatch(
       let isError = false;
 
       if (match) {
-        const resultContent: any[] = Array.isArray(match.content) ? match.content : [];
-        resultText = resultContent
-          .filter((c: any) => c.type === "text")
-          .map((c: any) => c.text)
-          .join("\n");
+        resultText = extractToolResultText(match);
         isError = match.isError ?? false;
       }
 

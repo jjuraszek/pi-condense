@@ -210,6 +210,19 @@ export const MIN_BATCH_CHARS_PRESETS: { value: string; label: string }[] = [
   { value: "5000", label: "5000" },
 ];
 
+/**
+ * Cycling presets for the `autoBudgetThreshold` setting (stored as strings;
+ * the settings UI cycles string values). "0" is the disabled sentinel → null.
+ * Other values are 0–1 fractions of the context window (e.g. "0.8" = flush at 80%).
+ */
+export const AUTO_BUDGET_PRESETS: { value: string; label: string }[] = [
+  { value: "0", label: "Off (default)" },
+  { value: "0.6", label: "60%" },
+  { value: "0.7", label: "70%" },
+  { value: "0.8", label: "80%" },
+  { value: "0.9", label: "90%" },
+];
+
 /** Choices for the prune-on setting (used by commands and settings overlay) */
 export const PRUNE_ON_MODES: { value: PruneOn; label: string }[] = [
   { value: "every-turn", label: "Every turn" },
@@ -330,6 +343,18 @@ export interface ContextPruneConfig {
    * file).
    */
   dedupByContentHash: boolean;
+  /**
+   * Token-budget auto-flush trigger. A fraction in (0, 1] (a 0–1 share of the
+   * context window, NOT a 0–100 percentage; e.g. 0.8 = flush at 80% of the
+   * window). When set, a flush of all pending batches is forced at the end of
+   * any tool-using turn once context usage (tokens / contextWindow) reaches the
+   * threshold — regardless of `pruneOn`. An ADDITIONAL trigger on top of
+   * `pruneOn`, not a replacement.
+   *
+   * null (default) = disabled, preserving pre-feature behavior. Out-of-range
+   * values (<= 0 or > 1) normalize to null.
+   */
+  autoBudgetThreshold: number | null;
 }
 
 /**
@@ -352,6 +377,12 @@ export interface ChainRange {
    * CustomMessages whose toolCallRefs overlap.
    */
   middleToolCallIds: string[];
+  /**
+   * Subset of middleToolCallIds whose tool name ∈ protectedTools (detection-time
+   * fact). The detector always emits it ([] when no protected tool ran); optional
+   * so hand-built ChainRange fixtures need not set it.
+   */
+  protectedToolCallIds?: string[];
   /** Timestamp of the final text-only assistant message, or null if truncated/open. */
   finalAssistantTimestamp: number | null;
 }
@@ -373,6 +404,14 @@ export interface ChainCompressionEntry {
    * and suppress per-batch summary messages whose toolCallRefs overlap.
    */
   droppedToolCallIds: string[];
+  /**
+   * Subset of droppedToolCallIds whose tool was user-protected. Membership is decided
+   * per call by tool name (every call whose name ∈ protectedTools), not a per-id allowlist.
+   * Their verbatim ToolResultMessage text is relocated into the synthetic
+   * <compressed-chain> body at render time (pulled live from the raw branch) instead
+   * of being dropped. Absent/empty ⇒ no protected outputs (identical to pre-feature render).
+   */
+  protectedToolCallIds?: string[];
   /**
    * Timestamp of the final text-only assistant in the chain.
    * Kept in context but with thinking blocks stripped.
@@ -455,6 +494,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
     keepLastTurns: 16,
   },
   dedupByContentHash: true,
+  autoBudgetThreshold: null,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────

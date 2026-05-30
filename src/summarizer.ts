@@ -78,6 +78,11 @@ function receivedTextChars(message: AssistantMessage): number {
   }, 0);
 }
 
+/** A summary is usable only if it has non-whitespace text and was not truncated. */
+export function isUsableSummary(llmText: string, stopReason: string): boolean {
+  return llmText.trim().length > 0 && stopReason !== "length";
+}
+
 /**
  * Shared LLM-call machinery for both per-batch and range summarization.
  * `userMessage` already embeds the relevant system prompt as leading text
@@ -158,6 +163,8 @@ async function runSummarization(
       .filter((c: any) => c.type === "text")
       .map((c: any) => c.text)
       .join("\n");
+
+    if (!isUsableSummary(llmText, response.stopReason)) return null;
 
     return {
       summaryText: llmText,

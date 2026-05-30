@@ -38,6 +38,7 @@ import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
+import { shouldBudgetFlush } from "./src/budget.js";
 
 export default function (pi: ExtensionAPI) {
   // Shared mutable config reference — updated by /pruner commands
@@ -518,7 +519,7 @@ export default function (pi: ExtensionAPI) {
             .map((e: any) => e.message);
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
-          const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage));
+          const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage), currentConfig.value.protectedTools);
           const { compressedEntries } = await compressEligible(
             chains,
             currentConfig.value.chainCompression.rollingWindow,
@@ -752,6 +753,28 @@ export default function (pi: ExtensionAPI) {
         );
       }
     }
+
+    // Token-budget auto-flush: an additional, mode-independent trigger. When context
+    // usage crosses autoBudgetThreshold, compact the queued batches now instead of
+    // waiting for this mode's flush boundary. every-turn already flushed above; the
+    // pendingBatches.length guard makes a just-flushed queue a no-op.
+    if (
+      currentConfig.value.pruneOn !== "every-turn" &&
+      pendingBatches.length > 0 &&
+      !isFlushing &&
+      shouldBudgetFlush(ctx.getContextUsage?.(), currentConfig.value.autoBudgetThreshold)
+    ) {
+      // Always surface the budget flush (even when the routine status line is off):
+      // it's a significant, infrequent event — context crossed the threshold — and
+      // self-throttles because pendingBatches is drained right after.
+      const n = pendingBatches.length;
+      safeNotify(
+        ctx,
+        `pruner: context budget reached — compacting ${n} pending turn${n === 1 ? "" : "s"}`,
+        "info",
+      );
+      await flushPending(ctx, { delivery: "session" });
+    }
   });
 
   // ── tool_execution_end: flush when context_tag / context_checkpoint fires ─
@@ -856,7 +879,7 @@ export default function (pi: ExtensionAPI) {
     const branchMessages = branch
       .filter((e: any) => e.type === "message" && e.message)
       .map((e: any) => e.message);
-    const chains = detectChains(branchMessages);
+    const chains = detectChains(branchMessages, currentConfig.value.protectedTools);
     const result = await compressEligible(
       chains,
       0, // effectiveK=0: compress every closed chain not already compressed

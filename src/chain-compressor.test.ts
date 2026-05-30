@@ -235,6 +235,41 @@ describe("compressEligible", () => {
     expect(result.compressedEntries[0].rangeSummaryText).toBeUndefined();
   });
 
+  test("copies protectedToolCallIds from the range onto the entry when non-empty", async () => {
+    const chainWithProtected: ChainRange = {
+      startUserTimestamp: 100,
+      middleToolCallIds: ["tc1"],
+      finalAssistantTimestamp: 200,
+      protectedToolCallIds: ["b"],
+    };
+    const appended: unknown[] = [];
+    const result = await compressEligible(
+      [chainWithProtected, closed(300), closed(500), closed(700)],
+      3,
+      {
+        indexer: makeIndexer({ hasSummary: true }),
+        blockRefs: makeBlockRefs(["b1"]),
+        appendEntry: (_type, data) => appended.push(data),
+        now: () => 1,
+      },
+    );
+    expect(result.compressedEntries).toHaveLength(1);
+    expect(result.compressedEntries[0].protectedToolCallIds).toEqual(["b"]);
+    expect((appended[0] as ChainCompressionEntry).protectedToolCallIds).toEqual(["b"]);
+  });
+
+  test("omits protectedToolCallIds field entirely when range has none", async () => {
+    const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
+    const result = await compressEligible(chains, 3, {
+      indexer: makeIndexer({ hasSummary: true }),
+      blockRefs: makeBlockRefs(["b1"]),
+      appendEntry: () => {},
+      now: () => 1,
+    });
+    expect(result.compressedEntries).toHaveLength(1);
+    expect("protectedToolCallIds" in result.compressedEntries[0]).toBe(false);
+  });
+
   test("no fuseRange provided → no rangeSummaryText (concat fallback at render)", async () => {
     const chains = [closed(100, ["tc1"]), closed(300), closed(500), closed(700)];
     const result = await compressEligible(chains, 3, {

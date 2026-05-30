@@ -409,6 +409,101 @@ describe("applyChainCompressions", () => {
     expect(b1Synthetic?.content[0].text).toContain(b1SummaryText);
   });
 
+  test("relocates protected output verbatim into the compressed-chain body and still drops it from position", () => {
+    const e = {
+      blockId: "b1",
+      startUserTimestamp: 1,
+      droppedToolCallIds: ["tc-read", "tc-todo"],
+      protectedToolCallIds: ["tc-todo"],
+      finalAssistantTimestamp: 9,
+      toolRefs: ["t1", "t2"],
+      compressedAt: 100,
+    };
+    const messages = [
+      { role: "user", timestamp: 1, content: [{ type: "text", text: "go" }] },
+      { role: "assistant", timestamp: 2, content: [
+        { type: "toolCall", id: "tc-read", name: "read" },
+        { type: "toolCall", id: "tc-todo", name: "todowrite" },
+      ] },
+      { role: "toolResult", toolCallId: "tc-read", toolName: "read", content: [{ type: "text", text: "FILE" }] },
+      { role: "toolResult", toolCallId: "tc-todo", toolName: "todowrite", content: [{ type: "text", text: "PLAN-STATE" }] },
+      { role: "assistant", timestamp: 9, content: [{ type: "text", text: "done" }] },
+    ];
+    const out = applyChainCompressions(messages, [e] as any, () => "SUMMARY", false);
+    // protected toolResult dropped from original position
+    expect(out.find((m: any) => m.role === "toolResult" && m.toolCallId === "tc-todo")).toBeUndefined();
+    // text relocated into the synthetic block, under a labeled tag
+    const synthetic = out.find((m: any) => typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"));
+    expect(synthetic.content[0].text).toContain('<protected-output tool="todowrite">');
+    expect(synthetic.content[0].text).toContain("PLAN-STATE");
+    // non-protected output is NOT relocated
+    expect(synthetic.content[0].text).not.toContain("FILE");
+  });
+
+  test("renders byte-identical to pre-feature output when no protected ids", () => {
+    const e = {
+      blockId: "b1", startUserTimestamp: 1, droppedToolCallIds: ["tc-read"],
+      finalAssistantTimestamp: 9, toolRefs: ["t1"], compressedAt: 100,
+    };
+    const messages = [
+      { role: "user", timestamp: 1, content: [{ type: "text", text: "go" }] },
+      { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "tc-read", name: "read" }] },
+      { role: "toolResult", toolCallId: "tc-read", toolName: "read", content: [{ type: "text", text: "FILE" }] },
+      { role: "assistant", timestamp: 9, content: [{ type: "text", text: "done" }] },
+    ];
+    const out = applyChainCompressions(messages, [e] as any, () => "SUMMARY", false);
+    const synthetic = out.find((m: any) => typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"));
+    expect(synthetic.content[0].text).toBe('<compressed-chain id="b1" tools="t1">\nSUMMARY\n</compressed-chain>');
+  });
+
+  test("relocates multiple protected outputs in message order within one block", () => {
+    const e = {
+      blockId: "b1",
+      startUserTimestamp: 1,
+      droppedToolCallIds: ["tc-a", "tc-b"],
+      protectedToolCallIds: ["tc-a", "tc-b"],
+      finalAssistantTimestamp: 9,
+      toolRefs: ["t1", "t2"],
+      compressedAt: 100,
+    };
+    const messages = [
+      { role: "user", timestamp: 1, content: [{ type: "text", text: "go" }] },
+      { role: "assistant", timestamp: 2, content: [
+        { type: "toolCall", id: "tc-a", name: "todowrite" },
+        { type: "toolCall", id: "tc-b", name: "todoread" },
+      ] },
+      { role: "toolResult", toolCallId: "tc-a", toolName: "todowrite", content: [{ type: "text", text: "FIRST" }] },
+      { role: "toolResult", toolCallId: "tc-b", toolName: "todoread", content: [{ type: "text", text: "SECOND" }] },
+      { role: "assistant", timestamp: 9, content: [{ type: "text", text: "done" }] },
+    ];
+    const out = applyChainCompressions(messages, [e] as any, () => "SUMMARY", false);
+    const synthetic = out.find((m: any) => typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"));
+    const text = synthetic.content[0].text as string;
+    expect(text).toContain('<protected-output tool="todowrite">\nFIRST\n</protected-output>');
+    expect(text).toContain('<protected-output tool="todoread">\nSECOND\n</protected-output>');
+    expect(text.indexOf("FIRST")).toBeLessThan(text.indexOf("SECOND"));
+  });
+
+  test("skips a protected id whose toolResult is absent from input", () => {
+    const e = {
+      blockId: "b1",
+      startUserTimestamp: 1,
+      droppedToolCallIds: ["tc-gone"],
+      protectedToolCallIds: ["tc-gone"],
+      finalAssistantTimestamp: 9,
+      toolRefs: ["t1"],
+      compressedAt: 100,
+    };
+    const messages = [
+      { role: "user", timestamp: 1, content: [{ type: "text", text: "go" }] },
+      { role: "assistant", timestamp: 2, content: [{ type: "text", text: "done" }] },
+    ];
+    const out = applyChainCompressions(messages, [e] as any, () => "SUMMARY", false);
+    const synthetic = out.find((m: any) => typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"));
+    expect(synthetic).toBeDefined();
+    expect(synthetic.content[0].text).not.toContain("<protected-output");
+  });
+
   test("blockSummaryLookup: missing lookup leaves placeholder literal", () => {
     const msgs = [
       userMsg(100),

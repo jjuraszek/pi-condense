@@ -10,6 +10,7 @@ import {
   PROGRESS_WIDGET_ID,
   SUMMARIZER_THINKING_LEVELS,
   MIN_BATCH_CHARS_PRESETS,
+  AUTO_BUDGET_PRESETS,
   ROLLING_WINDOW_PRESETS,
   KEEP_LAST_TURNS_PRESETS,
   PURGE_COOLDOWN_PRESETS,
@@ -191,6 +192,13 @@ function minBatchCharsDescription(config: ContextPruneConfig): string {
     return `Pre-flush guard: skip batches whose total raw resultText is below this many chars (no LLM call, frontier advances anyway). Currently 0 — disabled, every batch is sent to the summarizer.`;
   }
   return `Pre-flush guard: skip batches whose total raw resultText is below this many chars (no LLM call, frontier advances anyway). Currently ${config.minBatchChars}. Useful for sessions with many tiny tool calls. Set to 0 to disable.`;
+}
+
+function autoBudgetThresholdDescription(config: ContextPruneConfig): string {
+  if (config.autoBudgetThreshold == null) {
+    return `Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of prune-on mode. Currently off. Pick a percentage to enable.`;
+  }
+  return `Token-budget auto-flush: force a prune when context usage reaches ${Math.round(config.autoBudgetThreshold * 100)}% of the window, regardless of prune-on mode. Set to Off to disable.`;
 }
 
 function protectedToolsDisplay(list: string[]): string {
@@ -560,6 +568,16 @@ export function registerCommands(
               description: minBatchCharsDescription(config),
             },
             {
+              id: "autoBudgetThreshold",
+              label: "Auto-flush at context %",
+              values: AUTO_BUDGET_PRESETS.map((p) => p.value),
+              currentValue: (() => {
+                const v = config.autoBudgetThreshold == null ? "0" : String(config.autoBudgetThreshold);
+                return AUTO_BUDGET_PRESETS.some((p) => p.value === v) ? v : "0";
+              })(),
+              description: autoBudgetThresholdDescription(config),
+            },
+            {
               id: "dedupByContentHash",
               label: "Dedup by content hash",
               values: ["true", "false"],
@@ -714,6 +732,14 @@ export function registerCommands(
               const mbItem = items.find((item) => item.id === "minBatchChars");
               if (mbItem) {
                 mbItem.description = minBatchCharsDescription(newConfig);
+              }
+            } else if (id === "autoBudgetThreshold") {
+              const parsed = Number.parseFloat(newValue);
+              newConfig.autoBudgetThreshold =
+                Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : null;
+              const abItem = items.find((item) => item.id === "autoBudgetThreshold");
+              if (abItem) {
+                abItem.description = autoBudgetThresholdDescription(newConfig);
               }
             } else if (id === "dedupByContentHash") {
               newConfig.dedupByContentHash = newValue === "true";

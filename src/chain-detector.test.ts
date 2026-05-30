@@ -177,6 +177,67 @@ describe("detectChains", () => {
   });
 });
 
+describe("detectChains protectedToolCallIds", () => {
+  const chainMsgs = () => [
+    { role: "user", timestamp: 1 },
+    {
+      role: "assistant",
+      timestamp: 2,
+      content: [
+        { type: "toolCall", id: "tc-read", name: "read" },
+        { type: "toolCall", id: "tc-todo", name: "todowrite" },
+      ],
+    },
+    { role: "toolResult", toolCallId: "tc-read", toolName: "read", content: [{ type: "text", text: "x" }] },
+    { role: "toolResult", toolCallId: "tc-todo", toolName: "todowrite", content: [{ type: "text", text: "plan" }] },
+    { role: "assistant", timestamp: 5, content: [{ type: "text", text: "done" }] },
+  ];
+
+  test("is empty when no protectedTools are given", () => {
+    const [chain] = detectChains(chainMsgs());
+    expect(chain.protectedToolCallIds).toEqual([]);
+    expect(chain.middleToolCallIds.sort()).toEqual(["tc-read", "tc-todo"]);
+  });
+
+  test("collects protected ids by tool name from both branches", () => {
+    const [chain] = detectChains(chainMsgs(), ["todowrite"]);
+    expect(chain.protectedToolCallIds).toEqual(["tc-todo"]);
+    expect(chain.middleToolCallIds.sort()).toEqual(["tc-read", "tc-todo"]);
+  });
+
+  test("does not leak protected ids across consecutive chains", () => {
+    const msgs = [
+      // chain 1: has a protected todowrite
+      { role: "user", timestamp: 1 },
+      { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "tc-todo", name: "todowrite" }] },
+      { role: "toolResult", toolCallId: "tc-todo", toolName: "todowrite", content: [{ type: "text", text: "p" }] },
+      { role: "assistant", timestamp: 4, content: [{ type: "text", text: "done 1" }] },
+      // chain 2: only an unprotected read
+      { role: "user", timestamp: 5 },
+      { role: "assistant", timestamp: 6, content: [{ type: "toolCall", id: "tc-read", name: "read" }] },
+      { role: "toolResult", toolCallId: "tc-read", toolName: "read", content: [{ type: "text", text: "x" }] },
+      { role: "assistant", timestamp: 8, content: [{ type: "text", text: "done 2" }] },
+    ];
+    const chains = detectChains(msgs, ["todowrite"]);
+    expect(chains.length).toBe(2);
+    expect(chains[0].protectedToolCallIds).toEqual(["tc-todo"]);
+    expect(chains[1].protectedToolCallIds).toEqual([]);
+    expect(chains[1].middleToolCallIds).toEqual(["tc-read"]);
+  });
+
+  test("populates protectedToolCallIds on an interrupted (open→new user) chain", () => {
+    const msgs = [
+      { role: "user", timestamp: 1 },
+      { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "tc-todo", name: "todowrite" }] },
+      { role: "toolResult", toolCallId: "tc-todo", toolName: "todowrite", content: [{ type: "text", text: "p" }] },
+      { role: "user", timestamp: 4 },
+    ];
+    const [interrupted] = detectChains(msgs, ["todowrite"]);
+    expect(interrupted.finalAssistantTimestamp).toBeNull();
+    expect(interrupted.protectedToolCallIds).toEqual(["tc-todo"]);
+  });
+});
+
 describe("withClosingMessage", () => {
   test("undefined closing returns the same array reference", () => {
     const msgs = [userMsg(100)];

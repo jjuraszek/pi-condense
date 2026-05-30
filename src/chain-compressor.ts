@@ -120,6 +120,7 @@ export async function compressEligible(
       toolRefs,
       compressedAt: deps.now(),
       ...(rangeSummaryText ? { rangeSummaryText } : {}),
+      ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
     };
 
     deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);

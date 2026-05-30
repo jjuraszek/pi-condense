@@ -15,9 +15,11 @@ function hasToolCalls(msg: any): boolean {
   return Array.isArray(msg.content) && msg.content.some((b: any) => b.type === "toolCall");
 }
 
-function collectToolCallIds(msg: any): string[] {
+function collectToolCalls(msg: any): { id: string; name: string }[] {
   if (!Array.isArray(msg.content)) return [];
-  return msg.content.filter((b: any) => b.type === "toolCall" && b.id).map((b: any) => b.id as string);
+  return msg.content
+    .filter((b: any) => b.type === "toolCall" && b.id && b.name)
+    .map((b: any) => ({ id: b.id as string, name: b.name as string }));
 }
 
 type State = "idle" | "inChain";
@@ -32,17 +34,20 @@ type State = "idle" | "inChain";
  * NOTE: Message identity uses `timestamp` (for user / final text-only assistant) and
  * `toolCallId` sets (for middle tool-using turns). AgentMessage has no `.id` field.
  */
-export function detectChains(messages: any[]): ChainRange[] {
+export function detectChains(messages: any[], protectedTools: string[] = []): ChainRange[] {
   const ranges: ChainRange[] = [];
+  const protectedSet = new Set(protectedTools);
   let state: State = "idle";
   let chainStart: { timestamp: number } | null = null;
   let middleIds = new Set<string>();
+  let protectedIds = new Set<string>();
 
   const emitInterrupted = () => {
     if (state === "inChain" && chainStart) {
       ranges.push({
         startUserTimestamp: chainStart.timestamp,
         middleToolCallIds: [...middleIds],
+        protectedToolCallIds: [...protectedIds],
         finalAssistantTimestamp: null,
       });
     }
@@ -54,6 +59,7 @@ export function detectChains(messages: any[]): ChainRange[] {
       emitInterrupted();
       chainStart = { timestamp: msg.timestamp };
       middleIds = new Set();
+      protectedIds = new Set();
       state = "inChain";
       continue;
     }
@@ -61,12 +67,18 @@ export function detectChains(messages: any[]): ChainRange[] {
     if (state !== "inChain") continue;
 
     if (msg.role === "assistant" && hasToolCalls(msg)) {
-      for (const id of collectToolCallIds(msg)) middleIds.add(id);
+      for (const { id, name } of collectToolCalls(msg)) {
+        middleIds.add(id);
+        if (protectedSet.has(name)) protectedIds.add(id);
+      }
       continue;
     }
 
     if (msg.role === "toolResult") {
-      if (msg.toolCallId) middleIds.add(msg.toolCallId);
+      if (msg.toolCallId) {
+        middleIds.add(msg.toolCallId);
+        if (protectedSet.has(msg.toolName)) protectedIds.add(msg.toolCallId);
+      }
       continue;
     }
 
@@ -74,10 +86,12 @@ export function detectChains(messages: any[]): ChainRange[] {
       ranges.push({
         startUserTimestamp: chainStart!.timestamp,
         middleToolCallIds: [...middleIds],
+        protectedToolCallIds: [...protectedIds],
         finalAssistantTimestamp: msg.timestamp,
       });
       chainStart = null;
       middleIds = new Set();
+      protectedIds = new Set();
       state = "idle";
     }
   }
