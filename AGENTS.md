@@ -12,7 +12,7 @@ Same rules as the parent `~/.pi/agent.anthropic/AGENTS.md`. Applied to chat, com
 - **End on the ask, not a summary.** Diffs/outputs speak for themselves.
 - **Match the recipient's register** in human-facing artifacts (issues, PRs, chat). Casual thread → casual reply.
 
-LLM-readable artifacts (`AGENTS.md`, `README.md`, `PRUNING.md`, `.agents/plans/*.md`, `.agents/skills/*/SKILL.md`, code comments where *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
+LLM-readable artifacts (`AGENTS.md`, `README.md`, `PRUNING.md`, `doc/specs/*.md`, `.agents/skills/*/SKILL.md`, code comments where *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
 
 ## Code & Documentation Discipline
 
@@ -43,13 +43,13 @@ If the source contradicts an assumption, the source wins. If the source is missi
 | Install, configure, list of `/pruner` commands and settings | [`README.md`](README.md) |
 | Implementation: hook a Pi event, change the indexer, touch the summarizer | open the matching `src/*.ts` file directly |
 | Run a release | `.agents/skills/release/SKILL.md` |
-| Plan a multi-step change | `.agents/skills/planning/SKILL.md` |
-| Historical context for a past change | `.agents/plans/NNN-*.md` (newest first; `archived/` for retired plans) |
-| Past exploratory writeups | `.agents/investigations/*.md` |
+| Brainstorm / plan a multi-step change | superpowers `brainstorming` then `writing-plans` skills; specs land in `doc/specs/` |
+| Historical context for a past change | `doc/specs/*.md` (newest first) |
 
 ## Workflow
 
-- **Multi-step work uses the `planning` skill.** Plans live in `.agents/plans/`, zero-padded numbered (`031-...`, `032-...`). Keep the checklist in sync with reality. Append at the end of the active plan rather than starting a new one for trivially small follow-ups.
+- **Multi-step work uses the superpowers `brainstorming` → `writing-plans` skills.** Specs and plans live in `doc/specs/` (`YYYY-MM-DD-<topic>.md`). Keep the checklist in sync with reality.
+- **Isolate feature work in a git worktree.** Worktrees default to `.worktrees/<branch>` at the repo root (already gitignored); use the superpowers `using-git-worktrees` skill. The spec is the first commit on the branch.
 - **Releases use the `release` skill.** This fork is consumed via git **tag** pins (`git:github.com/jjuraszek/pi-context-prune@vX.Y.Z`); the release script bumps the version, creates and pushes the `vX.Y.Z` tag, then automatically rewrites every matching pin in `~/.pi/agent*/settings.json`. No npm publish step. The tag scheme matches sibling pi-* packages (`pi-superpowers`, etc.). See `.agents/skills/release/SKILL.md` for the full flow + `--dry-run` / `--no-update-pins` flags.
 - **Smoke-test new behavior end-to-end** with `pi -e ./index.ts --no-extensions -p "..."` against an isolated `$PI_CODING_AGENT_DIR`. Inspect session JSONL entries (`jq -r 'select(.type == "custom" or .type == "custom_message") | .customType' session.jsonl | sort | uniq -c`) to verify the expected `context-prune-*` entries are written.
 - **Typecheck before committing.** No package script is wired; run `bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --allowJs --esModuleInterop --resolveJsonModule --lib es2022 --types node index.ts` (transient `@types/node` add/remove is fine — don't commit it).
@@ -73,9 +73,9 @@ src/
   stats.ts                         # StatsAccumulator + formatting helpers
   types.ts                         # all shared types, constants, DEFAULT_CONFIG
   (other src/*.ts)                 # frontier, config, dedup, tree-browser, context-prune-tool
-.agents/plans/                     # numbered plan docs (planning skill)
-.agents/skills/                    # in-repo skills (planning, release)
-.agents/investigations/            # exploratory writeups
+.agents/skills/                    # in-repo skills (release)
+doc/specs/                         # specs + plans (superpowers brainstorming/writing-plans)
+.worktrees/                        # git worktrees for feature branches (gitignored)
 PRUNING.md                         # algorithm + design rationale + research refs
 README.md                          # install + config + command reference
 package.json                       # pi-extension manifest (declares `./index.ts`)
