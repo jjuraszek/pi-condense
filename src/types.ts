@@ -83,48 +83,15 @@ export const STATUS_WIDGET_ID = "context-prune";
  * Widget ID for the live /pruner now progress panel shown above the editor.
  */
 export const PROGRESS_WIDGET_ID = "context-prune-progress";
-
-/** Name of the context_prune tool (injected only when agentic-auto mode is active) */
-export const CONTEXT_PRUNE_TOOL_NAME = "context_prune";
-
-/** System prompt injected when agentic-auto mode is active */
-export const AGENTIC_AUTO_SYSTEM_PROMPT = `[Context Prune — Agentic Auto Mode]
-You have access to the context_prune tool. Use it to summarize and compact preceding tool-call results from context.
-
-Why use context_prune:
-- Pruning reduces context size, which helps you sustain longer and more complex work without running into context limits.
-- Summaries preserve the important takeaways while freeing space for new reasoning and tool use.
-
-How to decide when to prune:
-- Prune at a natural task boundary. Call context_prune when the currently pending tool calls all belong to one completed task, investigation, or tightly related subtask.
-- Keep each prune cohesive. Do not bundle unrelated work together; if you are about to switch to a different task, prune the completed batch first.
-- A good target is usually about 8–12 related tool calls.
-- Prune once that task chunk is finished and you are unlikely to need to reread every raw tool result from it again during the rest of the session.
-- Avoid pruning too early: calling context_prune after every 2–3 tool calls hurts prompt-cache efficiency.
-- Avoid waiting too long: letting more than about 12–13 tool calls pile up before pruning makes the eventual prune job larger and slower.
-
-When NOT to use context_prune:
-- Do NOT call it for trivial or single tool calls.
-- Do NOT use it in the middle of an active task if you still expect to consult the full raw tool outputs repeatedly.
-
-What happens when you call context_prune:
-- All pending tool-call results are summarized into concise bullet points.
-- The original full outputs are removed from context but preserved in the session index.
-- You can retrieve the full original output at any time using the context_tree_query tool with the short refs listed in the summary.`;
-
 // ── Config ─────────────────────────────────────────────────────────────────
 
 /**
  * When summarization (and context pruning) is triggered.
- * - "every-turn"     : after every assistant turn that calls tools
- * - "on-context-tag" : batches up turns and flushes when the model calls context_tag (legacy) or context_checkpoint (current, ttttmr/pi-context)
- * - "on-demand"      : only when the user runs /pruner now
- * - "agent-message"  : batches up turns and flushes when the agent sends a final text response
- *                       (a turn with no tool calls), or when the agent loop ends (default)
- * - "agentic-auto"   : the LLM agent decides when to prune by calling the context_prune tool;
- *                       the tool is only active in this mode and guided by prompt instructions
+ * - "agent-message" : batches up turns and flushes when the agent sends a final text response
+ *                     (a turn with no tool calls), or when the agent loop ends (default)
+ * - "on-demand"     : only when the user runs /pruner now
  */
-export type PruneOn = "every-turn" | "on-context-tag" | "on-demand" | "agent-message" | "agentic-auto";
+export type PruneOn = "on-demand" | "agent-message";
 
 /**
  * Granularity of pruning batches.
@@ -225,11 +192,8 @@ export const AUTO_BUDGET_PRESETS: { value: string; label: string }[] = [
 
 /** Choices for the prune-on setting (used by commands and settings overlay) */
 export const PRUNE_ON_MODES: { value: PruneOn; label: string }[] = [
-  { value: "every-turn", label: "Every turn" },
-  { value: "on-context-tag", label: "On context tag" },
-  { value: "on-demand", label: "On demand" },
   { value: "agent-message", label: "On agent message" },
-  { value: "agentic-auto", label: "Agentic auto" },
+  { value: "on-demand", label: "On demand" },
 ];
 
 /** Extension config stored under the `contextPrune` key in `<agent-dir>/settings.json` (agent-dir honors `PI_CODING_AGENT_DIR`). */
@@ -248,14 +212,6 @@ export interface ContextPruneConfig {
   summarizerThinking: SummarizerThinking;
   /** When to trigger summarization and pruning */
   pruneOn: PruneOn;
-  /**
-   * Whether to inject a small ephemeral reminder before each LLM call
-   * telling the model how many unpruned tool-call results have piled up.
-   * Only honored when `enabled && pruneOn === "agentic-auto"`. In all other
-   * modes this flag is a no-op (the reminder is meant to nudge the LLM to
-   * call `context_prune` at a sensible cadence).
-   */
-  remindUnprunedCount: boolean;
   /**
    * Granularity of each pruning batch.
    * - "turn"          : one summary per assistant turn (default)
@@ -296,8 +252,6 @@ export interface ContextPruneConfig {
    * Tool names whose outputs must NEVER be pruned or summarized. Tool calls
    * with matching `toolName` are filtered out of the pruning capture path so
    * their original `ToolResultMessage` stays verbatim in future LLM context.
-   * They are also excluded from the agentic-auto `<pruner-note>`
-   * unpruned-count reminder so the LLM is not nudged to prune them.
    *
    * Use for tools whose raw output the agent must keep reading verbatim
    * across turns — for example `todowrite` / `todoread` carrying plan state,
@@ -473,7 +427,6 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   summarizerModel: "default",
   summarizerThinking: "default",
   pruneOn: "agent-message",
-  remindUnprunedCount: true,
   batchingMode: "turn",
   quietOversizedSkips: false,
   minBatchChars: 1000,

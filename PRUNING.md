@@ -414,11 +414,11 @@ Prefix caching stores the KV states for an exact token sequence on the provider'
 
 Every time you prune, you **rewrite the prefix**. The message that was previously a 3,400-token tool result is now a 200-token summary. That's a different token sequence, so the cache is invalidated.
 
-### ASCII: The per-turn pruning trap (`every-turn` mode)
+### ASCII: The per-turn pruning trap (naive per-turn pruning)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  every-turn MODE — AGGRESSIVE BUT CACHE-UNFRIENDLY                      │
+│  NAIVE PER-TURN PRUNING — AGGRESSIVE BUT CACHE-UNFRIENDLY               │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  Turn 1:  Read file → 45 tokens                                         │
@@ -544,11 +544,8 @@ graph LR
 
 | Mode | Cache Busts per 5 Turns | Context Reclaimed | Recommended for |
 |---|---|---|---|
-| `every-turn` | 5 | Immediate | Debugging only |
 | `agent-message` | 1 | After batch | **Default** — best balance |
-| `on-context-tag` | ~1–2 | At milestones | Save-point workflows |
 | `on-demand` | 0–1 | When you say so | Maximum cache preservation |
-| `agentic-auto` | model-controlled | When the LLM calls `context_prune` | Long autonomous runs |
 
 > **Everything before the previous pruning point stays in the prefix cache.** The cached prefix is the stable foundation; only the new suffix (recent turns since last prune) changes per request.
 
@@ -602,7 +599,7 @@ Implementation: `src/pruner.ts` `pruneMessages(messages, indexer)` returns `{ me
 
 ### Protected tools
 
-`protectedTools: string[]` (default `[]`) is an allowlist of tool names whose outputs must never be pruned. Matching tool calls are filtered out **at capture time** — they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context and the agentic-auto `<pruner-note>` reminder excludes them from its count.
+`protectedTools: string[]` (default `[]`) is an allowlist of tool names whose outputs must never be pruned. Matching tool calls are filtered out **at capture time** — they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context.
 
 Who needs this:
 - Planning skills that maintain state via `todowrite` / `todoread` and expect the agent to re-read the verbatim plan across turns.
@@ -651,7 +648,6 @@ The last attempted prune boundary is persisted as `context-prune-frontier` so `f
 ### Other UI / observability features
 
 - **Tree browser (`/pruner tree`):** interactive, foldable tree of pruned tool calls grouped under their summaries. `Ctrl-O` on a summary node opens the full markdown summary in a bordered overlay.
-- **Agentic-auto unpruned-count reminder (`remindUnprunedCount`):** in `agentic-auto` mode the extension appends a small ephemeral `<pruner-note>` to the last tool result before each generation, reminding the LLM how many unpruned tool calls have piled up. Protected-tool calls are NOT counted.
 - **Configurable summarizer thinking (`summarizerThinking`):** trade summary cost / latency for quality (`off` / `minimal` / `low` / `medium` / `high` / `xhigh`). `default` omits the option entirely so the provider chooses.
 - **Cumulative stats:** `context-prune-stats` entries track input/output tokens and cost of every summarizer call; the totals surface in the footer (`prune: ON (…) │ ↑1.2k ↓340 $0.003`) and `/pruner stats`.
 - **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
@@ -740,7 +736,7 @@ ACON demonstrates that **compression not only saves tokens but can improve agent
 
 ### Token-budget auto-flush trigger
 
-`autoBudgetThreshold` (default `null`) is an ADDITIONAL flush trigger orthogonal to `pruneOn`. When set to a fraction in `(0, 1]`, the extension evaluates `tokens / contextWindow` at the end of every tool-using turn; when the ratio meets the threshold, all pending batches are flushed immediately regardless of the configured `pruneOn` mode. `every-turn` mode already flushes every turn, so the budget check is skipped there to avoid redundant work.
+`autoBudgetThreshold` (default `null`) is an ADDITIONAL flush trigger orthogonal to `pruneOn`. When set to a fraction in `(0, 1]`, the extension evaluates `tokens / contextWindow` at the end of every tool-using turn; when the ratio meets the threshold, all pending batches are flushed immediately regardless of the configured `pruneOn` mode.
 
 Why we compute the ratio ourselves rather than using `ContextUsage.percent`: the provider's `percent` field is a 0–100 value, and both it and `tokens` are `null` immediately after a provider-side compaction. Using `tokens / contextWindow` directly gives a 0–1 fraction that matches the config unit and is independently null-safe — a `null` tokens value makes the trigger a no-op until usage is reported again.
 
@@ -862,7 +858,7 @@ The `context-prune-chain` session entry carries the matching `protectedToolCallI
 
 ### Deferred
 
-- **Model-driven trigger.** The compressor is autonomous (rolling window). A model-callable compress tool (DCP-style: the model compresses a sub-task as it closes), surfaced via `pruneOn: "agentic-auto"` + the `context_prune` tool, is scaffolded but not yet wired to range compression.
+- **Model-driven trigger.** The compressor is autonomous (rolling window). A model-callable compress tool (DCP-style: the model compresses a sub-task as it closes) is not implemented; the earlier scaffolded `agentic-auto` mode + `context_prune` tool were removed in v1.0.0.
 - **Multi-turn span merging.** Each compressed span maps 1:1 to a closed chain (one user -> text-only-assistant round). Merging several consecutive closed spans into one topic summary is future work.
 
 ---
@@ -955,7 +951,7 @@ Stripped thinking is **not** recoverable via `context_tree_query` — unlike too
 |---|---|
 | **Context grows without bound** | Replaces raw tool outputs (~thousands of tokens) with compact summaries (~hundreds) |
 | **Signal lost in noise** | Summaries surface the key decisions and facts; raw data is demoted to on-demand query |
-| **Cache performance** | Batch-then-prune modes (`agent-message`, `on-context-tag`) minimize cache invalidation; stub-replace keeps the pruned tail deterministic so it stays cacheable |
+| **Cache performance** | Batch-then-prune (`agent-message`) minimizes cache invalidation; stub-replace keeps the pruned tail deterministic so it stays cacheable |
 | **Data availability** | `context_tree_query` recovers full original outputs at any time, including aliased duplicates |
 | **Wasted LLM calls** | Pre-flush content-hash dedup catches re-reads at zero cost; `minBatchChars` short-circuits batches too small to be worth summarizing |
 | **Plan / state churn** | `protectedTools` keeps allowlisted tool outputs verbatim across turns |
@@ -968,20 +964,11 @@ Stripped thinking is **not** recoverable via `context_tree_query` — unlike too
 │                        MODE DECISION TREE                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  "I want to debug summaries"                                        │
-│       └──► every-turn                                               │
-│                                                                     │
 │  "I want maximum control"                                           │
 │       └──► on-demand  + /pruner now                                 │
 │                                                                     │
-│  "I use pi-context / context_tag"                                   │
-│       └──► on-context-tag                                           │
-│                                                                     │
 │  "I want the best balance of automation, savings, and cache hits"   │
 │       └──► agent-message  ◄── DEFAULT                               │
-│                                                                     │
-│  "I'm running long autonomous loops"                                │
-│       └──► agentic-auto                                             │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -990,7 +977,6 @@ Stripped thinking is **not** recoverable via `context_tree_query` — unlike too
 
 - Anthropic prompt caching docs: <https://docs.claude.com/en/docs/build-with-claude/prompt-caching>
 - OpenAI prompt caching docs: <https://platform.openai.com/docs/guides/prompt-caching>
-- `pi-context` extension (save-point navigation): <https://github.com/ttttmr/pi-context>
 - SUPO: <https://arxiv.org/abs/2510.06727>
 - ReSum: <https://arxiv.org/abs/2509.13313>
 - ACON: <https://arxiv.org/abs/2510.00615>

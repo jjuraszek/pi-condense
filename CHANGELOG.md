@@ -7,6 +7,15 @@ This fork is consumed via git tag pins (`git:github.com/jjuraszek/pi-context-pru
 The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
 automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
 
+## v1.0.0 — 2026-05-31
+
+- **Removed three `pruneOn` modes**, leaving `agent-message` (default) and `on-demand`:
+  - `every-turn` — debugging-only trigger with the worst prompt-cache churn.
+  - `on-context-tag` — depended on the external `ttttmr/pi-context` extension and overlapped its `context_compact`.
+  - `agentic-auto` — the scaffolded DCP-style model-driven `context_prune` tool was never wired to range compression (see `PRUNING.md § Future Work`).
+- **Removed** the `context_prune` tool, the agentic-auto system prompt, the `<pruner-note>` unpruned-count reminder, and the `remindUnprunedCount` setting. Deleted `src/reminder.ts`, `src/context-prune-tool.ts`, `src/progress-text.ts`.
+- **Migration:** none required. Configs pinned to a removed mode fall back to `agent-message` via `isPruneOn()`. A stale `remindUnprunedCount` key in `settings.json` is ignored.
+
 ## v0.11.1 — 2026-05-28
 
 - **Release flow:** `release.sh` now rewrites every `~/.pi/agent*/settings.json` pin of `git:github.com/jjuraszek/pi-context-prune@<ref>` to the new `@vX.Y.Z` automatically after pushing the tag. Opt out with `--no-update-pins`. Aligns this fork's release workflow with sibling pi-* packages.

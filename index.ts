@@ -19,21 +19,17 @@ import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode } 
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
-import { annotateWithUnprunedCount, countUnprunedToolCalls } from "./src/reminder.js";
 import { registerQueryTool } from "./src/query-tool.js";
 import { registerCommands, setPruneStatusWidget } from "./src/commands.js";
 import { formatSummaryToolCallRefs, makeSummaryDetails } from "./src/summary-refs.js";
 import type { ContextPruneConfig, CapturedBatch, PruneFrontier, FlushOptions } from "./src/types.js";
 import {
   DEFAULT_CONFIG,
-  CONTEXT_PRUNE_TOOL_NAME,
-  AGENTIC_AUTO_SYSTEM_PROMPT,
   CUSTOM_TYPE_SUMMARY,
   CUSTOM_TYPE_STATS,
   CUSTOM_TYPE_FRONTIER,
 } from "./src/types.js";
 import { StatsAccumulator } from "./src/stats.js";
-import { registerContextPruneTool } from "./src/context-prune-tool.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
@@ -43,7 +39,7 @@ import { shouldBudgetFlush } from "./src/budget.js";
 export default function (pi: ExtensionAPI) {
   // Shared mutable config reference — updated by /pruner commands
   const currentConfig: { value: ContextPruneConfig } = {
-    value: { ...DEFAULT_CONFIG, pruneOn: "every-turn" },
+    value: { ...DEFAULT_CONFIG },
   };
 
   // Shared indexer — rebuilt from session on every session_start / session_tree
@@ -128,7 +124,6 @@ export default function (pi: ExtensionAPI) {
     try {
       const branch = ctx.sessionManager.getBranch();
       batches = captureUnindexedBatchesFromSession(branch, indexer, [
-        CONTEXT_PRUNE_TOOL_NAME,
         ...currentConfig.value.protectedTools,
       ]);
     } catch {
@@ -629,23 +624,6 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // ── Helper: toggle context_prune tool activation based on config ───────────
-  // Uses `pi` (ExtensionRuntime) because getActiveTools/setActiveTools are
-  // runtime methods, NOT part of ExtensionContext/ExtensionCommandContext.
-  const syncToolActivation = () => {
-    const shouldActivate = currentConfig.value.enabled && currentConfig.value.pruneOn === "agentic-auto";
-    const activeTools = pi.getActiveTools();
-    if (shouldActivate) {
-      if (!activeTools.includes(CONTEXT_PRUNE_TOOL_NAME)) {
-        pi.setActiveTools([...activeTools, CONTEXT_PRUNE_TOOL_NAME]);
-      }
-    } else {
-      if (activeTools.includes(CONTEXT_PRUNE_TOOL_NAME)) {
-        pi.setActiveTools(activeTools.filter((t: string) => t !== CONTEXT_PRUNE_TOOL_NAME));
-      }
-    }
-  };
-
   // ── session_start: restore config + index + stats ────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
     // Load config from <agent-dir>/settings.json `contextPrune` key (honors PI_CODING_AGENT_DIR)
@@ -668,9 +646,6 @@ export default function (pi: ExtensionAPI) {
 
     // Update footer status
     setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
-
-    // Toggle context_prune tool activation for agentic-auto mode
-    syncToolActivation();
 
     ctx.ui.notify(
       `pruner loaded — pruning ${currentConfig.value.enabled ? "ON" : "OFF"} | model: ${currentConfig.value.summarizerModel}`,
@@ -707,15 +682,12 @@ export default function (pi: ExtensionAPI) {
       event.turnIndex,
       Date.now()
     );
-    // Drop housekeeping (context_prune) and any user-protected tool results so
-    // they stay verbatim in context. Filtering at capture time keeps the
+    // Drop user-protected tool results so they stay verbatim in context.
+    // Filtering at capture time keeps the
     // underlying assistant `toolCall` block AND its `ToolResultMessage`
     // untouched in Pi's session/event stream — only the in-memory
     // CapturedBatch is pruned, which is exactly what we want.
-    const protectedToolSet = new Set<string>([
-      CONTEXT_PRUNE_TOOL_NAME,
-      ...currentConfig.value.protectedTools,
-    ]);
+    const protectedToolSet = new Set<string>(currentConfig.value.protectedTools);
     const batch = trimBatchToPendingRange({
       ...capturedBatch,
       toolCalls: capturedBatch.toolCalls.filter((tc) => !protectedToolSet.has(tc.toolName)),
@@ -724,42 +696,25 @@ export default function (pi: ExtensionAPI) {
 
     pendingBatches.push(batch);
 
-    if (currentConfig.value.pruneOn === "every-turn") {
-      await flushPending(ctx, { delivery: "session" });
-    } else {
-      // Let the user know a batch is queued
-      const n = pendingBatches.length;
-      let trigger: string;
-      switch (currentConfig.value.pruneOn) {
-        case "on-context-tag":
-          trigger = "next context_tag / context_checkpoint";
-          break;
-        case "agent-message":
-          trigger = "agent's next text response";
-          break;
-        case "agentic-auto":
-          trigger = "agent calling context_prune";
-          break;
-        default:
-          trigger = "/pruner now";
-          break;
-      }
-      if (currentConfig.value.showPruneStatusLine) {
-        setPruneStatusWidget(ctx, currentConfig.value, `prune: ${n} pending`);
-        safeNotify(
-          ctx,
-          `pruner: ${n} turn${n === 1 ? "" : "s"} queued — will summarize on ${trigger}`,
-          "info"
-        );
-      }
+    // Let the user know a batch is queued
+    const n = pendingBatches.length;
+    const trigger = currentConfig.value.pruneOn === "agent-message"
+      ? "agent's next text response"
+      : "/pruner now";
+    if (currentConfig.value.showPruneStatusLine) {
+      setPruneStatusWidget(ctx, currentConfig.value, `prune: ${n} pending`);
+      safeNotify(
+        ctx,
+        `pruner: ${n} turn${n === 1 ? "" : "s"} queued — will summarize on ${trigger}`,
+        "info"
+      );
     }
 
     // Token-budget auto-flush: an additional, mode-independent trigger. When context
     // usage crosses autoBudgetThreshold, compact the queued batches now instead of
-    // waiting for this mode's flush boundary. every-turn already flushed above; the
-    // pendingBatches.length guard makes a just-flushed queue a no-op.
+    // waiting for this mode's flush boundary. The pendingBatches.length guard makes
+    // an already-drained queue a no-op.
     if (
-      currentConfig.value.pruneOn !== "every-turn" &&
       pendingBatches.length > 0 &&
       !isFlushing &&
       shouldBudgetFlush(ctx.getContextUsage?.(), currentConfig.value.autoBudgetThreshold)
@@ -767,7 +722,6 @@ export default function (pi: ExtensionAPI) {
       // Always surface the budget flush (even when the routine status line is off):
       // it's a significant, infrequent event — context crossed the threshold — and
       // self-throttles because pendingBatches is drained right after.
-      const n = pendingBatches.length;
       safeNotify(
         ctx,
         `pruner: context budget reached — compacting ${n} pending turn${n === 1 ? "" : "s"}`,
@@ -775,18 +729,6 @@ export default function (pi: ExtensionAPI) {
       );
       await flushPending(ctx, { delivery: "session" });
     }
-  });
-
-  // ── tool_execution_end: flush when context_tag / context_checkpoint fires ─
-  // `context_tag` is the legacy tool name from older versions of ttttmr/pi-context;
-  // the current upstream renamed it to `context_checkpoint`. Accept both so users
-  // on either version trigger the on-context-tag flush. The mode value itself stays
-  // `on-context-tag` for backward compatibility with persisted configs.
-  pi.on("tool_execution_end", async (event, ctx) => {
-    if (event.toolName !== "context_tag" && event.toolName !== "context_checkpoint") return;
-    if (!currentConfig.value.enabled) return;
-    if (currentConfig.value.pruneOn !== "on-context-tag") return;
-    await flushPending(ctx, { delivery: "runtime" });
   });
 
   // ── message_end: flush after the final assistant response in agent-message mode ──
@@ -835,43 +777,12 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // Append a small `<pruner-note>` to the last toolResult telling the model
-    // how many unpruned tool calls are sitting in context. Only active in
-    // agentic-auto mode (where the LLM itself decides when to call
-    // context_prune) and only when the user has the reminder enabled.
-    if (
-      currentConfig.value.pruneOn === "agentic-auto" &&
-      currentConfig.value.remindUnprunedCount
-    ) {
-      const count = countUnprunedToolCalls(messages, indexer, currentConfig.value.protectedTools);
-      if (count > 0) {
-        const annotated = annotateWithUnprunedCount(messages, count);
-        if (annotated !== messages) {
-          messages = annotated;
-          changed = true;
-        }
-      }
-    }
-
     if (!changed) return undefined;
     return { messages };
   });
 
-  // ── before_agent_start: inject system prompt for agentic-auto mode ───────────
-  pi.on("before_agent_start", async (event, _ctx) => {
-    if (!currentConfig.value.enabled || currentConfig.value.pruneOn !== "agentic-auto") return undefined;
-    // Append agentic-auto instructions to the system prompt
-    const appended = AGENTIC_AUTO_SYSTEM_PROMPT;
-    const original = event.systemPrompt ?? "";
-    const newPrompt = original + "\n\n" + appended;
-    return { systemPrompt: newPrompt };
-  });
-
   // ── Register context_tree_query tool ──────────────────────────────────────
   registerQueryTool(pi, indexer);
-
-  // ── Register context_prune tool (always registered, activated only in agentic-auto mode) ──
-  registerContextPruneTool(pi, (ctx, options) => flushPending(ctx, { delivery: "runtime", ...options }));
 
   // ── Register /pruner command + summary message renderer ────────────
   const compactChains = async (ctx: any) => {
@@ -898,5 +809,5 @@ export default function (pi: ExtensionAPI) {
     return { compressedEntries: result.compressedEntries, skipped: result.skipped.filter((s) => s.reason === "no-summary").length };
   };
 
-  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, syncToolActivation, () => statsAccum.getStats(), indexer, compactChains);
+  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, () => statsAccum.getStats(), indexer, compactChains);
 }

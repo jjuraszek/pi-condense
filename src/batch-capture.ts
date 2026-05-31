@@ -61,7 +61,7 @@ export function captureBatch(
  *
  * @param branch            The session message branch (from ctx.sessionManager.getBranch())
  * @param indexer           The pruner indexer to check for already-summarized IDs
- * @param excludeToolNames  Optional tool names to skip (e.g. context_prune itself)
+ * @param excludeToolNames  Optional tool names to skip (e.g. user-protected tools)
  */
 export function captureUnindexedBatchesFromSession(
   branch: any[],
@@ -125,7 +125,7 @@ export function captureUnindexedBatchesFromSession(
       const results = readyToPrune.map((tc: any) => resultMap.get(tc.id));
       const readyIds = new Set(readyToPrune.map((tc: any) => tc.id));
       // We pass the full message but then trim back down to only the tool calls
-      // whose results already exist in the session. This lets agentic-auto prune
+      // whose results already exist in the session. This lets a flush prune
       // an intermediate completed subset in the middle of a longer tool chain
       // without accidentally capturing later unresolved calls from the same
       // assistant message as "(no result)" placeholders.

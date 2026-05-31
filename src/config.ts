@@ -42,10 +42,6 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
     summarizerThinking: isSummarizerThinking(merged.summarizerThinking)
       ? merged.summarizerThinking
       : DEFAULT_CONFIG.summarizerThinking,
-    remindUnprunedCount:
-      typeof merged.remindUnprunedCount === "boolean"
-        ? merged.remindUnprunedCount
-        : DEFAULT_CONFIG.remindUnprunedCount,
     quietOversizedSkips:
       typeof merged.quietOversizedSkips === "boolean"
         ? merged.quietOversizedSkips

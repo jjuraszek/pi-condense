@@ -72,7 +72,7 @@ src/
   summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
   stats.ts                         # StatsAccumulator + formatting helpers
   types.ts                         # all shared types, constants, DEFAULT_CONFIG
-  (other src/*.ts)                 # frontier, config, dedup, tree-browser, context-prune-tool
+  (other src/*.ts)                 # frontier, config, dedup, tree-browser
 .agents/skills/                    # in-repo skills (release)
 doc/specs/                         # specs + plans (superpowers brainstorming/writing-plans)
 .worktrees/                        # git worktrees for feature branches (gitignored)

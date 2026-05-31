@@ -15,19 +15,19 @@ This fork is consumed as a pi package via a **git tag pin** — same scheme as s
 **User scope** (all repos under your pi profile):
 
 ```bash
-pi install git:github.com/jjuraszek/pi-context-prune@v0.11.1
+pi install git:github.com/jjuraszek/pi-context-prune@v1.0.0
 ```
 
 **Project scope** (current repo only, committable via `.pi/settings.json`):
 
 ```bash
-pi install -l git:github.com/jjuraszek/pi-context-prune@v0.11.1
+pi install -l git:github.com/jjuraszek/pi-context-prune@v1.0.0
 ```
 
 **Try without installing**:
 
 ```bash
-pi -e git:github.com/jjuraszek/pi-context-prune@v0.11.1
+pi -e git:github.com/jjuraszek/pi-context-prune@v1.0.0
 ```
 
 **From a local checkout** (for hacking on the extension itself):
@@ -57,15 +57,12 @@ By default the extension is **off**. Enable it once and it stays enabled across 
 
 ## How it decides when to prune
 
-Five trigger modes. The mode controls *when* summarization fires; the algorithm is the same in each.
+Two trigger modes. The mode controls *when* summarization fires; the algorithm is the same in each.
 
 | Mode | Trigger | Cache impact | Use when |
 |---|---|---|---|
 | `agent-message` (default) | When the agent sends a final text-only reply | One cache rewrite per task batch | Normal coding-agent work — best balance |
-| `every-turn` | After every tool-calling turn | Cache rewritten on almost every turn | Debugging the extension; inspecting summaries |
-| `on-context-tag` | When `context_checkpoint` (or legacy `context_tag`) fires | One rewrite per checkpoint | You already use [`pi-context`](https://github.com/ttttmr/pi-context) save-points |
 | `on-demand` | Only when you run `/pruner now` | None until you ask | Long investigations; manual control |
-| `agentic-auto` | The LLM calls the `context_prune` tool itself | Depends on model discipline | Long autonomous runs after some prompt-tuning |
 
 Why `agent-message` is the default: provider prefix caches (Anthropic, OpenAI, Bedrock, vLLM) only hit when the prompt prefix matches exactly. Every prune rewrites that prefix. Batching tool turns and pruning once per agent reply means roughly one cache miss per task instead of one per turn. See [PRUNING.md § The Sweet Spot](PRUNING.md#the-sweet-spot-batch-and-prune) for the full argument.
 
@@ -82,7 +79,6 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "summarizerThinking": "default",
     "pruneOn": "agent-message",
     "batchingMode": "turn",
-    "remindUnprunedCount": true,
     "quietOversizedSkips": false,
     "minBatchChars": 1000,
     "protectedTools": [],
@@ -110,7 +106,6 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `summarizerThinking` | `default`/`off`/`minimal`/`low`/`medium`/`high`/`xhigh` | `default` | Provider-specific reasoning effort knob |
 | `pruneOn` | see table above | `agent-message` | Trigger mode |
 | `batchingMode` | `turn` / `agent-message` | `turn` | How coarse each summary is (independent of `pruneOn`) |
-| `remindUnprunedCount` | `true` / `false` | `true` | `agentic-auto` only — appends a tiny `<pruner-note>` reminding the LLM of unpruned count |
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard — batches smaller than this skip the LLM entirely |
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` — protected outputs are never lost. |
@@ -132,7 +127,7 @@ The three pre-flush features (`minBatchChars`, `protectedTools`, `dedupByContent
 
 ### Token-budget auto-flush
 
-When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks context usage at the end of every tool-using turn. If `tokens / contextWindow` reaches the threshold, ALL pending batches are flushed immediately — regardless of `pruneOn` mode. This is an **additional** trigger layered on top of `pruneOn`, not a replacement; `every-turn` mode already flushes every turn so the budget check is skipped there.
+When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks context usage at the end of every tool-using turn. If `tokens / contextWindow` reaches the threshold, ALL pending batches are flushed immediately — regardless of `pruneOn` mode. This is an **additional** trigger layered on top of `pruneOn`, not a replacement.
 
 - `0.8` means 80% of the context window — it is a **fraction**, not a percentage. `0.8 ≠ 80`.
 - The trigger is a no-op when `tokens` is `null` (right after a provider-side compaction); it resumes once usage is known again.
@@ -186,15 +181,13 @@ Set it from the slash command (saves immediately):
 
 **`context_tree_query`** — always available when the extension is loaded. Pruned summaries end with short refs like `Summarized tool refs: \`t1\`, \`t2\`. Use \`context_tree_query\` with these refs to retrieve the original full outputs.` The model passes those refs (or full `toolCallId`s) and gets back the original tool result text from the session index. Content-hash-deduped duplicates resolve to the original's record automatically.
 
-**`context_prune`** — active only when `pruneOn === "agentic-auto"`. The LLM calls it after a meaningful batch of work (the system prompt nudges toward 8–10 tool calls, not every 2–3). The tool flushes every pending batch, streams compact progress into the running tool output box, and returns a `FlushResult` describing how many tool calls were summarized / deduped / skipped.
-
 ## Footer status widget
 
 A footer widget shows the current state, controlled by `showPruneStatusLine`:
 
 - `prune: OFF (On agent message)` — disabled, showing what mode would activate
 - `prune: ON (On agent message)` — active, no flushes yet
-- `prune: ON (Every turn) │ ↑1.2k ↓340 $0.003` — active with cumulative input/output tokens and cost
+- `prune: ON (On agent message) │ ↑1.2k ↓340 $0.003` — active with cumulative input/output tokens and cost
 - `prune: 3 pending` — batches queued, waiting for the trigger
 - `prune: summarizing…` — flush in progress
 
@@ -217,5 +210,4 @@ Setting `showPruneStatusLine: false` hides the widget and silences the queued-tu
 - Anthropic prompt caching: <https://docs.claude.com/en/docs/build-with-claude/prompt-caching>
 - AWS Bedrock prompt caching: <https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html>
 - OpenAI prompt caching: <https://platform.openai.com/docs/guides/prompt-caching>
-- `pi-context` extension (`context_checkpoint` / `context_tag`): <https://github.com/ttttmr/pi-context>
 - Research backing summarization-based context management: see [PRUNING.md § Research Evidence](PRUNING.md#why-summarization-works-research-evidence)

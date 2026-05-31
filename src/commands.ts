@@ -99,11 +99,8 @@ const SUBCOMMANDS = [
 // ── Help text ───────────────────────────────────────────────────────────────
 
 const PRUNE_MODE_GUIDANCE: Record<ContextPruneConfig["pruneOn"], string> = {
-  "every-turn": "Debugging only. Prunes after every tool turn, which is easiest to inspect but churns provider prompt caches the most.",
-  "on-context-tag": "Good for milestone-based workflows. Flushes when context_tag (legacy) or context_checkpoint (current) is called; requires the pi-context extension for automatic triggering.",
-  "on-demand": "Maximum manual control. Nothing is pruned until you run /pruner now, so cache invalidation happens only when you choose.",
   "agent-message": "Recommended default. Batches tool work and prunes once after the final text reply, giving the best balance of automation, context savings, and cache stability.",
-  "agentic-auto": "Useful for longer autonomous runs. Lets the model call context_prune, but depends on the model using it sparingly.",
+  "on-demand": "Maximum manual control. Nothing is pruned until you run /pruner now, so cache invalidation happens only when you choose.",
 };
 
 function pruneModeGuidance(mode: ContextPruneConfig["pruneOn"]): string {
@@ -161,14 +158,6 @@ function batchingModeDescription(mode: ContextPruneConfig["batchingMode"]): stri
     return "Per turn (default): one summary per assistant turn. Keeps summaries small and granular.";
   }
   return "Per agent message: merges all assistant turns between two user messages into one summary. Fewer, larger summaries per conversation exchange.";
-}
-
-function remindUnprunedCountDescription(config: ContextPruneConfig): string {
-  const base = config.remindUnprunedCount ? "ON" : "OFF";
-  if (config.pruneOn === "agentic-auto") {
-    return `Inject a small <pruner-note> reminder before each LLM call telling the model how many unpruned tool calls are in context. Currently ${base}. Only active in agentic-auto mode.`;
-  }
-  return `Inject a small <pruner-note> reminder before each LLM call. Currently ${base}, but has NO effect in '${config.pruneOn}' mode — only honored when prune trigger is 'agentic-auto'.`;
 }
 
 function pruneStatusLineDescription(config: ContextPruneConfig): string {
@@ -230,11 +219,8 @@ Usage:
   /pruner thinking                         Show the current summarizer thinking level
   /pruner thinking <level>                 Set summarizer thinking: default, off, minimal, low, medium, high, xhigh
   /pruner prune-on                         Show or interactively pick the trigger
-  /pruner prune-on every-turn              Summarize after every tool-calling turn (debugging only; worst for prompt cache churn)
-  /pruner prune-on on-context-tag          Summarize when context_tag (legacy) or context_checkpoint (current) is called (requires pi-context extension)
   /pruner prune-on on-demand               Only summarize when /pruner now runs
   /pruner prune-on agent-message           Summarize after the agent's final text reply (default; safest for cache stability)
-  /pruner prune-on agentic-auto            LLM decides when to prune via context_prune tool
   /pruner batching                         Show or interactively pick the batching granularity
   /pruner batching turn                    One summary per assistant turn (default)
   /pruner batching agent-message           One summary per user→final-agent-message span (merges all turns in a span)
@@ -250,14 +236,6 @@ Usage:
   /pruner dedup on|off                     Enable or disable content-hash dedup
   /pruner help                             Show this help
 
-Agentic-auto reminder:
-  When prune-on is 'agentic-auto' and remindUnprunedCount is true (default), the
-  extension appends a tiny <pruner-note> line to the last toolResult before each
-  LLM call telling the model how many unpruned tool calls have piled up. This
-  helps the LLM decide when to call context_prune. Toggle via /pruner settings.
-  This setting has no effect in any other prune-on mode.
-  Tools in the protected-tools allowlist are NOT counted toward this reminder.
-
 Trivial-batch skip (minBatchChars):
   If the total raw resultText across a batch is below minBatchChars, the
   batch is skipped: no summarizer LLM call is made, no summary message is
@@ -272,8 +250,7 @@ Protected tools:
   like todowrite / todoread that carry state the agent re-reads later. List
   those tool names in 'protectedTools' (settings) or via /pruner protected-tools.
   Protected calls bypass the summarizer/index entirely: their raw
-  ToolResultMessage stays in context, and they are not counted toward the
-  agentic-auto unpruned-count reminder. Names that don't match any captured
+  ToolResultMessage stays in context. Names that don't match any captured
   tool call are silently ignored.
 
 Content-hash dedup (dedupByContentHash):
@@ -296,17 +273,13 @@ Batching mode:
     Use this when a single user request triggers many back-to-back tool rounds that belong together.
 
 Mode guidance:
-  - every-turn: only for debugging / testing summary behavior. Rewrites earlier context too often and can repeatedly bust provider prompt caches.
-  - on-context-tag: good if you already use pi-context save-points. Prunes on explicit milestones via context_tag (legacy name) or context_checkpoint (current name in pi-context).
   - on-demand: maximum manual control. Best when you want to decide exactly when to trade cache stability for shorter context.
   - agent-message: recommended default. Batches a whole tool-using run, then prunes once after the final text reply so future requests become cacheable again.
-  - agentic-auto: useful for longer autonomous runs, but depends on the model using context_prune sparingly.
 
 Why this matters:
   Frequent edits to earlier context can reduce prompt/prefix cache hits on providers that cache identical prefixes. Batched pruning is usually cheaper and faster than pruning every turn.
 
 Related:
-  - pi-context extension (provides context_tag / context_checkpoint): https://github.com/ttttmr/pi-context
   - Anthropic prompt caching docs: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
 
 Settings are saved under the "contextPrune" key in <agent-dir>/settings.json (where <agent-dir> is $PI_CODING_AGENT_DIR or ~/.pi/agent).`;
@@ -440,7 +413,6 @@ export function registerCommands(
     | { ok: false; reason: string; error?: string }
   >,
   capturePendingBatches: (ctx: ExtensionCommandContext) => CapturedBatch[],
-  syncToolActivation: () => void,
   getStats: () => SummarizerStats,
   indexer: ToolCallIndexer,
   compactChains: (ctx: ExtensionCommandContext) => Promise<{ compressedEntries: ChainCompressionEntry[]; skipped: number }>,
@@ -536,13 +508,6 @@ export function registerCommands(
               values: SUMMARIZER_THINKING_LEVELS.map((level) => level.value),
               currentValue: config.summarizerThinking,
               description: summarizerThinkingDescription(config.summarizerThinking),
-            },
-            {
-              id: "remindUnprunedCount",
-              label: "Remind unpruned count",
-              values: ["true", "false"],
-              currentValue: String(config.remindUnprunedCount),
-              description: remindUnprunedCountDescription(config),
             },
             {
               id: "batchingMode",
@@ -692,10 +657,6 @@ export function registerCommands(
               if (pruneTriggerItem) {
                 pruneTriggerItem.description = pruneTriggerDescription(newConfig.pruneOn);
               }
-              const remindItem = items.find((item) => item.id === "remindUnprunedCount");
-              if (remindItem) {
-                remindItem.description = remindUnprunedCountDescription(newConfig);
-              }
             } else if (id === "summarizerModel") {
               newConfig.summarizerModel = newValue;
             } else if (id === "summarizerThinking") {
@@ -703,16 +664,6 @@ export function registerCommands(
               const thinkingItem = items.find((item) => item.id === "summarizerThinking");
               if (thinkingItem) {
                 thinkingItem.description = summarizerThinkingDescription(newConfig.summarizerThinking);
-              }
-            } else if (id === "remindUnprunedCount") {
-              newConfig.remindUnprunedCount = newValue === "true";
-              const remindItem = items.find((item) => item.id === "remindUnprunedCount");
-              if (remindItem) {
-                remindItem.description = remindUnprunedCountDescription(newConfig);
-              }
-              const pruneTriggerItem = items.find((item) => item.id === "pruneOn");
-              if (pruneTriggerItem) {
-                pruneTriggerItem.description = pruneTriggerDescription(newConfig.pruneOn);
               }
             } else if (id === "batchingMode") {
               newConfig.batchingMode = newValue as ContextPruneConfig["batchingMode"];
@@ -786,8 +737,6 @@ export function registerCommands(
             saveConfig(newConfig);
             setPruneStatusWidget(ctx, newConfig, getStats());
             settingsList?.invalidate();
-            // Toggle context_prune tool activation when config changes
-            syncToolActivation();
           };
 
           settingsList = new SettingsList(
@@ -822,7 +771,6 @@ export function registerCommands(
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning enabled.");
           setPruneStatusWidget(ctx, currentConfig.value, getStats());
-          syncToolActivation();
           break;
         }
 
@@ -832,7 +780,6 @@ export function registerCommands(
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning disabled.");
           setPruneStatusWidget(ctx, currentConfig.value, getStats());
-          syncToolActivation();
           break;
         }
 
@@ -845,7 +792,7 @@ export function registerCommands(
             ? `\n  --- summarizer ---\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`
             : "\n  (no summarizer calls yet)";
           ctx.ui.notify(
-            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}\n  remind:   ${cfg.remindUnprunedCount ? "on" : "off"} (agentic-auto only)${statsLine}`,
+            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}${statsLine}`,
           );
           break;
         }
@@ -943,7 +890,7 @@ export function registerCommands(
             const options = PRUNE_ON_MODES.map((m) => `${m.value} — ${m.label}`);
             const choice = await ctx.ui.select("pruner — choose when to trigger summarization", options);
             if (!choice) return;
-            // Extract the value (first word) from "every-turn — Every turn"
+            // Extract the value (first word) from "agent-message — On agent message"
             const chosenValue = choice.split(/\s+/)[0] as ContextPruneConfig["pruneOn"];
             currentConfig.value = { ...currentConfig.value, pruneOn: chosenValue };
           } else {
@@ -951,7 +898,6 @@ export function registerCommands(
           }
           saveConfig(currentConfig.value);
           setPruneStatusWidget(ctx, currentConfig.value, getStats());
-          syncToolActivation();
           break;
         }
 
