@@ -28,10 +28,10 @@ LLM-readable artifacts (`AGENTS.md`, `README.md`, `PRUNING.md`, `doc/specs/*.md`
 
 Never guess Pi's API or message shapes. Read the source.
 
-- **Pi event/extension API:** `node_modules/@mariozechner/pi-coding-agent/dist/core/extensions/types.d.ts` — `ExtensionAPI`, `ExtensionContext`, every `pi.on(...)` event payload, `appendEntry`, `setActiveTools`, `setWidget`, `sendMessage`.
-- **LLM message shapes:** `node_modules/@mariozechner/pi-ai/dist/types.d.ts` — `AssistantMessage`, `ToolResultMessage`, `ToolCall`, `UsageInfo`. Field names matter (`id` vs `toolCallId`, `arguments` vs `input`); the type files are authoritative.
-- **pi-ai's auto-repair behavior:** `node_modules/@mariozechner/pi-ai/dist/providers/transform-messages.js` — `insertSyntheticToolResults` injects `{ isError: true, "No result provided" }` for orphaned tool calls. Knowing this is the reason `src/pruner.ts` returns stub messages instead of deleting them.
-- **Session entry layout:** `node_modules/@mariozechner/pi-coding-agent/dist/core/session-manager.d.ts` — `getBranch()` returns `SessionEntry[]` (wrapped messages), not `AgentMessage[]`.
+- **Pi event/extension API:** `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` — `ExtensionAPI`, `ExtensionContext`, every `pi.on(...)` event payload, `appendEntry`, `setActiveTools`, `setWidget`, `sendMessage`.
+- **LLM message shapes:** `node_modules/@earendil-works/pi-ai/dist/types.d.ts` — `AssistantMessage`, `ToolResultMessage`, `ToolCall`, `UsageInfo`. Field names matter (`id` vs `toolCallId`, `arguments` vs `input`); the type files are authoritative.
+- **pi-ai's auto-repair behavior:** `node_modules/@earendil-works/pi-ai/dist/providers/transform-messages.js` — `insertSyntheticToolResults` injects `{ isError: true, "No result provided" }` for orphaned tool calls. Knowing this is the reason `src/pruner.ts` returns stub messages instead of deleting them.
+- **Session entry layout:** `node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts` — `getBranch()` returns `SessionEntry[]` (wrapped messages), not `AgentMessage[]`.
 
 If the source contradicts an assumption, the source wins. If the source is missing, say so and ask — don't fabricate.
 

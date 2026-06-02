@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ContextPruneConfig, PruneOn, SummarizerThinking } from "./types.js";
 import { DEFAULT_CONFIG, PRUNE_ON_MODES, SUMMARIZER_THINKING_LEVELS } from "./types.js";
 

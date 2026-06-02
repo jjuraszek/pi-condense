@@ -1,4 +1,4 @@
-import type { AssistantMessage, UserMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import { CUSTOM_TYPE_SUMMARY } from "./types.js";
 import type { ChainCompressionEntry } from "./types.js";
 import { substituteBlockRefs } from "./nested-placeholders.js";

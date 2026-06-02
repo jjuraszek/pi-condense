@@ -13,7 +13,7 @@
  * Usage:  pi -e .
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
 import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode } from "./src/batch-capture.js";
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";

@@ -1,10 +1,10 @@
 import type { SummarizerStats } from "./types.js";
 import { CUSTOM_TYPE_STATS } from "./types.js";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * Usage shape returned by the LLM `complete()` call.
- * Mirrors the `Usage` interface from `@mariozechner/pi-ai` but declared locally
+ * Mirrors the `Usage` interface from `@earendil-works/pi-ai` but declared locally
  * so we don't need a runtime import just for the type.
  */
 interface Usage {

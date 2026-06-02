@@ -1,4 +1,4 @@
-import type { ContextUsage } from "@mariozechner/pi-coding-agent";
+import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 
 /**
  * True iff a budget-triggered flush should fire. Computes the ratio ourselves
