@@ -61,16 +61,22 @@ export function pruneMessages(
     if (msg.role === "toolResult" && indexer.isSummarized(msg.toolCallId)) {
       pruned = true;
       const ref = indexer.getShortRefForToolCallId(msg.toolCallId) ?? msg.toolCallId;
+      const record = indexer.getRecord(msg.toolCallId);
+      const text = record?.spillPath
+        ? [
+            `[Oversized output spilled to file — ${record.spillBytes ?? "?"} bytes.]`,
+            `Tool: ${record.toolName}`,
+            `Preview (head):`,
+            record.resultPreview ?? "",
+            `Full output — read this file (offset/limit supported): ${record.spillPath}`,
+            `Or use context_tree_query with ref \`${ref}\`.`,
+          ].join("\n")
+        : `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`;
       return {
         role: "toolResult",
         toolCallId: msg.toolCallId,
         toolName: msg.toolName,
-        content: [
-          {
-            type: "text",
-            text: `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`,
-          },
-        ],
+        content: [{ type: "text", text }],
         isError: false,
         timestamp: msg.timestamp,
       };

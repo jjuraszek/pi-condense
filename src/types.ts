@@ -309,6 +309,15 @@ export interface ContextPruneConfig {
    * values (<= 0 or > 1) normalize to null.
    */
   autoBudgetThreshold: number | null;
+  /** Min chars (resultText.length) for a single tool result to spill to a sidecar file. */
+  spillThreshold: number;
+  /** Head-preview size in bytes kept inline as resultPreview on a spilled record. */
+  spillPreviewBytes: number;
+  /**
+   * Per-turn usage-fraction increase (0–1) that forces a flush, independent of
+   * autoBudgetThreshold. null (default) = disabled. Out-of-range (<= 0 or > 1) normalizes to null.
+   */
+  budgetTurnDelta: number | null;
 }
 
 /**
@@ -448,6 +457,9 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   },
   dedupByContentHash: true,
   autoBudgetThreshold: null,
+  spillThreshold: 65536,
+  spillPreviewBytes: 2048,
+  budgetTurnDelta: null,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────
@@ -459,6 +471,10 @@ export interface CapturedToolCall {
   args: Record<string, unknown>;
   resultText: string;
   isError: boolean;
+  spillPath?: string;
+  spillBytes?: number;
+  resultPreview?: string;
+  contentHash?: string;
 }
 
 /**
@@ -492,11 +508,19 @@ export interface ToolCallRecord {
   toolCallId: string;
   toolName: string;
   args: Record<string, unknown>;
-  /** Full original result text (potentially large; truncated only at query time) */
+  /** Full original result text. Empty ("") for spilled records — body lives in the sidecar file at spillPath. */
   resultText: string;
   isError: boolean;
   turnIndex: number;
   timestamp: number;
+  /** Absolute path to the sidecar blob holding the full body (set only when the result was spilled). */
+  spillPath?: string;
+  /** Full byte length of the spilled body. */
+  spillBytes?: number;
+  /** Head preview kept inline when spilled (resultText is "" in that case). */
+  resultPreview?: string;
+  /** Dedup hash of the FULL body, persisted so reconstruct/addBatch skip rehashing the empty resultText. */
+  contentHash?: string;
 }
 
 // ── Session persistence types ──────────────────────────────────────────────

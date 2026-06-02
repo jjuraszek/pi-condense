@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { Type } from "@sinclair/typebox";
 import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -43,7 +44,17 @@ export function registerQueryTool(pi: ExtensionAPI, indexer: ToolCallIndexer): v
           "",
         ].join("\n");
 
-        const t = truncateHead(record.resultText, {
+        let raw = record.resultText;
+        if (record.spillPath) {
+          try {
+            raw = await readFile(record.spillPath, "utf-8");
+          } catch (err) {
+            console.error(`context_tree_query: failed to read spilled output at ${record.spillPath}:`, err);
+            raw = record.resultPreview ?? "(spilled output unavailable — sidecar file missing)";
+          }
+        }
+
+        const t = truncateHead(raw, {
           maxLines: DEFAULT_MAX_LINES,
           maxBytes: DEFAULT_MAX_BYTES,
         });

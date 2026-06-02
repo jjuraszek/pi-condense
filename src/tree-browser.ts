@@ -154,9 +154,11 @@ function toolCallNode(record: ToolCallRecord, depth: number): TreeNode {
   const argsText = Object.entries(record.args)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
     .join(", ");
-  const charCount = record.resultText.length;
-  const label = `${record.toolName}(${argsText}) · ${formatChars(charCount)} chars${record.isError ? " [error]" : ""}`;
-  const resultPreview = record.resultText.slice(0, 200).replace(/\s+/g, " ");
+  const charCount = record.resultText.length || record.spillBytes || 0;
+  const unit = record.resultText.length ? "chars" : (record.spillBytes ? "bytes" : "chars");
+  const label = `${record.toolName}(${argsText}) · ${formatChars(charCount)} ${unit}${record.isError ? " [error]" : ""}`;
+  const previewSource = record.resultText || record.resultPreview || "";
+  const resultPreview = previewSource.slice(0, 200).replace(/\s+/g, " ");
   return {
     id: record.toolCallId,
     label,

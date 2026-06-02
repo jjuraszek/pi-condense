@@ -63,6 +63,25 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       merged.autoBudgetThreshold <= 1
         ? merged.autoBudgetThreshold
         : DEFAULT_CONFIG.autoBudgetThreshold,
+    spillThreshold:
+      typeof merged.spillThreshold === "number" &&
+      Number.isFinite(merged.spillThreshold) &&
+      merged.spillThreshold > 0
+        ? Math.floor(merged.spillThreshold)
+        : DEFAULT_CONFIG.spillThreshold,
+    spillPreviewBytes:
+      typeof merged.spillPreviewBytes === "number" &&
+      Number.isFinite(merged.spillPreviewBytes) &&
+      merged.spillPreviewBytes >= 0
+        ? Math.floor(merged.spillPreviewBytes)
+        : DEFAULT_CONFIG.spillPreviewBytes,
+    budgetTurnDelta:
+      typeof merged.budgetTurnDelta === "number" &&
+      Number.isFinite(merged.budgetTurnDelta) &&
+      merged.budgetTurnDelta > 0 &&
+      merged.budgetTurnDelta <= 1
+        ? merged.budgetTurnDelta
+        : DEFAULT_CONFIG.budgetTurnDelta,
   };
 }
 

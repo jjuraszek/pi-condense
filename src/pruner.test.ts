@@ -8,15 +8,18 @@ function makeMockIndexer({
   shortRefs = new Map<string, string>(),
   chainEntries = [] as ChainCompressionEntry[],
   summaryBodyMap = new Map<string, string>(),
+  records = new Map<string, any>(),
 }: {
   summarized?: Set<string>;
   shortRefs?: Map<string, string>;
   chainEntries?: ChainCompressionEntry[];
   summaryBodyMap?: Map<string, string>;
+  records?: Map<string, any>;
 } = {}) {
   return {
     isSummarized: (id: string) => summarized.has(id),
     getShortRefForToolCallId: (id: string) => shortRefs.get(id),
+    getRecord: (id: string) => records.get(id),
     getChainEntries: () => chainEntries,
     getPerBatchSummaryTextForToolCallIds: (ids: string[]) => {
       for (const id of ids) {
@@ -304,6 +307,44 @@ describe("pruneMessages", () => {
     const errAsst = out.find((m: any) => m.role === "assistant" && m.timestamp === 100) as any;
     expect(errAsst).toBeDefined();
     expect(errAsst.content[0].arguments._purged).toMatch(/^<purged-errored-args size=/);
+  });
+
+  it("spill stub tolerates absent spillBytes/resultPreview", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1"]),
+      records: new Map([["tc1", {
+        toolCallId: "tc1", toolName: "bash", args: {}, resultText: "",
+        spillPath: "/blobs/tc1.txt", isError: false, turnIndex: 0, timestamp: 1,
+      }]]),
+    });
+    const messages = [{ role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1 }];
+    const { messages: out } = pruneMessages(messages, indexer);
+    const text = out[0].content[0].text as string;
+    expect(text).toContain("/blobs/tc1.txt");
+    expect(text).toContain("?");
+    expect(text).not.toContain("Summarized in pruner summary");
+  });
+
+  it("emits a mechanical spill stub for a spilled record", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1"]),
+      records: new Map([["tc1", {
+        toolCallId: "tc1", toolName: "fetch", args: { url: "https://x" },
+        resultText: "", resultPreview: "PREVIEW-HEAD", spillPath: "/blobs/tc1.txt",
+        spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
+      }]]),
+    });
+    const messages = [{
+      role: "toolResult", toolCallId: "tc1", toolName: "fetch",
+      content: [{ type: "text", text: "huge" }], isError: false, timestamp: 1,
+    }];
+    const { messages: out, pruned } = pruneMessages(messages, indexer);
+    expect(pruned).toBe(true);
+    const text = out[0].content[0].text as string;
+    expect(text).toContain("/blobs/tc1.txt");
+    expect(text).toContain("PREVIEW-HEAD");
+    expect(text).toContain("1048576");
+    expect(text).not.toContain("Summarized in pruner summary");
   });
 
   it("skips chain compression when disabled", () => {

@@ -17,12 +17,14 @@
 9. [Pre-flush Pipeline & Safeguards](#pre-flush-pipeline--safeguards)
    - [Stub-replace instead of delete](#stub-replace-instead-of-delete)
    - [Protected tools](#protected-tools)
+   - [Eager single-result spill](#eager-single-result-spill)
    - [Trivial-batch skip (minBatchChars)](#trivial-batch-skip-minbatchchars)
    - [Content-hash dedup](#content-hash-dedup)
    - [Oversized summary skip](#oversized-summary-skip)
    - [Frontier persistence](#frontier-persistence)
    - [Other UI / observability features](#other-ui--observability-features)
    - [Token-budget auto-flush trigger](#token-budget-auto-flush-trigger)
+   - [Budget-delta flush](#budget-delta-flush)
 10. [Chain Compression](#chain-compression)
     - [Protected-output relocation](#protected-output-relocation)
 11. [Error Purge](#error-purge)
@@ -561,20 +563,25 @@ captured batches (from turn_end or session scan)
   ├─ 1. Protected-tools filter        (capture-time, see below)
   │     tool calls whose toolName is in protectedTools never enter the batch
   │
-  ├─ 2. Frontier trim                 (drop tool calls already past the frontier)
+  ├─ 2. Eager single-result spill     (config: spillThreshold, default 65536)
+  │     turn_end: single result >= spillThreshold chars → write sidecar;
+  │     index immediately via addBatch (no LLM); pruner emits file-pointer stub;
+  │     dedup precedence: protected → dedup → spill (duplicate → alias, no second file)
   │
-  ├─ 3. Content-hash dedup            (config: dedupByContentHash, default ON)
+  ├─ 3. Frontier trim                 (drop tool calls already past the frontier)
+  │
+  ├─ 4. Content-hash dedup            (config: dedupByContentHash, default ON)
   │     identical (toolName, normalize(resultText)) → alias of original;
   │     no LLM call; persist as context-prune-dedup-alias
   │
-  ├─ 4. Trivial-batch skip            (config: minBatchChars, default 1000)
+  ├─ 5. Trivial-batch skip            (config: minBatchChars, default 1000)
   │     batches whose remaining raw chars < threshold → skip; no LLM call;
   │     leave originals in context; advance frontier
   │
-  ├─ 5. Summarizer LLM call           (parallel: one call per batch)
+  ├─ 6. Summarizer LLM call           (parallel: one call per batch)
   │     resolveModel + summarizeBatch / summarizeBatches
   │
-  └─ 6. Oversized post-check          (summary >= raw? → skip; advance frontier)
+  └─ 7. Oversized post-check          (summary >= raw? → skip; advance frontier)
 ```
 
 The outcome label written into `context-prune-frontier` is one of `summarized`, `skipped-deduped`, `skipped-trivial`, or `skipped-oversized` so the audit trail captures *why* a range was passed over.
@@ -606,6 +613,26 @@ Who needs this:
 - Tools whose output is a small handle the agent must reuse byte-for-byte (e.g. a session-id from an external service).
 
 Names that don't match any captured tool call are silently ignored, so adding a tool that isn't installed is a no-op. Edit with `/pruner protected-tools` (interactive prompt) or `/pruner protected-tools todowrite,todoread` (non-interactive).
+
+### Eager single-result spill
+
+`spillThreshold: number` (default `65536`) is a capture-time safeguard for outsized single tool results (e.g. a 1 MB web fetch, a full binary diff). When a single `ToolResultMessage`'s `resultText.length` reaches the threshold, the result is spilled immediately at `turn_end` — before the pending-queue trim and before any LLM call.
+
+**Sidecar location:** `<sessionDir>/<sessionId>-blobs/<sanitizedToolCallId>.txt`.
+
+**Index entry:** `addBatch` is called synchronously with the spilled body (no LLM round-trip). The record is immediately `isSummarized = true`; the pruner emits a mechanical file-pointer stub:
+
+```
+[Spilled: <toolName> (<N> bytes). Head preview:
+<first spillPreviewBytes bytes>
+Full output: <sidecar path>. Use context_tree_query(<shortRef>) to retrieve.]
+```
+
+**Dedup precedence:** `protected → dedup → spill`. An oversized result that is also a content-hash duplicate of a prior record is aliased to the original; no second sidecar is written.
+
+**Atomicity:** the sidecar is written first; only on success is the in-memory record mutated. A write failure leaves the result inline for the normal flush and is logged via `console.error` — no data is lost.
+
+**Hybrid storage:** bodies below `spillThreshold` stay inline in the `context-prune-index` session entry (portable, as before); only oversized bodies are spilled. Moving the session `.jsonl` without its `-blobs/` directory loses only the giant-blob recovery path; the stub and head preview remain in the index entry.
 
 ### Trivial-batch skip (minBatchChars)
 
@@ -741,6 +768,19 @@ ACON demonstrates that **compression not only saves tokens but can improve agent
 Why we compute the ratio ourselves rather than using `ContextUsage.percent`: the provider's `percent` field is a 0–100 value, and both it and `tokens` are `null` immediately after a provider-side compaction. Using `tokens / contextWindow` directly gives a 0–1 fraction that matches the config unit and is independently null-safe — a `null` tokens value makes the trigger a no-op until usage is reported again.
 
 Lineage: simplified take on DCP's `maxContextLimit` nudging — a single threshold that forces a flush rather than separate nudge/force thresholds.
+
+### Budget-delta flush
+
+`budgetTurnDelta: number | null` (default `null`) is a per-turn usage-jump trigger ORed with `autoBudgetThreshold`. When set to a fraction in `(0, 1]`, the extension compares the current turn's usage fraction (`tokens / contextWindow`) to the previous turn's and forces a flush if the jump meets or exceeds the delta.
+
+Use case: a single enormous tool result can jump context usage by 20–30 percentage points in one turn; `autoBudgetThreshold` misses this until the next turn. `budgetTurnDelta` catches the spike immediately.
+
+**`previousFraction` tracking:**
+- Reset to `null` on `session_start` and `session_tree` (session reload).
+- Left unchanged on a null-tokens turn immediately following a provider-side compaction (treating a post-compaction null as `0` would produce a spurious spike on the next real turn).
+- The post-restart first turn cannot fire a delta trigger (no prior fraction to compare) and falls back to `autoBudgetThreshold` alone.
+
+`null` = off (default).
 
 ---
 

@@ -34,7 +34,8 @@ import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
-import { shouldBudgetFlush } from "./src/budget.js";
+import { shouldBudgetFlush, shouldDeltaFlush, usageFraction } from "./src/budget.js";
+import { spillOversizedBatch } from "./src/spill.js";
 
 export default function (pi: ExtensionAPI) {
   // Shared mutable config reference — updated by /pruner commands
@@ -58,6 +59,7 @@ export default function (pi: ExtensionAPI) {
   // Pending batches — accumulated until the prune trigger fires
   const pendingBatches: CapturedBatch[] = [];
   let isFlushing = false;
+  let previousFraction: number | null = null;
 
   type FlushResult =
     | { ok: true; reason: "flushed" | "skipped-oversized" | "skipped-trivial" | "skipped-deduped"; batchCount: number; toolCallCount: number; rawCharCount: number; summaryCharCount: number; dedupedCount?: number }
@@ -643,6 +645,7 @@ export default function (pi: ExtensionAPI) {
 
     // Clear any batches queued before the session reload
     pendingBatches.length = 0;
+    previousFraction = null;
 
     // Update footer status
     setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
@@ -661,6 +664,7 @@ export default function (pi: ExtensionAPI) {
     frontier.reconstructFromSession(ctx);
     // Pending batches belong to the old branch — discard them
     pendingBatches.length = 0;
+    previousFraction = null;
   });
 
   // ── turn_end: capture batch, flush immediately or queue ──────────────────
@@ -688,10 +692,33 @@ export default function (pi: ExtensionAPI) {
     // untouched in Pi's session/event stream — only the in-memory
     // CapturedBatch is pruned, which is exactly what we want.
     const protectedToolSet = new Set<string>(currentConfig.value.protectedTools);
-    const batch = trimBatchToPendingRange({
+    const filtered = {
       ...capturedBatch,
       toolCalls: capturedBatch.toolCalls.filter((tc) => !protectedToolSet.has(tc.toolName)),
-    });
+    };
+
+    // Eager spill: offload oversized single results to sidecar files before they
+    // ever reach a request. addBatch inside marks them isSummarized, so
+    // trimBatchToPendingRange drops them from the pending set below. Best-effort:
+    // a spill failure leaves the result inline for the normal flush pipeline.
+    try {
+      await spillOversizedBatch({
+        batch: filtered,
+        indexer,
+        config: {
+          spillThreshold: currentConfig.value.spillThreshold,
+          spillPreviewBytes: currentConfig.value.spillPreviewBytes,
+          dedupByContentHash: currentConfig.value.dedupByContentHash,
+        },
+        sessionDir: ctx.sessionManager.getSessionDir(),
+        sessionId: ctx.sessionManager.getSessionId(),
+        appendEntry: (type, data) => (ctx.sessionManager as unknown as SessionAppender).appendCustomEntry(type, data),
+      });
+    } catch {
+      // best-effort; never block the turn
+    }
+
+    const batch = trimBatchToPendingRange(filtered);
     if (!batch) return;
 
     pendingBatches.push(batch);
@@ -714,17 +741,21 @@ export default function (pi: ExtensionAPI) {
     // usage crosses autoBudgetThreshold, compact the queued batches now instead of
     // waiting for this mode's flush boundary. The pendingBatches.length guard makes
     // an already-drained queue a no-op.
-    if (
-      pendingBatches.length > 0 &&
-      !isFlushing &&
-      shouldBudgetFlush(ctx.getContextUsage?.(), currentConfig.value.autoBudgetThreshold)
-    ) {
-      // Always surface the budget flush (even when the routine status line is off):
-      // it's a significant, infrequent event — context crossed the threshold — and
-      // self-throttles because pendingBatches is drained right after.
+    const usage = ctx.getContextUsage?.();
+    const budgetHit = shouldBudgetFlush(usage, currentConfig.value.autoBudgetThreshold);
+    const deltaHit = shouldDeltaFlush(usage, previousFraction, currentConfig.value.budgetTurnDelta);
+    // Update the per-turn baseline; leave it unchanged when tokens is null (e.g.
+    // right after a compaction) so the next real reading compares to the last known.
+    const f = usageFraction(usage);
+    if (f != null) previousFraction = f;
+
+    if (pendingBatches.length > 0 && !isFlushing && (budgetHit || deltaHit)) {
+      // Always surface this flush (even when the routine status line is off): it's a
+      // significant, infrequent event — context crossed a threshold or jumped sharply
+      // this turn — and it self-throttles because pendingBatches is drained right after.
       safeNotify(
         ctx,
-        `pruner: context budget reached — compacting ${n} pending turn${n === 1 ? "" : "s"}`,
+        `pruner: ${budgetHit ? "context budget reached" : "context jumped this turn"} — compacting ${n} pending turn${n === 1 ? "" : "s"}`,
         "info",
       );
       await flushPending(ctx, { delivery: "session" });

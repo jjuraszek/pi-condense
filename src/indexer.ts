@@ -77,7 +77,7 @@ export class ToolCallIndexer {
             this.index.set(toolCall.toolCallId, toolCall);
             // First-seen wins so the contentHashToOriginal map matches what
             // addBatch would have produced at append time.
-            const hash = hashToolResult(toolCall.toolName, toolCall.resultText);
+            const hash = toolCall.contentHash ?? hashToolResult(toolCall.toolName, toolCall.resultText);
             if (!this.contentHashToOriginal.has(hash)) {
               this.contentHashToOriginal.set(hash, toolCall.toolCallId);
             }
@@ -372,13 +372,17 @@ export class ToolCallIndexer {
         isError: tc.isError,
         turnIndex: batch.turnIndex,
         timestamp: batch.timestamp,
+        ...(tc.spillPath !== undefined ? { spillPath: tc.spillPath } : {}),
+        ...(tc.spillBytes !== undefined ? { spillBytes: tc.spillBytes } : {}),
+        ...(tc.resultPreview !== undefined ? { resultPreview: tc.resultPreview } : {}),
+        ...(tc.contentHash !== undefined ? { contentHash: tc.contentHash } : {}),
       };
       this.index.set(record.toolCallId, record);
       records.push(record);
       // Populate the dedup hash map AFTER the record is indexed so a future
       // flush can dedup against this record. First-seen wins to keep the
       // canonical id stable across multiple identical entries.
-      const hash = hashToolResult(record.toolName, record.resultText);
+      const hash = record.contentHash ?? hashToolResult(record.toolName, record.resultText);
       if (!this.contentHashToOriginal.has(hash)) {
         this.contentHashToOriginal.set(hash, record.toolCallId);
       }

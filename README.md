@@ -84,6 +84,9 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "protectedTools": [],
     "dedupByContentHash": true,
     "autoBudgetThreshold": null,
+    "spillThreshold": 65536,
+    "spillPreviewBytes": 2048,
+    "budgetTurnDelta": null,
     "chainCompression": {
       "enabled": true,
       "rollingWindow": 3,
@@ -111,6 +114,9 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` — protected outputs are never lost. |
 | `dedupByContentHash` | `true` / `false` | `true` | Re-reads of identical (toolName, content) skip the LLM and alias the original |
 | `autoBudgetThreshold` | fraction `0`–`1`, or `null` | `null` | Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of `pruneOn`. `0.8` = 80%, not `80`. `null` = off. See [Token-budget auto-flush](#token-budget-auto-flush) |
+| `spillThreshold` | positive integer | `65536` | Minimum chars (`resultText.length`) for a single tool result to be spilled eagerly to a sidecar file at capture time rather than waiting for normal summarization. Non-positive / invalid values fall back to the default; to effectively disable spilling, set it above any result you expect. See [Spilled outputs](#spilled-outputs) |
+| `spillPreviewBytes` | non-negative integer | `2048` | Head preview (bytes) kept inline in the stub and index record for a spilled result. Full body is on disk. |
+| `budgetTurnDelta` | fraction `0`–`1`, or `null` | `null` | Force a flush when a single turn's context-usage fraction jumps by at least this amount, ORed with `autoBudgetThreshold`. Catches sudden spikes a static threshold would miss until the next turn. `null` = off. |
 | `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
@@ -135,6 +141,10 @@ When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks c
 - Default `null` = off.
 
 Inspired by DCP's `maxContextLimit` nudging; simplified to a single threshold that forces a flush rather than separate nudge/force levels.
+
+### Spilled outputs
+
+Single tool results larger than `spillThreshold` chars are written to `<session-dir>/<sessionId>-blobs/<toolCallId>.txt` at capture time and replaced in context with a short stub (tool name, byte size, head preview, file path). The full body is recoverable via the native `read` tool at the embedded path (offset/limit supported) or via `context_tree_query` by id, which falls back to the inline preview if the sidecar is missing. Moving a session `.jsonl` without its `-blobs/` directory loses only the giant-blob recovery path; bodies under `spillThreshold` stay inline in the index entry as usual.
 
 ### Choosing a summarizer model
 
