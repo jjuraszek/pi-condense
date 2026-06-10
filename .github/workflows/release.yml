@@ -1,8 +1,7 @@
 name: Release to npm
 
 # Publishes the package to npm whenever a semver tag like v1.0.0 is pushed.
-# Uses npm trusted publishing via GitHub Actions OIDC; configure the trusted publisher on npmjs.com.
-# `actions/setup-node` writes an auth-token placeholder to .npmrc, so we strip it before publish.
+# Publishes via npm token auth from the NPM_TOKEN repo secret.
 
 on:
   push:
@@ -43,14 +42,7 @@ jobs:
       - name: Build
         run: npm run build --if-present
 
-      - name: Strip auth token placeholder for trusted publishing
-        run: |
-          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
-          if [ -f "$npmrc" ]; then
-            sed -i '/_authToken/d' "$npmrc"
-          fi
-
-      - name: Publish to npm with trusted publishing
+      - name: Publish to npm
         env:
-          NODE_AUTH_TOKEN: ""
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
