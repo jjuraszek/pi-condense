@@ -13,7 +13,7 @@ steps:
   - phase: validation
     steps:
       - "- [x] step 1: verify the workflow syntax and resulting diff"
-      - "- [ ] step 2: commit and push the trusted-publishing workflow update"
+      - "- [x] step 2: commit and push the trusted-publishing workflow update"
 ---
 
 # 035-restore-trusted-publishing-workflow
@@ -28,4 +28,4 @@ steps:
 
 ## Phase 3 — Validation
 - [x] step 1: verify the workflow syntax and resulting diff
-- [ ] step 2: commit and push the trusted-publishing workflow update
+- [x] step 2: commit and push the trusted-publishing workflow update
