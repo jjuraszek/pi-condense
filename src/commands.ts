@@ -9,11 +9,11 @@ import {
   PROGRESS_WIDGET_ID,
   SUMMARIZER_THINKING_LEVELS,
 } from "./types.js";
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { saveConfig } from "./config.js";
 import { formatTokens, formatCost, formatCharProgress } from "./stats.js";
-import { Container, Text, SettingsList, type SettingItem } from "@mariozechner/pi-tui";
-import { DynamicBorder, getSettingsListTheme } from "@mariozechner/pi-coding-agent";
+import { Container, Text, SettingsList, type SettingItem } from "@earendil-works/pi-tui";
+import { DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { buildPruneTree, TreeBrowser } from "./tree-browser.js";
 import { normalizeSummaryToolCallRefs } from "./summary-refs.js";
 import type { ToolCallIndexer } from "./indexer.js";

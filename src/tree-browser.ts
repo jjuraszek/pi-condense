@@ -1,8 +1,8 @@
-import type { Component } from "@mariozechner/pi-tui";
-import { Markdown, getKeybindings, matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+import { Markdown, getKeybindings, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ToolCallRecord } from "./types.js";
 import { CUSTOM_TYPE_SUMMARY } from "./types.js";
 import { normalizeSummaryToolCallRefs } from "./summary-refs.js";

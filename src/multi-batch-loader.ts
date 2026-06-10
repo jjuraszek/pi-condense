@@ -10,8 +10,8 @@
  */
 
 import type { CapturedBatch } from "./types.js";
-import { Container, Loader } from "@mariozechner/pi-tui";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { Container, Loader } from "@earendil-works/pi-tui";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { pruneProgressText } from "./progress-text.js";
 
 export class MultiBatchLoaderOverlay extends Container {
