@@ -13,7 +13,7 @@ steps:
   - phase: validation
     steps:
       - "- [x] step 1: verify there are no remaining mariozechner references in tracked source files"
-      - "- [ ] step 2: commit the change and push it to main"
+      - "- [x] step 2: commit the change and push it to main"
 ---
 
 # 031-migrate-pi-dependencies-to-earendil
@@ -28,4 +28,4 @@ steps:
 
 ## Phase 3 — Validation
 - [x] step 1: verify there are no remaining mariozechner references in tracked source files
-- [ ] step 2: commit the change and push it to main
+- [x] step 2: commit the change and push it to main
