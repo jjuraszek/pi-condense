@@ -22,12 +22,6 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts"
     ]
   },
   "peerDependencies": {
