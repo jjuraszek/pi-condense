@@ -1,7 +1,7 @@
 name: Release to npm
 
 # Publishes the package to npm whenever a semver tag like v1.0.0 is pushed.
-# Requires the NPM_TOKEN repo secret (an npm automation token with publish rights).
+# Uses npm trusted publishing via GitHub Actions OIDC; configure the trusted publisher on npmjs.com.
 
 on:
   push:
@@ -42,7 +42,5 @@ jobs:
       - name: Build
         run: npm run build --if-present
 
-      - name: Publish to npm
+      - name: Publish to npm with trusted publishing
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
