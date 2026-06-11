@@ -82,6 +82,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "quietOversizedSkips": false,
     "minBatchChars": 1000,
     "protectedTools": [],
+    "protectedPaths": ["**/skills/**/*.md"],
     "dedupByContentHash": true,
     "autoBudgetThreshold": null,
     "spillThreshold": 65536,
@@ -112,6 +113,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard — batches smaller than this skip the LLM entirely |
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` — protected outputs are never lost. |
+| `protectedPaths` | `string[]` | `["**/skills/**/*.md"]` | Globs matched against a tool call's `args.path`; matching outputs are never pruned (same semantics as `protectedTools`, including `<protected-output>` relocation in compressed chains). Already-summarized matching reads are repaired on the next turn; chain-compressed ones are not. Set `[]` to disable. |
 | `dedupByContentHash` | `true` / `false` | `true` | Re-reads of identical (toolName, content) skip the LLM and alias the original |
 | `autoBudgetThreshold` | fraction `0`–`1`, or `null` | `null` | Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of `pruneOn`. `0.8` = 80%, not `80`. `null` = off. See [Token-budget auto-flush](#token-budget-auto-flush) |
 | `spillThreshold` | positive integer | `65536` | Minimum chars (`resultText.length`) for a single tool result to be spilled eagerly to a sidecar file at capture time rather than waiting for normal summarization. Non-positive / invalid values fall back to the default; to effectively disable spilling, set it above any result you expect. See [Spilled outputs](#spilled-outputs) |
@@ -180,6 +182,7 @@ Set it from the slash command (saves immediately):
 | `/pruner prune-on [mode]` | Get / set trigger mode |
 | `/pruner batching [mode]` | Get / set batching granularity (`turn` / `agent-message`) |
 | `/pruner protected-tools [names]` | Show or edit the never-pruned tool allowlist (comma- or space-separated; `none` clears) |
+| `/pruner protected-paths [globs]` | Show or edit the never-pruned path globs (`none` clears) |
 | `/pruner min-batch-chars [n]` | Show or set the pre-flush trivial-batch threshold (`0` disables) |
 | `/pruner dedup [on\|off\|status]` | Toggle pre-flush content-hash dedup |
 | `/pruner tree` | Foldable browser of pruned tool calls; `Ctrl-O` opens the full summary in an overlay |

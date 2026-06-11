@@ -15,11 +15,11 @@ function hasToolCalls(msg: any): boolean {
   return Array.isArray(msg.content) && msg.content.some((b: any) => b.type === "toolCall");
 }
 
-function collectToolCalls(msg: any): { id: string; name: string }[] {
+function collectToolCalls(msg: any): { id: string; name: string; args: unknown }[] {
   if (!Array.isArray(msg.content)) return [];
   return msg.content
     .filter((b: any) => b.type === "toolCall" && b.id && b.name)
-    .map((b: any) => ({ id: b.id as string, name: b.name as string }));
+    .map((b: any) => ({ id: b.id as string, name: b.name as string, args: b.input ?? b.arguments }));
 }
 
 type State = "idle" | "inChain";
@@ -33,10 +33,15 @@ type State = "idle" | "inChain";
  *
  * NOTE: Message identity uses `timestamp` (for user / final text-only assistant) and
  * `toolCallId` sets (for middle tool-using turns). AgentMessage has no `.id` field.
+ *
+ * @param isProtected  Predicate over (toolName, args); matching calls are never pruned
+ *                     and their outputs are relocated verbatim into compressed chains.
  */
-export function detectChains(messages: any[], protectedTools: string[] = []): ChainRange[] {
+export function detectChains(
+  messages: any[],
+  isProtected: (toolName: string, args: unknown) => boolean = () => false,
+): ChainRange[] {
   const ranges: ChainRange[] = [];
-  const protectedSet = new Set(protectedTools);
   let state: State = "idle";
   let chainStart: { timestamp: number } | null = null;
   let middleIds = new Set<string>();
@@ -67,9 +72,9 @@ export function detectChains(messages: any[], protectedTools: string[] = []): Ch
     if (state !== "inChain") continue;
 
     if (msg.role === "assistant" && hasToolCalls(msg)) {
-      for (const { id, name } of collectToolCalls(msg)) {
+      for (const { id, name, args } of collectToolCalls(msg)) {
         middleIds.add(id);
-        if (protectedSet.has(name)) protectedIds.add(id);
+        if (isProtected(name, args)) protectedIds.add(id);
       }
       continue;
     }
@@ -77,7 +82,9 @@ export function detectChains(messages: any[], protectedTools: string[] = []): Ch
     if (msg.role === "toolResult") {
       if (msg.toolCallId) {
         middleIds.add(msg.toolCallId);
-        if (protectedSet.has(msg.toolName)) protectedIds.add(msg.toolCallId);
+        // toolResult fallback — results carry no args; name-only by design,
+        // the assistant block always precedes its result so no protection is lost
+        if (isProtected(msg.toolName, undefined)) protectedIds.add(msg.toolCallId);
       }
       continue;
     }

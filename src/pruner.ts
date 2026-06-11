@@ -1,5 +1,6 @@
 import type { ToolCallIndexer } from "./indexer.js";
 import type { ChainCompressionConfig, ErrorPurgeConfig, ThinkingStripConfig } from "./types.js";
+import { isProtected, type ProtectionConfig } from "./protected.js";
 import { applyChainCompressions } from "./chain-range-prune.js";
 import { purgeErroredArgs } from "./error-purge.js";
 import { stripOldThinking } from "./thinking-strip.js";
@@ -54,14 +55,23 @@ export function pruneMessages(
   chainCompression?: ChainCompressionConfig,
   errorPurge?: ErrorPurgeConfig,
   thinkingStrip?: ThinkingStripConfig,
+  protection?: ProtectionConfig,
 ): { messages: any[]; pruned: boolean } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
   const next = messages.map((msg) => {
     if (msg.role === "toolResult" && indexer.isSummarized(msg.toolCallId)) {
+      const record = indexer.getRecord(msg.toolCallId);
+      // Render-time re-check: a record summarized before protectedPaths
+      // covered it is repaired here — the raw toolResult still lives in the
+      // session JSONL, so skipping the stub restores it verbatim.
+      // Dedup aliases resolve to the original record, so an alias whose own
+      // path is protected but whose original isn't stays stubbed (edge case).
+      if (protection && record && isProtected(record.toolName, record.args, protection)) {
+        return msg;
+      }
       pruned = true;
       const ref = indexer.getShortRefForToolCallId(msg.toolCallId) ?? msg.toolCallId;
-      const record = indexer.getRecord(msg.toolCallId);
       const text = record?.spillPath
         ? [
             `[Oversized output spilled to file — ${record.spillBytes ?? "?"} bytes.]`,

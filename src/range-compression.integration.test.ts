@@ -3,6 +3,8 @@ import { ToolCallIndexer } from "./indexer.js";
 import { BlockRefIssuer } from "./block-refs.js";
 import { compressEligible } from "./chain-compressor.js";
 import { pruneMessages } from "./pruner.js";
+import { detectChains } from "./chain-detector.js";
+import { isProtected } from "./protected.js";
 import type { ChainRange, ChainCompressionConfig } from "./types.js";
 
 // End-to-end of the in-memory B path (everything except the LLM call, which is
@@ -132,6 +134,91 @@ describe("range compression integration", () => {
     // Protected toolResult is no longer a standalone message
     expect(out.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
     // protected tool has no short ref in production → absent from the tools= attribute
+    expect(synthetic.content[0].text).not.toContain("t2");
+  });
+
+  test("path-protected output is relocated via detectChains predicate", async () => {
+    const indexer = new ToolCallIndexer();
+    const blockRefs = new BlockRefIssuer();
+
+    // tc1 = read /h/src/app.ts (unprotected), tc2 = read /h/skills/x/SKILL.md (protected)
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 100 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc1", name: "read", input: { path: "/h/src/app.ts" } }],
+        timestamp: 200,
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc1",
+        toolName: "read",
+        content: [{ type: "text", text: "app-source-code" }],
+        isError: false,
+        timestamp: 210,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc2", name: "read", input: { path: "/h/skills/x/SKILL.md" } }],
+        timestamp: 300,
+        usage: {},
+        stopReason: "tool_use",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc2",
+        toolName: "read",
+        content: [{ type: "text", text: "SKILL-VERBATIM-CONTENT" }],
+        isError: false,
+        timestamp: 310,
+      },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 400, usage: {}, stopReason: "end_turn" },
+    ];
+
+    const pred = (name: string, args: unknown) =>
+      isProtected(name, args, { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] });
+    const chains = detectChains(messages, pred);
+
+    expect(chains).toHaveLength(1);
+    expect(chains[0].protectedToolCallIds).toEqual(["tc2"]);
+
+    // Only unprotected tc1 has a per-batch summary; tc2 is protected, no short ref.
+    indexer.registerSummaryRefs([{ shortId: "t1", toolCallId: "tc1" }]);
+    indexer.registerSummaryBody(["tc1"], "read app.ts summary");
+
+    const { compressedEntries } = await compressEligible(chains, 0, {
+      indexer,
+      blockRefs,
+      appendEntry: () => {},
+      now: () => 999,
+    });
+
+    expect(compressedEntries).toHaveLength(1);
+    expect(indexer.getChainEntries()[0].protectedToolCallIds).toEqual(["tc2"]);
+
+    const cc: ChainCompressionConfig = {
+      enabled: true,
+      rollingWindow: 0,
+      stripFinalAssistantThinking: true,
+      fuseRangeSummary: false,
+    };
+    const { messages: out, pruned } = pruneMessages(messages, indexer, cc);
+    expect(pruned).toBe(true);
+
+    const synthetic = out.find(
+      (m: any) => m.role === "user" && typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"),
+    );
+    expect(synthetic).toBeDefined();
+    // Protected SKILL.md output is embedded verbatim
+    expect(synthetic.content[0].text).toContain('<protected-output tool="read">');
+    expect(synthetic.content[0].text).toContain("SKILL-VERBATIM-CONTENT");
+    // Unprotected result text is not present in the synthetic block
+    expect(synthetic.content[0].text).not.toContain("app-source-code");
+    // No standalone toolResult messages remain
+    expect(out.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
+    // Protected tc2 has no short ref → absent from the tools= attribute
     expect(synthetic.content[0].text).not.toContain("t2");
   });
 

@@ -410,3 +410,43 @@ describe("pruneMessages", () => {
     expect(assistants.slice(-2).every((a: any) => hasThinking(a))).toBe(true);
   });
 });
+
+describe("render-time protection re-check", () => {
+  const skillMsg = {
+    role: "toolResult",
+    toolCallId: "tc-skill",
+    toolName: "read",
+    content: [{ type: "text", text: "FULL SKILL BODY" }],
+    isError: false,
+    timestamp: 10,
+  };
+
+  const indexer = makeMockIndexer({
+    summarized: new Set(["tc-skill"]),
+    shortRefs: new Map([["tc-skill", "t1"]]),
+    records: new Map([["tc-skill", {
+      toolCallId: "tc-skill",
+      toolName: "read",
+      args: { path: "/h/skills/x/SKILL.md" },
+      resultText: "",
+      isError: false,
+      turnIndex: 0,
+      timestamp: 10,
+    }]]),
+  });
+
+  it("leaves a summarized record verbatim once its path matches protectedPaths", () => {
+    const { messages, pruned } = pruneMessages(
+      [skillMsg], indexer as any, undefined, undefined, undefined,
+      { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
+    );
+    expect(pruned).toBe(false);
+    expect(messages[0].content[0].text).toBe("FULL SKILL BODY");
+  });
+
+  it("still stubs when no protection config is passed", () => {
+    const { messages, pruned } = pruneMessages([skillMsg], indexer as any);
+    expect(pruned).toBe(true);
+    expect(messages[0].content[0].text).toContain("context_tree_query");
+  });
+});

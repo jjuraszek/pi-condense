@@ -19,6 +19,7 @@ import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode } 
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
+import { isProtected } from "./src/protected.js";
 import { registerQueryTool } from "./src/query-tool.js";
 import { registerCommands, setPruneStatusWidget } from "./src/commands.js";
 import { formatSummaryToolCallRefs, makeSummaryDetails } from "./src/summary-refs.js";
@@ -42,6 +43,8 @@ export default function (pi: ExtensionAPI) {
   const currentConfig: { value: ContextPruneConfig } = {
     value: { ...DEFAULT_CONFIG },
   };
+
+  const protectionPredicate = (name: string, args: unknown) => isProtected(name, args, currentConfig.value);
 
   // Shared indexer — rebuilt from session on every session_start / session_tree
   const indexer = new ToolCallIndexer();
@@ -125,9 +128,7 @@ export default function (pi: ExtensionAPI) {
     let batches: CapturedBatch[] = [];
     try {
       const branch = ctx.sessionManager.getBranch();
-      batches = captureUnindexedBatchesFromSession(branch, indexer, [
-        ...currentConfig.value.protectedTools,
-      ]);
+      batches = captureUnindexedBatchesFromSession(branch, indexer, protectionPredicate);
     } catch {
       batches = pendingBatches.slice();
     }
@@ -516,7 +517,7 @@ export default function (pi: ExtensionAPI) {
             .map((e: any) => e.message);
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
-          const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage), currentConfig.value.protectedTools);
+          const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage), protectionPredicate);
           const { compressedEntries } = await compressEligible(
             chains,
             currentConfig.value.chainCompression.rollingWindow,
@@ -686,15 +687,14 @@ export default function (pi: ExtensionAPI) {
       event.turnIndex,
       Date.now()
     );
-    // Drop user-protected tool results so they stay verbatim in context.
+    // Drop user-protected tool/path results so they stay verbatim in context.
     // Filtering at capture time keeps the
     // underlying assistant `toolCall` block AND its `ToolResultMessage`
     // untouched in Pi's session/event stream — only the in-memory
     // CapturedBatch is pruned, which is exactly what we want.
-    const protectedToolSet = new Set<string>(currentConfig.value.protectedTools);
     const filtered = {
       ...capturedBatch,
-      toolCalls: capturedBatch.toolCalls.filter((tc) => !protectedToolSet.has(tc.toolName)),
+      toolCalls: capturedBatch.toolCalls.filter((tc) => !isProtected(tc.toolName, tc.args, currentConfig.value)),
     };
 
     // Eager spill: offload oversized single results to sidecar files before they
@@ -801,6 +801,7 @@ export default function (pi: ExtensionAPI) {
         currentConfig.value.chainCompression,
         currentConfig.value.purgeErrors,
         currentConfig.value.thinkingStrip,
+        currentConfig.value,
       );
       if (result.pruned) {
         messages = result.messages;
@@ -821,7 +822,7 @@ export default function (pi: ExtensionAPI) {
     const branchMessages = branch
       .filter((e: any) => e.type === "message" && e.message)
       .map((e: any) => e.message);
-    const chains = detectChains(branchMessages, currentConfig.value.protectedTools);
+    const chains = detectChains(branchMessages, protectionPredicate);
     const result = await compressEligible(
       chains,
       0, // effectiveK=0: compress every closed chain not already compressed

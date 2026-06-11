@@ -61,12 +61,12 @@ export function captureBatch(
  *
  * @param branch            The session message branch (from ctx.sessionManager.getBranch())
  * @param indexer           The pruner indexer to check for already-summarized IDs
- * @param excludeToolNames  Optional tool names to skip (e.g. user-protected tools)
+ * @param exclude  Optional predicate; matching tool calls are skipped (user-protected tools/paths)
  */
 export function captureUnindexedBatchesFromSession(
   branch: any[],
   indexer: { isSummarized(id: string): boolean },
-  excludeToolNames: string[] = []
+  exclude: (toolName: string, args: unknown) => boolean = () => false
 ): CapturedBatch[] {
   // branch is SessionEntry[]. Each message entry has { type: "message", message: AgentMessage }.
   // We must unwrap the SessionEntry wrapper before accessing role/toolCallId.
@@ -117,7 +117,7 @@ export function captureUnindexedBatchesFromSession(
       const id = tc.id;
       if (!id) return false;
       if (indexer.isSummarized(id)) return false;
-      if (excludeToolNames.includes(tc.name)) return false;
+      if (exclude(tc.name, tc.input ?? tc.arguments)) return false;
       return resultMap.has(id);
     });
 

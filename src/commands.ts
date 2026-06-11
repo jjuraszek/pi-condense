@@ -91,6 +91,7 @@ const SUBCOMMANDS = [
   { value: "now",     label: "now       — flush pending tool calls immediately (widget progress)" },
   { value: "compact", label: "compact   — retroactively compress all eligible closed chains" },
   { value: "protected-tools", label: "protected-tools — show or edit the never-pruned tool allowlist" },
+  { value: "protected-paths", label: "protected-paths — show or edit the never-pruned path globs" },
   { value: "min-batch-chars", label: "min-batch-chars — show or set the pre-flush trivial-batch threshold" },
   { value: "dedup",   label: "dedup     — toggle pre-flush content-hash dedup (on/off/status)" },
   { value: "help",    label: "help      — show this help" },
@@ -206,6 +207,10 @@ function protectedToolsDescription(config: ContextPruneConfig): string {
   return `Tool names whose outputs are NEVER pruned (kept verbatim in context). Currently: ${protectedToolsDisplay(config.protectedTools)}. Edit via \`/pruner protected-tools\` for an interactive prompt, or \`/pruner protected-tools <comma-separated names>\` to set directly. Common candidates: todowrite, todoread.`;
 }
 
+function protectedPathsDescription(config: ContextPruneConfig): string {
+  return `Glob patterns matched against a tool call's \`args.path\`; matching outputs are NEVER pruned. Currently: ${protectedToolsDisplay(config.protectedPaths)}. Edit via \`/pruner protected-paths\` (interactive) or \`/pruner protected-paths <comma-separated globs>\`. Set to 'none' to disable (kill switch). Default protects skill files: **/skills/**/*.md`;
+}
+
 const HELP_TEXT = `pruner — automatically summarizes tool-call outputs to keep context lean.
 
 Usage:
@@ -229,6 +234,8 @@ Usage:
   /pruner now                              Flush pending tool calls immediately (shows live footer progress)
   /pruner protected-tools                  Interactively edit the never-pruned tool allowlist
   /pruner protected-tools <names>          Set the allowlist (comma- or space-separated; 'none' clears)
+  /pruner protected-paths                  Interactively edit the never-pruned path globs
+  /pruner protected-paths <globs>          Set the globs (comma- or space-separated; 'none' clears)
   /pruner min-batch-chars                  Show the current pre-flush trivial-batch threshold
   /pruner min-batch-chars <n>              Set the threshold (non-negative integer; 0 disables)
   /pruner compact                          Retroactively compress all closed chains (ignores rollingWindow; force-compresses every eligible chain)
@@ -632,6 +639,13 @@ export function registerCommands(
               currentValue: protectedToolsDisplay(config.protectedTools),
               description: protectedToolsDescription(config),
             },
+            {
+              id: "protectedPaths",
+              label: "Protected paths",
+              values: [protectedToolsDisplay(config.protectedPaths)],
+              currentValue: protectedToolsDisplay(config.protectedPaths),
+              description: protectedPathsDescription(config),
+            },
           ];
 
           let settingsList: SettingsList;
@@ -641,7 +655,7 @@ export function registerCommands(
             // Read-only row — SettingsList still fires onChange when the user
             // presses Enter on a single-value item. Short-circuit so we don't
             // do a redundant saveConfig / status-widget refresh on no-op presses.
-            if (id === "protectedTools") return;
+            if (id === "protectedTools" || id === "protectedPaths") return;
             const newConfig = { ...currentConfig.value };
             if (id === "enabled") {
               newConfig.enabled = newValue === "true";
@@ -1068,6 +1082,39 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, protectedTools: nextList };
           saveConfig(currentConfig.value);
           ctx.ui.notify(`Protected tools: ${protectedToolsDisplay(nextList)}`);
+          break;
+        }
+
+        // ── /pruner protected-paths [list] ──
+        case "protected-paths": {
+          const raw = subArgs.join(" ").trim();
+          let nextList: string[] | undefined;
+
+          if (!raw) {
+            const currentDisplay =
+              currentConfig.value.protectedPaths.length === 0
+                ? ""
+                : currentConfig.value.protectedPaths.join(", ");
+            const entered = await ctx.ui.input(
+              "Protected paths (comma-separated globs; empty or 'none' to clear)",
+              currentDisplay,
+            );
+            if (entered === undefined) return; // user cancelled
+            const trimmed = entered.trim();
+            if (trimmed === "" || trimmed.toLowerCase() === "none" || trimmed.toLowerCase() === "clear") {
+              nextList = [];
+            } else {
+              nextList = trimmed.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+            }
+          } else if (raw.toLowerCase() === "none" || raw.toLowerCase() === "clear") {
+            nextList = [];
+          } else {
+            nextList = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+          }
+
+          currentConfig.value = { ...currentConfig.value, protectedPaths: nextList };
+          saveConfig(currentConfig.value);
+          ctx.ui.notify(`Protected paths: ${protectedToolsDisplay(nextList)}`);
           break;
         }
 

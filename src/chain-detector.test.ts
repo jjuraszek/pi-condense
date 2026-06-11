@@ -200,7 +200,7 @@ describe("detectChains protectedToolCallIds", () => {
   });
 
   test("collects protected ids by tool name from both branches", () => {
-    const [chain] = detectChains(chainMsgs(), ["todowrite"]);
+    const [chain] = detectChains(chainMsgs(), (name) => name === "todowrite");
     expect(chain.protectedToolCallIds).toEqual(["tc-todo"]);
     expect(chain.middleToolCallIds.sort()).toEqual(["tc-read", "tc-todo"]);
   });
@@ -218,11 +218,32 @@ describe("detectChains protectedToolCallIds", () => {
       { role: "toolResult", toolCallId: "tc-read", toolName: "read", content: [{ type: "text", text: "x" }] },
       { role: "assistant", timestamp: 8, content: [{ type: "text", text: "done 2" }] },
     ];
-    const chains = detectChains(msgs, ["todowrite"]);
+    const chains = detectChains(msgs, (name) => name === "todowrite");
     expect(chains.length).toBe(2);
     expect(chains[0].protectedToolCallIds).toEqual(["tc-todo"]);
     expect(chains[1].protectedToolCallIds).toEqual([]);
     expect(chains[1].middleToolCallIds).toEqual(["tc-read"]);
+  });
+
+  test("collects protected ids by args.path via predicate", () => {
+    const msgs = [
+      { role: "user", timestamp: 1 },
+      {
+        role: "assistant",
+        timestamp: 2,
+        content: [
+          { type: "toolCall", id: "tc-skill", name: "read", input: { path: "/h/skills/x/SKILL.md" } },
+          { type: "toolCall", id: "tc-src", name: "read", input: { path: "/h/src/app.ts" } },
+        ],
+      },
+      { role: "toolResult", toolCallId: "tc-skill", toolName: "read", timestamp: 3, content: [] },
+      { role: "toolResult", toolCallId: "tc-src", toolName: "read", timestamp: 4, content: [] },
+      { role: "assistant", timestamp: 5, content: [{ type: "text", text: "done" }] },
+    ];
+    const pred = (name: string, args: unknown) =>
+      typeof (args as any)?.path === "string" && (args as any).path.includes("/skills/");
+    const [chain] = detectChains(msgs, pred);
+    expect(chain.protectedToolCallIds).toEqual(["tc-skill"]);
   });
 
   test("populates protectedToolCallIds on an interrupted (open→new user) chain", () => {
@@ -232,7 +253,7 @@ describe("detectChains protectedToolCallIds", () => {
       { role: "toolResult", toolCallId: "tc-todo", toolName: "todowrite", content: [{ type: "text", text: "p" }] },
       { role: "user", timestamp: 4 },
     ];
-    const [interrupted] = detectChains(msgs, ["todowrite"]);
+    const [interrupted] = detectChains(msgs, (name) => name === "todowrite");
     expect(interrupted.finalAssistantTimestamp).toBeNull();
     expect(interrupted.protectedToolCallIds).toEqual(["tc-todo"]);
   });

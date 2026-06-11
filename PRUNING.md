@@ -560,8 +560,9 @@ graph LR
 ```
 captured batches (from turn_end or session scan)
   │
-  ├─ 1. Protected-tools filter        (capture-time, see below)
-  │     tool calls whose toolName is in protectedTools never enter the batch
+  ├─ 1. Protected-tools/paths filter   (capture-time, see below)
+  │     tool calls whose toolName is in protectedTools, OR whose args.path
+  │     matches any protectedPaths glob, never enter the batch
   │
   ├─ 2. Eager single-result spill     (config: spillThreshold, default 65536)
   │     turn_end: single result >= spillThreshold chars → write sidecar;
@@ -604,15 +605,19 @@ Properties:
 
 Implementation: `src/pruner.ts` `pruneMessages(messages, indexer)` returns `{ messages, pruned }`. When `pruned === false`, the original array reference is returned and the `context` handler skips reconstruction entirely.
 
-### Protected tools
+### Protected tools & paths
 
-`protectedTools: string[]` (default `[]`) is an allowlist of tool names whose outputs must never be pruned. Matching tool calls are filtered out **at capture time** — they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context.
+A tool call is protected if **either** its `toolName` is in `protectedTools` **or** its `args.path` (string) matches any glob in `protectedPaths`. Protected calls are filtered out **at capture time** - they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context.
 
-Who needs this:
-- Planning skills that maintain state via `todowrite` / `todoread` and expect the agent to re-read the verbatim plan across turns.
-- Tools whose output is a small handle the agent must reuse byte-for-byte (e.g. a session-id from an external service).
+**`protectedTools: string[]`** (default `[]`) - allowlist of tool names. Covers tools whose output is a small handle that must be reused byte-for-byte (e.g. a session-id) or planning tools like `todowrite` / `todoread`.
 
-Names that don't match any captured tool call are silently ignored, so adding a tool that isn't installed is a no-op. Edit with `/pruner protected-tools` (interactive prompt) or `/pruner protected-tools todowrite,todoread` (non-interactive).
+**`protectedPaths: string[]`** (default `["**/skills/**/*.md"]`) - glob list matched against `args.path`. Designed for skill files that carry multi-step workflow gates; summarizing them is categorically lossy. Non-string or missing `path` arguments never match. Set `[]` to disable. Edit with `/pruner protected-paths`.
+
+Glob contract: full-path match against the raw `args.path` string with `\` normalized to `/`. `*` and `?` match within a segment (no `/`); `**` crosses segments; `**/` also matches zero directories (so `**/SKILL.md` matches a bare relative `SKILL.md`). Case-sensitive. All other characters are regex-escaped literals.
+
+**Render-time re-check:** stub replacement runs in-flight on every turn (`pruneMessages`). If a tool call's persisted `args` now satisfy `isProtected` (e.g. a pattern was added mid-session), the stub is skipped and the raw result is left verbatim - this repairs already-summarized records in existing sessions with no schema change. Declared limitation: records inside already-compressed chains (`context-prune-chain` entries) are NOT repaired - their `protectedToolCallIds` set is fixed at compression time (forward-only). Dedup-alias edge: an alias resolving to an unprotected original stays stubbed.
+
+Names and patterns that don't match any captured tool call are silently ignored.
 
 ### Eager single-result spill
 
@@ -879,7 +884,7 @@ Chain compression does not delete data from the session JSONL. The original tool
 
 ### Protected-output relocation
 
-**Contract:** `protectedTools` outputs must never be pruned from LLM context. The per-batch pipeline honours this at capture time (protected tool calls never enter the batch). Chain compression, however, operates at the *message range* level and drops entire middle turns wholesale — which would silently remove any protected-tool `ToolResultMessage` residing in those turns.
+**Contract:** outputs protected by tool name (`protectedTools`) or path glob (`protectedPaths`) must never be pruned from LLM context. The per-batch pipeline honours this at capture time (protected tool calls never enter the batch). Chain compression, however, operates at the *message range* level and drops entire middle turns wholesale - which would silently remove any protected `ToolResultMessage` residing in those turns.
 
 **Mechanism:** detection (`detectChains`) records which middle tool-call ids are protected on the `ChainRange`; `compressEligible` copies that id list onto the persisted `ChainCompressionEntry.protectedToolCallIds` (it stores ids only, no text). At render time, `applyChainCompressions` pulls each protected `ToolResultMessage`'s verbatim text live from the raw branch and embeds it inside the synthetic `<compressed-chain>` block:
 

@@ -266,6 +266,13 @@ export interface ContextPruneConfig {
    * are silently ignored (they simply never match any captured tool call).
    */
   protectedTools: string[];
+  /**
+   * Glob patterns matched against a tool call's `args.path`. Matching calls are
+   * protected with identical semantics to protectedTools. Default protects
+   * skill files and their sibling reference docs under any `skills/` dir.
+   * Kill switch: set to [] in settings.json (`contextPrune.protectedPaths`).
+   */
+  protectedPaths: string[];
   /** Chain-level range compression for old closed chains beyond the rolling window. */
   chainCompression: ChainCompressionConfig;
   /** Replace failed toolCall argument bodies with compact stubs after a cooldown window. */
@@ -440,6 +447,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   quietOversizedSkips: false,
   minBatchChars: 1000,
   protectedTools: [],
+  protectedPaths: ["**/skills/**/*.md"],
   chainCompression: {
     enabled: true,
     rollingWindow: 3,
