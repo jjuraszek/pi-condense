@@ -6,6 +6,16 @@ import { purgeErroredArgs } from "./error-purge.js";
 import { stripOldThinking } from "./thinking-strip.js";
 
 /**
+ * Estimate of a message array's context weight. Serializing the whole array
+ * (not just visible text) is deliberate: it counts tool-call argument bodies
+ * (error-purge), thinking blocks (thinking-strip), and tool-result arrays
+ * (stub-replace / chain-range) so all reclaim mechanisms register.
+ */
+export function sizeMessages(messages: any[]): number {
+  return JSON.stringify(messages).length;
+}
+
+/**
  * Transforms the `context` event message array in two passes:
  *
  * Phase 1 — stub-replace: ToolResultMessages for summarized tool calls are
@@ -56,7 +66,8 @@ export function pruneMessages(
   errorPurge?: ErrorPurgeConfig,
   thinkingStrip?: ThinkingStripConfig,
   protection?: ProtectionConfig,
-): { messages: any[]; pruned: boolean } {
+): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
+  const beforeChars = sizeMessages(messages);
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
   const next = messages.map((msg) => {
@@ -141,5 +152,5 @@ export function pruneMessages(
     }
   }
 
-  return { messages: current, pruned };
+  return { messages: current, pruned, beforeChars, afterChars: pruned ? sizeMessages(current) : beforeChars };
 }

@@ -198,13 +198,35 @@ Set it from the slash command (saves immediately):
 
 A footer widget shows the current state, controlled by `showPruneStatusLine`:
 
-- `prune: OFF (On agent message)` — disabled, showing what mode would activate
-- `prune: ON (On agent message)` — active, no flushes yet
-- `prune: ON (On agent message) │ ↑1.2k ↓340 $0.003` — active with cumulative input/output tokens and cost
-- `prune: 3 pending` — batches queued, waiting for the trigger
-- `prune: summarizing…` — flush in progress
+Every rendered state is wrapped in `│ … │` so the segment stays visually isolated in the shared footer regardless of where other extensions' status segments land (load-order independent).
+
+- `│ prune: OFF │` — disabled
+- `│ prune: ON │` — enabled, no flushes yet
+- `│ prune: ON · 92k->14k (-85%) │` — enabled; live reclaim ratio (estimated tokens before→after, percent reduction). Updates on every `pruneMessages` call.
+- `│ prune: 3 pending │` — batches queued, waiting for the trigger
+- `│ prune: summarizing… │` — flush in progress
 
 Setting `showPruneStatusLine: false` hides the widget and silences the queued-turn notice; pruning still runs.
+
+Cost no longer appears on the status line. Full token/cost detail is available via `/pruner stats`. The extension also emits cumulative session cost on the `cost:external` pi.events channel for external aggregators — see [External cost channel](#external-cost-channel).
+
+## External cost channel
+
+Every time the summarizer cost updates, the extension emits on the shared `pi.events` channel identified by the constant `EXTERNAL_COST_CHANNEL = "cost:external"`. Payload shape:
+
+```ts
+interface ExternalCostUpdate {
+  source: string;       // EXTERNAL_COST_SOURCE = "pi-context-prune"
+  totalCost: number;    // cumulative cost for the current session (USD)
+  inputTokens?: number;
+  outputTokens?: number;
+}
+```
+
+Semantics:
+- **Cumulative per session**, not all-time. Re-emitted on every update; aggregators key by `source` and replace the previous value.
+- **Live only.** Not persisted; not re-emitted on `session_start`. An aggregator that restarts mid-session sees cost from zero until the next summarizer call.
+- Designed for aggregators like pi-subagents that show a unified Σ$ total across extensions.
 
 ## Related extensions
 

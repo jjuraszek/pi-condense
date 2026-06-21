@@ -1,6 +1,7 @@
 import {
   type ContextPruneConfig,
   type SummarizerStats,
+  type LiveReclaim,
   type CapturedBatch,
   type ChainCompressionEntry,
   type FlushOptions,
@@ -19,7 +20,7 @@ import {
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { saveConfig } from "./config.js";
-import { formatTokens, formatCost, formatCharProgress } from "./stats.js";
+import { formatTokens, formatCost, formatCharProgress, formatCompactCount } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@earendil-works/pi-tui";
 import { DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { buildPruneTree, TreeBrowser } from "./tree-browser.js";
@@ -54,25 +55,28 @@ class SettingsOverlay extends Container {
 
 // ── Status widget text ──────────────────────────────────────────────────────
 
-export function pruneStatusText(config: ContextPruneConfig, stats?: SummarizerStats): string {
-  const mode = PRUNE_ON_MODES.find((m) => m.value === config.pruneOn)?.label ?? config.pruneOn;
-  let text = `prune: ${config.enabled ? "ON" : "OFF"} (${mode})`;
-  if (stats && stats.callCount > 0) {
-    text += ` │ ↑${formatTokens(stats.totalInputTokens)} ↓${formatTokens(stats.totalOutputTokens)} ${formatCost(stats.totalCost)}`;
-  }
-  return text;
+export function pruneStatusText(config: ContextPruneConfig, reclaim?: LiveReclaim): string {
+  if (!config.enabled) return "prune: OFF";
+  if (!reclaim || reclaim.beforeChars <= 0) return "prune: ON";
+  const beforeTok = Math.round(reclaim.beforeChars / 4);
+  const afterTok = Math.round(reclaim.afterChars / 4);
+  const reduction = Math.max(0, Math.round((1 - afterTok / beforeTok) * 100));
+  return `prune: ON \u00b7 ${formatCompactCount(beforeTok)}->${formatCompactCount(afterTok)} (-${reduction}%)`;
 }
 
 export function setPruneStatusWidget(
   ctx: { ui: { setStatus: (id: string, text?: string) => void } },
   config: ContextPruneConfig,
-  value?: SummarizerStats | string,
+  value?: LiveReclaim | string,
 ): void {
   if (!config.showPruneStatusLine) {
     ctx.ui.setStatus(STATUS_WIDGET_ID, undefined);
     return;
   }
-  ctx.ui.setStatus(STATUS_WIDGET_ID, typeof value === "string" ? value : pruneStatusText(config, value));
+  const text = typeof value === "string" ? value : pruneStatusText(config, value);
+  // Self-delimiting wrapper so the segment stays visually isolated regardless of
+  // where other extensions' status segments land in the footer (load-order independent).
+  ctx.ui.setStatus(STATUS_WIDGET_ID, `\u2502 ${text} \u2502`);
 }
 
 // ── Subcommand list (for completions & interactive picker) ──────────────────
@@ -421,6 +425,7 @@ export function registerCommands(
   >,
   capturePendingBatches: (ctx: ExtensionCommandContext) => CapturedBatch[],
   getStats: () => SummarizerStats,
+  getLiveReclaim: () => LiveReclaim | undefined,
   indexer: ToolCallIndexer,
   compactChains: (ctx: ExtensionCommandContext) => Promise<{ compressedEntries: ChainCompressionEntry[]; skipped: number }>,
 ): void {
@@ -749,7 +754,7 @@ export function registerCommands(
             }
             currentConfig.value = newConfig;
             saveConfig(newConfig);
-            setPruneStatusWidget(ctx, newConfig, getStats());
+            setPruneStatusWidget(ctx, newConfig, getLiveReclaim());
             settingsList?.invalidate();
           };
 
@@ -784,7 +789,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: true };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning enabled.");
-          setPruneStatusWidget(ctx, currentConfig.value, getStats());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
           break;
         }
 
@@ -793,7 +798,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: false };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning disabled.");
-          setPruneStatusWidget(ctx, currentConfig.value, getStats());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
           break;
         }
 
@@ -911,7 +916,7 @@ export function registerCommands(
             currentConfig.value = { ...currentConfig.value, pruneOn: modeArg as ContextPruneConfig["pruneOn"] };
           }
           saveConfig(currentConfig.value);
-          setPruneStatusWidget(ctx, currentConfig.value, getStats());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
           break;
         }
 
@@ -1008,7 +1013,7 @@ export function registerCommands(
 
           // Remove the widget and restore the normal footer status.
           clearWidget();
-          setPruneStatusWidget(ctx, currentConfig.value, getStats());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
 
           if (!result.ok) {
             const suffix = "error" in result && result.error ? ` (${result.error})` : "";

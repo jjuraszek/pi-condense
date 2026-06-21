@@ -91,3 +91,11 @@ Custom session entry types written by the extension (NOT in LLM context unless n
 | `context-prune-frontier` | `flushPending` | Last attempted prune boundary (advances even on `skipped-oversized` / `skipped-trivial` / `skipped-deduped`) |
 | `context-prune-dedup-alias` | `indexer.registerDuplicate` | One entry per content-hash dedup hit; rebuilt on `session_start` to repopulate `dedupAliasToOriginal` |
 | `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context; carries optional `rangeSummaryText` (fused LLM range summary) when `fuseRangeSummary` is on; also carries optional `protectedToolCallIds` (verbatim protected outputs - ids protected by tool name or path glob - are relocated into the synthetic body as `<protected-output>` tags at render time). Rebuilt on `session_start` to repopulate the chain registry. |
+
+## Events emitted
+
+The extension emits on the shared `pi.events` bus. These are **outbound live signals only** — not persisted to the session JSONL, not in the `context-prune-*` customTypes table above, not re-seeded on `session_start`.
+
+| Channel | Constant | Payload | Semantics |
+|---|---|---|---|
+| `cost:external` | `EXTERNAL_COST_CHANNEL` | `ExternalCostUpdate { source: string; totalCost: number; inputTokens?: number; outputTokens?: number }` | Cumulative summarizer cost for the current session (USD). `source = EXTERNAL_COST_SOURCE = "pi-context-prune"`. Re-emitted on every update; aggregators key by `source` and replace. Live only: not persisted, not re-seeded on `session_start`. Designed for pi-subagents-style aggregators that fold multiple extension costs into one Σ$ total. |

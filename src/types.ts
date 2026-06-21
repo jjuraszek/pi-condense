@@ -76,6 +76,12 @@ export const CUSTOM_TYPE_DEDUP_ALIAS = "context-prune-dedup-alias";
  */
 export const CUSTOM_TYPE_CHAIN = "context-prune-chain";
 
+/** pi.events channel for cross-extension cost contributions (an aggregator like pi-subagents folds these into one total). */
+export const EXTERNAL_COST_CHANNEL = "cost:external";
+
+/** Stable producer id for this extension's cost contributions. */
+export const EXTERNAL_COST_SOURCE = "pi-context-prune";
+
 /** Footer status widget ID */
 export const STATUS_WIDGET_ID = "context-prune";
 
@@ -602,6 +608,24 @@ export interface SummarizerStats {
   chainsCompressed: number;
   /** Cumulative number of chains given a fused LLM range summary */
   rangesSummarized: number;
+}
+
+/**
+ * Cumulative-per-source cost contribution emitted on EXTERNAL_COST_CHANNEL.
+ * "Cumulative" = for the CURRENT session, not all-time. Idempotent: an
+ * aggregator keys by `source` and overwrites, so a re-emit never double-counts.
+ */
+export interface ExternalCostUpdate {
+  source: string;
+  totalCost: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/** Transient before/after context-size measurement from the last prune (chars). */
+export interface LiveReclaim {
+  beforeChars: number;
+  afterChars: number;
 }
 
 /** Outcome of the most recent completed prune attempt. */

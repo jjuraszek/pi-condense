@@ -1,5 +1,5 @@
-import type { SummarizerStats } from "./types.js";
-import { CUSTOM_TYPE_STATS } from "./types.js";
+import type { SummarizerStats, ExternalCostUpdate, LiveReclaim } from "./types.js";
+import { CUSTOM_TYPE_STATS, EXTERNAL_COST_CHANNEL, EXTERNAL_COST_SOURCE } from "./types.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -36,6 +36,8 @@ export class StatsAccumulator {
     chainsCompressed: 0,
     rangesSummarized: 0,
   };
+  private baseline = { totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 };
+  private liveReclaim: LiveReclaim | undefined = undefined;
 
   /** Add usage data from one summarizer LLM call. */
   add(usage: Usage): void {
@@ -43,6 +45,25 @@ export class StatsAccumulator {
     this.stats.totalOutputTokens += usage.output ?? 0;
     this.stats.totalCost += usage.cost?.total ?? 0;
     this.stats.callCount += 1;
+  }
+
+  /** Return session-delta spend (current stats minus baseline set at reconstructFromSession). */
+  getSessionDelta(): { totalCost: number; inputTokens: number; outputTokens: number } {
+    return {
+      totalCost: this.stats.totalCost - this.baseline.totalCost,
+      inputTokens: this.stats.totalInputTokens - this.baseline.totalInputTokens,
+      outputTokens: this.stats.totalOutputTokens - this.baseline.totalOutputTokens,
+    };
+  }
+
+  /** Store the before/after context-char measurement from the last prune. */
+  setLiveReclaim(beforeChars: number, afterChars: number): void {
+    this.liveReclaim = { beforeChars, afterChars };
+  }
+
+  /** Return the last live-reclaim measurement, or undefined if none yet. */
+  getLiveReclaim(): LiveReclaim | undefined {
+    return this.liveReclaim;
   }
 
   /** Return a snapshot of the current cumulative stats. */
@@ -60,7 +81,7 @@ export class StatsAccumulator {
     this.stats.rangesSummarized += n;
   }
 
-  /** Reset all accumulated stats to zero. */
+  /** Reset all accumulated stats to zero. Produces the same state as a fresh accumulator. */
   reset(): void {
     this.stats = {
       totalInputTokens: 0,
@@ -70,6 +91,8 @@ export class StatsAccumulator {
       chainsCompressed: 0,
       rangesSummarized: 0,
     };
+    this.baseline = { totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 };
+    this.liveReclaim = undefined;
   }
 
   /** Serialize stats for session persistence. */
@@ -107,6 +130,11 @@ export class StatsAccumulator {
         }
       }
     }
+    this.baseline = {
+      totalInputTokens: this.stats.totalInputTokens,
+      totalOutputTokens: this.stats.totalOutputTokens,
+      totalCost: this.stats.totalCost,
+    };
   }
 
   /**
@@ -144,4 +172,19 @@ export function formatCharProgress(receivedChars: number, rawChars?: number): st
 export function formatCost(n: number): string {
   if (n < 0.001 && n > 0) return `<$0.001`;
   return `$${n.toFixed(3)}`;
+}
+
+/**
+ * Emit the session-delta cost from `accumulator` on EXTERNAL_COST_CHANNEL.
+ * Idempotent from the aggregator's perspective: keyed by source, re-emitting overwrites.
+ */
+export function emitExternalCost(pi: ExtensionAPI, accumulator: StatsAccumulator): void {
+  const delta = accumulator.getSessionDelta();
+  const payload: ExternalCostUpdate = {
+    source: EXTERNAL_COST_SOURCE,
+    totalCost: delta.totalCost,
+    inputTokens: delta.inputTokens,
+    outputTokens: delta.outputTokens,
+  };
+  pi.events.emit(EXTERNAL_COST_CHANNEL, payload);
 }

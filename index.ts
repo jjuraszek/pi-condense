@@ -30,7 +30,7 @@ import {
   CUSTOM_TYPE_STATS,
   CUSTOM_TYPE_FRONTIER,
 } from "./src/types.js";
-import { StatsAccumulator } from "./src/stats.js";
+import { StatsAccumulator, emitExternalCost } from "./src/stats.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
@@ -440,7 +440,7 @@ export default function (pi: ExtensionAPI) {
 
       if (processedBatches.length === 0) {
         // Nothing was persisted (all calls failed or first call failed)
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
         return { ok: false, reason: "summarizer-failed" };
       }
 
@@ -504,7 +504,8 @@ export default function (pi: ExtensionAPI) {
         return { ok: false, reason: isStaleContextError(err) ? "stale-context" : "failed", error: errorMessage(err) };
       }
 
-      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
+      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
+      emitExternalCost(pi, statsAccum);
 
       // Chain compression — compress closed chains beyond the rolling window.
       // Runs after the per-batch summarization so summaryBodies are up to date.
@@ -532,6 +533,7 @@ export default function (pi: ExtensionAPI) {
           if (compressedEntries.length > 0) {
             statsAccum.addChainsCompressed(compressedEntries.length);
             statsAccum.persist(pi);
+            emitExternalCost(pi, statsAccum);
             safeNotify(
               ctx,
               `pruner: compressed ${compressedEntries.length} chain${compressedEntries.length === 1 ? "" : "s"} (${compressedEntries.map((e) => e.blockId).join(", ")})`,
@@ -614,7 +616,7 @@ export default function (pi: ExtensionAPI) {
       // When the abort signal fired, summarizeBatch rethrows rather than
       // swallowing the error.  Don't show a UI error — the user intended this.
       if (options.signal?.aborted) {
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
         return { ok: false, reason: "aborted" };
       }
       if (isStaleContextError(err)) {
@@ -649,7 +651,7 @@ export default function (pi: ExtensionAPI) {
     previousFraction = null;
 
     // Update footer status
-    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getStats());
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
 
     ctx.ui.notify(
       `pruner loaded — pruning ${currentConfig.value.enabled ? "ON" : "OFF"} | model: ${currentConfig.value.summarizerModel}`,
@@ -784,7 +786,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── context: prune summarized tool results from next LLM call ─────────────
-  pi.on("context", async (event, _ctx) => {
+  pi.on("context", async (event, ctx) => {
     if (!currentConfig.value.enabled) return undefined;
 
     let messages = event.messages;
@@ -794,20 +796,20 @@ export default function (pi: ExtensionAPI) {
     // It fast-paths (returns the original array reference) when both the
     // tool-call index and chain registry are empty, so calling it
     // unconditionally is safe and avoids a split gate here.
-    {
-      const result = pruneMessages(
-        messages,
-        indexer,
-        currentConfig.value.chainCompression,
-        currentConfig.value.purgeErrors,
-        currentConfig.value.thinkingStrip,
-        currentConfig.value,
-      );
-      if (result.pruned) {
-        messages = result.messages;
-        changed = true;
-      }
+    const result = pruneMessages(
+      messages,
+      indexer,
+      currentConfig.value.chainCompression,
+      currentConfig.value.purgeErrors,
+      currentConfig.value.thinkingStrip,
+      currentConfig.value,
+    );
+    if (result.pruned) {
+      messages = result.messages;
+      changed = true;
+      statsAccum.setLiveReclaim(result.beforeChars, result.afterChars);
     }
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
 
     if (!changed) return undefined;
     return { messages };
@@ -837,9 +839,10 @@ export default function (pi: ExtensionAPI) {
     if (result.compressedEntries.length > 0) {
       statsAccum.addChainsCompressed(result.compressedEntries.length);
       statsAccum.persist(pi);
+      emitExternalCost(pi, statsAccum);
     }
     return { compressedEntries: result.compressedEntries, skipped: result.skipped.filter((s) => s.reason === "no-summary").length };
   };
 
-  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, () => statsAccum.getStats(), indexer, compactChains);
+  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, () => statsAccum.getStats(), () => statsAccum.getLiveReclaim(), indexer, compactChains);
 }

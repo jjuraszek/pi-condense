@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { pruneMessages } from "./pruner.js";
+import { pruneMessages, sizeMessages } from "./pruner.js";
 import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
 
 // Minimal mock exposing only the ToolCallIndexer surface that pruneMessages calls.
@@ -448,5 +448,61 @@ describe("render-time protection re-check", () => {
     const { messages, pruned } = pruneMessages([skillMsg], indexer as any);
     expect(pruned).toBe(true);
     expect(messages[0].content[0].text).toContain("context_tree_query");
+  });
+});
+
+describe("sizeMessages", () => {
+  it("counts hidden fields (thinking blocks), not just visible text", () => {
+    // Two messages with identical visible .text but different hidden content.
+    // sizeMessages must count the full serialized weight so all reclaim
+    // mechanisms (thinking-strip, error-purge, etc.) register correctly.
+    const withThinking = [{
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "x".repeat(1000) },
+        { type: "text", text: "hello" },
+      ],
+    }];
+    const withoutThinking = [{
+      role: "assistant",
+      content: [
+        { type: "text", text: "hello" },
+      ],
+    }];
+    expect(sizeMessages(withThinking)).toBeGreaterThan(sizeMessages(withoutThinking));
+  });
+});
+
+describe("pruneMessages beforeChars/afterChars", () => {
+  it("no-op fast path: beforeChars === afterChars === sizeMessages(input) and pruned false", () => {
+    const indexer = makeMockIndexer();
+    const messages = [{ role: "user", content: "hello", timestamp: 1 }];
+    const result = pruneMessages(messages, indexer);
+    expect(result.pruned).toBe(false);
+    const expected = sizeMessages(messages);
+    expect(result.beforeChars).toBe(expected);
+    expect(result.afterChars).toBe(expected);
+  });
+
+  it("pruning path: beforeChars > afterChars when stubs shrink content", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1"]),
+      shortRefs: new Map([["tc1", "t1"]]),
+    });
+    const messages = [
+      {
+        role: "toolResult",
+        toolCallId: "tc1",
+        toolName: "bash",
+        content: [{ type: "text", text: "x".repeat(500) }],
+        isError: false,
+        timestamp: 1,
+      },
+    ];
+    const result = pruneMessages(messages, indexer);
+    expect(result.pruned).toBe(true);
+    expect(result.beforeChars).toBe(sizeMessages(messages));
+    expect(result.afterChars).toBe(sizeMessages(result.messages));
+    expect(result.afterChars).toBeLessThan(result.beforeChars);
   });
 });
