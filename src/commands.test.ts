@@ -49,16 +49,16 @@ describe("pruneStatusText", () => {
 });
 
 describe("setPruneStatusWidget", () => {
-  it("wraps every rendered state in '\u2502 ... \u2502' for load-order-independent isolation", () => {
-    expect(captureStatus(cfgVisible(false))).toBe("\u2502 prune: OFF \u2502");
-    expect(captureStatus(cfgVisible(true))).toBe("\u2502 prune: ON \u2502");
+  it("prefixes every rendered state with a single leading '\u2502' for load-order-independent isolation", () => {
+    expect(captureStatus(cfgVisible(false))).toBe("\u2502 prune: OFF");
+    expect(captureStatus(cfgVisible(true))).toBe("\u2502 prune: ON");
     expect(captureStatus(cfgVisible(true), { beforeChars: 368000, afterChars: 56000 })).toBe(
-      "\u2502 prune: ON \u00b7 92.0k->14.0k (-85%) \u2502",
+      "\u2502 prune: ON \u00b7 92.0k->14.0k (-85%)",
     );
   });
 
-  it("wraps string progress values too", () => {
-    expect(captureStatus(cfgVisible(true), "prune: 3 pending")).toBe("\u2502 prune: 3 pending \u2502");
+  it("prefixes string progress values too", () => {
+    expect(captureStatus(cfgVisible(true), "prune: 3 pending")).toBe("\u2502 prune: 3 pending");
   });
 
   it("clears (no wrap) when the status line is hidden", () => {

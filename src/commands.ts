@@ -74,9 +74,11 @@ export function setPruneStatusWidget(
     return;
   }
   const text = typeof value === "string" ? value : pruneStatusText(config, value);
-  // Self-delimiting wrapper so the segment stays visually isolated regardless of
-  // where other extensions' status segments land in the footer (load-order independent).
-  ctx.ui.setStatus(STATUS_WIDGET_ID, `\u2502 ${text} \u2502`);
+  // Leading-only separator: the footer joins extension status segments with a
+  // single space, so a trailing divider collides with the next segment's leading
+  // one and renders doubled. One leading bar yields single dividers between
+  // sections, load-order independent.
+  ctx.ui.setStatus(STATUS_WIDGET_ID, `\u2502 ${text}`);
 }
 
 // ── Subcommand list (for completions & interactive picker) ──────────────────
