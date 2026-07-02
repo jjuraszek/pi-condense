@@ -80,7 +80,7 @@ export const CUSTOM_TYPE_CHAIN = "context-prune-chain";
 export const EXTERNAL_COST_CHANNEL = "cost:external";
 
 /** Stable producer id for this extension's cost contributions. */
-export const EXTERNAL_COST_SOURCE = "pi-context-prune";
+export const EXTERNAL_COST_SOURCE = "pi-condense";
 
 /** Footer status widget ID */
 export const STATUS_WIDGET_ID = "context-prune";

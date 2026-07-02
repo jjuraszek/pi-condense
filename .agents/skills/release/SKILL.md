@@ -1,133 +1,130 @@
 ---
 name: release
-description: Creates a repository release for this Pi package. Use when the user asks to do a major, minor, or patch release, bump the package version, and create and push a git tag. This fork is consumed via git tag pins (`git:github.com/...@vX.Y.Z`); no npm publish step is involved.
+description: Use when asked to release, publish, bump the version, or cut a tag for jjuraszek/pi-condense.
 ---
 
 # Release
 
-Use this skill when asked to release this package, especially through `/release major`, `/release minor`, or `/release patch`.
+Use this skill when asked to release this package.
 
-## Repository-specific release model
+## Overview
 
-This fork is consumed via **git tag pins** in pi `settings.json` (e.g.
-`"git:github.com/jjuraszek/pi-context-prune@v0.11.1"`), not via npm. A release
-here means:
+`pi-condense` publishes to **npm** (public, unscoped); the `pi-package` keyword
+lists it on `https://pi.dev/packages/pi-condense`. Users install with
+`pi install npm:pi-condense`.
 
-1. bump the version in `package.json`
-2. create the release commit and the matching `vX.Y.Z` git tag
-3. push `main` and the tag to `origin`
-4. rewrite every `~/.pi/agent*/settings.json` that pins this repo so its
-   `@<old-ref>` becomes `@vX.Y.Z` (done by the helper script — no manual
-   bump anymore)
+The release is **tag-driven and CI-executed**: pushing a `vX.Y.Z` tag triggers
+`.github/workflows/release.yml`, which gates on `tag == package.json`, runs
+`bun test src/`, and runs `npm publish --provenance --access public` via
+**OIDC trusted publishing**. The local flow only assigns the version and pushes
+the tag; **never run `npm publish` by hand.**
 
-There is no CI publish workflow. **Do not run `npm publish`** — nothing
-consumes the npm package; running it would only publish under whatever
-account the local `npm` is logged into.
+All mechanics live in `.agents/skills/release/scripts/release.sh`. This skill is
+the judgment layer around it: propose the level, get approval, then run the
+script. The script's config header is the only part that differs from the
+sibling pi-* copies (`pi-cohort`, `pi-gauntlet`) - keep them in sync.
 
-The tag scheme (`v` prefix, semver) matches sibling pi packages, e.g.
-[`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers/tags).
+## Boundaries
 
-## Inputs
+- Reads: git log/tags, `package.json`, `CHANGELOG.md`, pi `settings.json` files.
+- Writes (only when you run the matching command): `package.json` version, a
+  release commit, the `vX.Y.Z` tag, and - only with an explicit `--apply` and a
+  separate approval - `settings.json` pins.
+- Does NOT: run `npm publish`, edit consumer project files, or rewrite
+  `~/.pi/**/settings.json` without a distinct approval for that action.
 
-Accepted release types:
-- `major`
-- `minor`
-- `patch`
+## Tag scheme
 
-If the user does not specify one of those three values, ask for clarification.
+`v<major>.<minor>.<patch>` - plain semver, matching the workflow filter
+`v[0-9]+.[0-9]+.[0-9]+`. `package.json` `version` mirrors the tag without the
+leading `v`.
 
-## Safety checks before releasing
+## Bump policy
 
-Before running the release script, confirm all of the following:
+| Level | When |
+|---|---|
+| `patch` | fixes, prose, internal changes that don't alter behavior |
+| `minor` | new command, config key, tool surface, or backward-compatible feature |
+| `major` | breaking change: config-schema break, removed command, changed customType wire format |
 
-- the repo working tree is clean
-- the release should go from `main`
-- the local checkout can fast-forward cleanly from `origin/main`
-- the current package version comes from `package.json`
+## Process
 
-If any of those checks fail, stop and explain why.
-
-## Preferred execution path
-
-Use the helper script in this skill (paths are relative to repo root):
-
-```bash
-bash .agents/skills/release/scripts/release.sh <major|minor|patch>
-```
-
-Examples:
+### 1. Propose the level - require explicit approval
 
 ```bash
-bash .agents/skills/release/scripts/release.sh patch
-bash .agents/skills/release/scripts/release.sh minor
-bash .agents/skills/release/scripts/release.sh major
+bash .agents/skills/release/scripts/release.sh propose
 ```
 
-For a no-side-effects validation run:
+Present the commits, the heuristic level, and the resulting `X.Y.Z` with a
+one-line rationale tied to specific commits. **Stop and wait** for the user to
+accept or override. Never pick the level and proceed in one step.
+
+### 2. Move the CHANGELOG entry
+
+Promote the `## [Unreleased]` notes into a new `## [X.Y.Z] - <date>` heading for
+the agreed version (Keep-a-Changelog format). Draft one if none exist.
+
+### 3. Bump, tag, push - require explicit approval of the exact command
 
 ```bash
-bash .agents/skills/release/scripts/release.sh --dry-run patch
+bash .agents/skills/release/scripts/release.sh minor     # or patch / major
+bash .agents/skills/release/scripts/release.sh current    # version already hand-set + committed
+bash .agents/skills/release/scripts/release.sh --dry-run minor   # preview, no changes
 ```
 
-To release without touching the user's settings.json pins (rare — e.g. when
-releasing from a host that doesn't have a pi profile):
+The script verifies `main` + a clean tree, bumps `package.json`, commits
+`Release <version>`, runs `bun test src/` as a pre-flight, creates the
+annotated tag, pushes `main` + the tag, then chains straight into verification.
+`current` tags the version already in `package.json` (commit your work first).
+
+### 4. Verification (the script runs this automatically after a push)
+
+To re-run standalone:
 
 ```bash
-bash .agents/skills/release/scripts/release.sh --no-update-pins patch
+bash .agents/skills/release/scripts/release.sh verify           # current package.json version
+bash .agents/skills/release/scripts/release.sh verify 1.5.0
 ```
 
-## What the helper script does
+It watches the release workflow to a terminal state (`gh` if present), polls
+`npm view pi-condense@X.Y.Z version` until live, then checks the pi.dev catalog.
+Only claim success once `npm view` prints the new version. pi.dev lags npm by
+minutes to hours - report crawl lag, do not loop on it.
 
-The script is the authoritative release path for this repo. It:
+### 5. Optional - propose preset pin sync
 
-1. validates the requested bump type
-2. ensures the working tree is clean
-3. fetches from `origin`
-4. switches to `main` if needed
-5. fast-forwards `main` from `origin/main`
-6. runs `npm run build --if-present`
-7. runs `npm run check --if-present`
-8. runs `npm version <type> -m "Release %s"` (creates commit + `vX.Y.Z` tag)
-9. pushes `main` and the new tag
-10. rewrites every `~/.pi/agent*/settings.json` that pins
-    `git:github.com/jjuraszek/pi-context-prune@<ref>` so `<ref>` becomes the
-    new tag. Anything not matching that exact prefix (upstream URL, other
-    forks) is left alone.
-
-## After the script succeeds
-
-Report back with:
-
-- the old version
-- the new version
-- the created tag (sha + name)
-- confirmation that `main` and the tag were pushed
-- which `~/.pi/agent*/settings.json` files got their pin bumped (taken from
-  the script's stdout — it prints one line per rewritten file)
-
-If `--no-update-pins` was used, instead remind the user to bump pins
-manually:
+Offer only when relevant. Requires its own explicit approval before `--apply`.
 
 ```bash
-grep -nrH 'git:github.com/jjuraszek/pi-context-prune@' $HOME/.pi/agent*/settings.json
+bash .agents/skills/release/scripts/release.sh sync-presets            # report only
+bash .agents/skills/release/scripts/release.sh sync-presets --apply    # rewrite same-form npm pins
 ```
 
-## Failure handling
+Scans `settings.json` under `~/.pi` and this repo's parent tree. Same-form npm
+pins (`npm:pi-condense@<old>`) are bumped by `--apply`; git-tag pins and stale
+`pi-context-prune` names are reported for manual migration, never auto-rewritten.
 
-If the script fails:
+## Safety checks
 
-- do not guess
-- quote the failing command or the relevant stderr
-- explain whether the release partially completed
-- if `npm version` already created a commit/tag but push failed, tell the user exactly what happened before attempting cleanup
-- if the tag pushed but the pin rewrite failed, the release is still valid —
-  re-running just the pin step is safe (the helper is idempotent: pins already
-  on `vX.Y.Z` are skipped). The user can re-run with `--no-update-pins`
-  bypassed via:
-  `bash .agents/skills/release/scripts/release.sh --dry-run patch` (to see
-  what would change) then bump manually with `sed`/`jq`/an editor.
+Refuse to proceed unless ALL hold; report which failed, do not silently fix:
 
-## Notes
+- working tree clean (for `current`, commit feature work first)
+- releasing from `main`
+- the target `vX.Y.Z` tag does not already exist (the script enforces this)
+- `bun test src/` passes (the script's pre-flight; also the CI gate)
 
-- This skill is paired with the prompt template at `prompts/release.md` so the user can invoke it with `/release <major|minor|patch>`.
-- Keep release responses concise and operational.
+## Red Flags - STOP
+
+- about to run `npm publish` locally - push the tag, let CI publish
+- picked the bump level without user confirmation
+- reported success without `npm view pi-condense@X.Y.Z` printing the version
+- retrying the pi.dev fetch "until it appears" - that's crawl lag, not failure
+- editing a `~/.pi/**/settings.json` without its own explicit approval
+- `package.json` version and the tag are not the identical `X.Y.Z` string
+
+## First-time npm setup (one-off, not per release)
+
+`pi-condense` must be registered once as a **trusted publisher** on npmjs.com:
+Settings -> Trusted Publishing -> GitHub Actions publisher for repo
+`jjuraszek/pi-condense`, workflow `release.yml`. Until it exists the publish step
+cannot authenticate (403).

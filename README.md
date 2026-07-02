@@ -1,48 +1,48 @@
-# pi-context-prune
+# pi-condense
 
 A [Pi coding-agent](https://github.com/badlogic/pi-mono) extension that summarizes completed tool-call batches, replaces raw tool outputs with short stubs in future context, and lets the LLM recover any original via the `context_tree_query` tool.
 
 The session JSONL file is never modified — pruning only affects what each *next* request sees.
 
-Fork of [`championswimmer/pi-context-prune`](https://github.com/championswimmer/pi-context-prune) with additional pre-flush safeguards, agent-message batching, and tag-pinned release flow.
+Fork of [`championswimmer/pi-context-prune`](https://github.com/championswimmer/pi-context-prune) with additional pre-flush safeguards, agent-message batching, chain compression, and an npm release flow.
 
 📖 For the algorithm, design rationale, prompt-cache interaction, and the research behind summarization-based context management, see **[PRUNING.md](PRUNING.md)**.
 
 ## Install
 
-This fork is consumed as a pi package via a **git tag pin** — same scheme as sibling [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers).
+Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense).
 
 **User scope** (all repos under your pi profile):
 
 ```bash
-pi install git:github.com/jjuraszek/pi-context-prune@v1.0.0
+pi install npm:pi-condense
 ```
 
 **Project scope** (current repo only, committable via `.pi/settings.json`):
 
 ```bash
-pi install -l git:github.com/jjuraszek/pi-context-prune@v1.0.0
+pi install -l npm:pi-condense
 ```
 
 **Try without installing**:
 
 ```bash
-pi -e git:github.com/jjuraszek/pi-context-prune@v1.0.0
+pi -e npm:pi-condense
 ```
 
 **From a local checkout** (for hacking on the extension itself):
 
 ```bash
-git clone git@github.com:jjuraszek/pi-context-prune.git ~/repos/pi-context-prune
+git clone git@github.com:jjuraszek/pi-condense.git ~/repos/pi-condense
 cd ~/path/to/your/repo
-pi install -l ~/repos/pi-context-prune
+pi install -l ~/repos/pi-condense
 # or one-shot, no install:
-pi -e ~/repos/pi-context-prune/index.ts
+pi -e ~/repos/pi-condense/index.ts
 ```
 
-Upgrade by re-running `pi install` with a newer `@vX.Y.Z`. Remove with `pi remove pi-context-prune`. Once installed, the extension auto-loads on every `pi` invocation; no flags needed.
+Pin a specific version with `npm:pi-condense@X.Y.Z`. Upgrade by re-running `pi install`. Remove with `pi remove pi-condense`. Once installed, the extension auto-loads on every `pi` invocation; no flags needed.
 
-> Upstream `championswimmer/pi-context-prune` does publish to npm. This fork **does not** — pin a tag instead. See [CHANGELOG.md](CHANGELOG.md) for what diverges.
+> Diverges from upstream `championswimmer/pi-context-prune`; see [CHANGELOG.md](CHANGELOG.md) for what differs.
 
 ## Quick start
 
@@ -216,7 +216,7 @@ Every time the summarizer cost updates, the extension emits on the shared `pi.ev
 
 ```ts
 interface ExternalCostUpdate {
-  source: string;       // EXTERNAL_COST_SOURCE = "pi-context-prune"
+  source: string;       // EXTERNAL_COST_SOURCE = "pi-condense"
   totalCost: number;    // cumulative cost for the current session (USD)
   inputTokens?: number;
   outputTokens?: number;
@@ -226,12 +226,7 @@ interface ExternalCostUpdate {
 Semantics:
 - **Cumulative per session**, not all-time. Re-emitted on every update; aggregators key by `source` and replace the previous value.
 - **Live only.** Not persisted; not re-emitted on `session_start`. An aggregator that restarts mid-session sees cost from zero until the next summarizer call.
-- Designed for aggregators like pi-subagents that show a unified Σ$ total across extensions.
-
-## Related extensions
-
-- **[pi-context-usage](https://github.com/championswimmer/pi-context-usage)** — visualizes current context size and breaks it down by message type. Useful for seeing how much space pruning saved.
-- **[pi-cache-graph](https://github.com/championswimmer/pi-cache-graph)** — plots provider prefix-cache hits/misses in real time. Useful for tuning your `pruneOn` mode against actual cache behavior.
+- Designed for aggregators like pi-cohort that show a unified Σ$ total across extensions.
 
 ## Limitations
 

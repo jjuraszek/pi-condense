@@ -1,11 +1,18 @@
 # Changelog
 
-Format follows sibling pi packages (e.g. [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers/blob/main/CHANGELOG.md)):
+Format follows sibling pi packages (e.g. [`pi-cohort`](https://github.com/jjuraszek/pi-cohort/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
-This fork is consumed via git tag pins (`git:github.com/jjuraszek/pi-context-prune@vX.Y.Z`).
-The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
-automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
+Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (`pi install npm:pi-condense`).
+Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
+publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
+
+## v2.0.0 — 2026-07-02
+
+- **Renamed the package `pi-context-prune` -> `pi-condense`** and switched distribution from git-tag pins to npm. Install with `pi install npm:pi-condense` (was `git:github.com/jjuraszek/pi-context-prune@vX.Y.Z`). Migrate pinned `settings.json` entries; `release.sh sync-presets` reports stale pins.
+- **Added npm release machinery:** `.github/workflows/release.yml` (tag-triggered, OIDC + provenance, `tag == package.json` gate) and `test.yml` (bun, Ubuntu + Windows matrix). Ported `release.sh` to the shared sibling skeleton (`propose` / `patch|minor|major` / `current` / `verify` / `sync-presets`), replacing the old tag-pin `release.mjs`.
+- **Added** `LICENSE` (MIT), `files` allowlist, `engines`, and `author` to `package.json`; removed dead `pi.skills` / `pi.prompts` manifest entries (those directories never existed).
+- **Renamed** the cost-event producer id `EXTERNAL_COST_SOURCE` `"pi-context-prune"` -> `"pi-condense"`. Aggregators keyed on the old `source` string see it as a new producer.
 
 ## v1.0.0 — 2026-05-31
 

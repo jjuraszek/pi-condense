@@ -1,6 +1,6 @@
 # Understanding Context Pruning in Pi
 
-> How `pi-context-prune` compresses tool-call history, why it matters for long-running sessions, and how it balances context size against provider-side prefix caching.
+> How `pi-condense` compresses tool-call history, why it matters for long-running sessions, and how it balances context size against provider-side prefix caching.
 
 ---
 
@@ -98,7 +98,7 @@ In a long session this can grow to **30k–100k+ tokens**. The model pays for ev
 
 ## What Pruning Does
 
-`pi-context-prune` intercepts completed tool-call batches, summarizes them, and replaces each raw `ToolResultMessage` in future context with a small breadcrumb stub that points at `context_tree_query` for recovery. The original full output is archived in the session index.
+`pi-condense` intercepts completed tool-call batches, summarizes them, and replaces each raw `ToolResultMessage` in future context with a small breadcrumb stub that points at `context_tree_query` for recovery. The original full output is archived in the session index.
 
 ### ASCII: The same session *after* pruning Turns 1–5
 
@@ -738,7 +738,7 @@ ReSum addresses the fundamental conflict between **exploration** (needing many t
 - Enables "unbounded exploration" — the agent never hits a hard context wall
 
 **Why this matters for Pi:**
-ReSum validates the exact architecture `pi-context-prune` uses: an external summarizer module, periodic compression, and recovery from compressed state. The plug-and-play nature means it works with off-the-shelf agents — no retraining required.
+ReSum validates the exact architecture `pi-condense` uses: an external summarizer module, periodic compression, and recovery from compressed state. The plug-and-play nature means it works with off-the-shelf agents — no retraining required.
 
 ---
 

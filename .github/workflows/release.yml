@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest
+      - name: Install dependencies
+        run: bun install
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME ($tag) does not match package.json version $pkg"
+            exit 1
+          fi
+      - name: Run tests
+        run: bun test src/
+      - name: Publish to npm
+        run: npm publish --provenance --access public

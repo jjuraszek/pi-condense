@@ -1,34 +1,44 @@
 {
-  "name": "pi-context-prune",
-  "version": "1.3.1",
-  "description": "Pi extension package for pruning future context while preserving original tool-call history.",
+  "name": "pi-condense",
+  "version": "2.0.0",
+  "description": "Pi extension that summarizes completed tool-call batches, replaces raw outputs with short stubs in future context, and recovers any original on demand via context_tree_query.",
+  "author": "Jacek Juraszek",
+  "license": "MIT",
   "type": "module",
-  "scripts": {
-    "build": "echo 'nothing to build'",
-    "check": "echo 'nothing to check'",
-    "test": "bun test src/"
-  },
-  "keywords": [
-    "pi-package"
-  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/championswimmer/pi-context-prune.git"
+    "url": "git+https://github.com/jjuraszek/pi-condense.git"
   },
-  "license": "MIT",
+  "homepage": "https://github.com/jjuraszek/pi-condense#readme",
   "bugs": {
-    "url": "https://github.com/championswimmer/pi-context-prune/issues"
+    "url": "https://github.com/jjuraszek/pi-condense/issues"
   },
-  "homepage": "https://github.com/championswimmer/pi-context-prune#readme",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "context",
+    "context-management",
+    "pruning",
+    "summarization",
+    "ai"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "index.ts",
+    "src/**/*.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "PRUNING.md"
+  ],
+  "scripts": {
+    "test": "bun test src/"
+  },
   "pi": {
     "extensions": [
       "./index.ts"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts"
     ]
   },
   "peerDependencies": {
@@ -36,5 +46,11 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@earendil-works/pi-tui": "^0.78.0",
+    "@sinclair/typebox": "^0.34.49"
   }
 }

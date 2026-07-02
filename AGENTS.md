@@ -1,4 +1,4 @@
-# pi-context-prune
+# pi-condense
 
 Pi extension. Captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Targeted at long agent sessions where raw tool outputs dominate the prompt.
 
@@ -50,7 +50,7 @@ If the source contradicts an assumption, the source wins. If the source is missi
 
 - **Multi-step work uses the superpowers `brainstorming` → `writing-plans` skills.** Specs and plans live in `doc/specs/` (`YYYY-MM-DD-<topic>.md`). Keep the checklist in sync with reality.
 - **Isolate feature work in a git worktree.** Worktrees default to `.worktrees/<branch>` at the repo root (already gitignored); use the superpowers `using-git-worktrees` skill. The spec is the first commit on the branch.
-- **Releases use the `release` skill.** This fork is consumed via git **tag** pins (`git:github.com/jjuraszek/pi-context-prune@vX.Y.Z`); the release script bumps the version, creates and pushes the `vX.Y.Z` tag, then automatically rewrites every matching pin in `~/.pi/agent*/settings.json`. No npm publish step. The tag scheme matches sibling pi-* packages (`pi-superpowers`, etc.). See `.agents/skills/release/SKILL.md` for the full flow + `--dry-run` / `--no-update-pins` flags.
+- **Releases use the `release` skill.** Published to **npm** as `pi-condense` (users install `npm:pi-condense`). Tag-driven and CI-executed: `release.sh` bumps the version, commits, and pushes a `vX.Y.Z` tag; pushing the tag triggers `.github/workflows/release.yml`, which gates on `tag == package.json`, runs `bun test src/`, and publishes via OIDC trusted publishing + provenance. **Never run `npm publish` by hand.** The `release.sh` config header is the only per-repo block; keep it in sync with the sibling `pi-cohort` / `pi-gauntlet` copies. See `.agents/skills/release/SKILL.md` for the full flow + `--dry-run` / `sync-presets` flags.
 - **Smoke-test new behavior end-to-end** with `pi -e ./index.ts --no-extensions -p "..."` against an isolated `$PI_CODING_AGENT_DIR`. Inspect session JSONL entries (`jq -r 'select(.type == "custom" or .type == "custom_message") | .customType' session.jsonl | sort | uniq -c`) to verify the expected `context-prune-*` entries are written.
 - **Typecheck before committing.** No package script is wired; run `bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --allowJs --esModuleInterop --resolveJsonModule --lib es2022 --types node index.ts` (transient `@types/node` add/remove is fine — don't commit it).
 
@@ -98,4 +98,4 @@ The extension emits on the shared `pi.events` bus. These are **outbound live sig
 
 | Channel | Constant | Payload | Semantics |
 |---|---|---|---|
-| `cost:external` | `EXTERNAL_COST_CHANNEL` | `ExternalCostUpdate { source: string; totalCost: number; inputTokens?: number; outputTokens?: number }` | Cumulative summarizer cost for the current session (USD). `source = EXTERNAL_COST_SOURCE = "pi-context-prune"`. Re-emitted on every update; aggregators key by `source` and replace. Live only: not persisted, not re-seeded on `session_start`. Designed for pi-subagents-style aggregators that fold multiple extension costs into one Σ$ total. |
+| `cost:external` | `EXTERNAL_COST_CHANNEL` | `ExternalCostUpdate { source: string; totalCost: number; inputTokens?: number; outputTokens?: number }` | Cumulative summarizer cost for the current session (USD). `source = EXTERNAL_COST_SOURCE = "pi-condense"`. Re-emitted on every update; aggregators key by `source` and replace. Live only: not persisted, not re-seeded on `session_start`. Designed for pi-cohort-style aggregators that fold multiple extension costs into one Σ$ total. |
