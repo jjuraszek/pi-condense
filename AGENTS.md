@@ -6,9 +6,11 @@ Pi extension. Captures completed tool-call batches, summarizes them with an LLM,
 
 Same rules as the parent `~/.pi/agent.anthropic/AGENTS.md`. Applied to chat, commit messages, PR descriptions, code review, and any artifact authored in this repo.
 
+- **Human, condensed, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, and `.md` files. Terse is not vague - keep it exact.
 - **Suppress process narration.** No intent classification, phase announcements, tool/subagent preamble, status updates, pleasantries. Start with substance.
 - **Output instead:** outcomes, decisions needing input, verification results, blockers.
 - **Bullets over prose. Short paragraphs.** No wall-of-text, no tutorial tone unless asked.
+- **Show an example when it clarifies a complex point.** Context-management behavior is easy to get subtly wrong in prose - a small before/after or a concrete ref (`t12`, a stub line) beats a paragraph. Use examples to disambiguate, not to pad.
 - **End on the ask, not a summary.** Diffs/outputs speak for themselves.
 - **Match the recipient's register** in human-facing artifacts (issues, PRs, chat). Casual thread → casual reply.
 
@@ -16,12 +18,13 @@ LLM-readable artifacts (`AGENTS.md`, `README.md`, `PRUNING.md`, `doc/specs/*.md`
 
 ## Code & Documentation Discipline
 
-- **Code is a liability.** Add only what the task requires. No premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives.
+- **Every line of code is a liability - the best change is often no new code.** Before adding, check whether an existing knob, path, or default already does it (the alternatives to two proposed features turned out to be already shipped). Add only what the task requires: no premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives. **This applies to documentation too** - a doc line that doesn't help a future reader act is a liability; cut it.
 - **No belt-and-suspenders.** Don't validate / null-check / guard the same thing at multiple layers — pick one. Validate at the boundary once.
 - **Delete dead code, don't comment it out.** If a replacement is uncertain, branch from the deletion commit so you can revert.
 - **Comments only when the *why* is non-obvious** — hidden constraint, subtle invariant, surprising workaround. Don't restate what the code does. No docstrings on self-evident params/returns. No banner comments. Don't reference the current task or callers — that belongs in the commit message.
 - **Docs are a contract.** Dense, current, no preamble. If a sentence doesn't help a future reader act on the contract, cut it. AGENTS.md routes; PRUNING.md explains the algorithm; README.md installs/configures. Each stays terse.
 - **Markdown tables use compact separators** (`|---|`, never padded).
+- **Ticket convention.** Every GitHub issue follows **Context -> Problem -> Idea (how to address) -> Acceptance Criteria**, then the idea is **roasted by 2 subagents and the consolidated roast is posted as a comment** before the issue is ready. A roast that kills or shrinks the idea is a success, not a failure - file only what survives (see issue #2).
 - **Surface, don't auto-fix.** A bug fix doesn't drag surrounding cleanup; a one-shot operation doesn't grow a helper. Mention adjacent issues separately.
 
 ## Ground Truth Before Reasoning
@@ -43,12 +46,15 @@ If the source contradicts an assumption, the source wins. If the source is missi
 | Install, configure, list of `/pruner` commands and settings | [`README.md`](README.md) |
 | Implementation: hook a Pi event, change the indexer, touch the summarizer | open the matching `src/*.ts` file directly |
 | Run a release | `.agents/skills/release/SKILL.md` |
-| Brainstorm / plan a multi-step change | superpowers `brainstorming` then `writing-plans` skills; specs land in `doc/specs/` |
+| Brainstorm / plan a multi-step change | superpowers `brainstorming` then `writing-plans` skills; specs land in `doc/specs/`, plans in `doc/plans/` (ephemeral) |
+| File an issue / ticket | Ticket convention above (Context -> Problem -> Idea -> ACs + 2-subagent roast comment) |
+| Override a pi-gauntlet skill for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
 | Historical context for a past change | `doc/specs/*.md` (newest first) |
 
 ## Workflow
 
-- **Multi-step work uses the superpowers `brainstorming` → `writing-plans` skills.** Specs and plans live in `doc/specs/` (`YYYY-MM-DD-<topic>.md`). Keep the checklist in sync with reality.
+- **Multi-step work uses the superpowers `brainstorming` → `writing-plans` skills.** Specs live in `doc/specs/` (`YYYY-MM-DD-<topic>.md`); plans in the sibling `doc/plans/`. Keep the checklist in sync with reality.
+- **Plans are ephemeral; specs are durable.** `doc/plans/` lives only on the feature branch - `git rm` it before finishing the branch so it never lands on `main` (it stays in branch history). Only `doc/specs/` reaches `main`. Codified in [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md); most work here is gauntlet-driven.
 - **Isolate feature work in a git worktree.** Worktrees default to `.worktrees/<branch>` at the repo root (already gitignored); use the superpowers `using-git-worktrees` skill. The spec is the first commit on the branch.
 - **Releases use the `release` skill.** Published to **npm** as `pi-condense` (users install `npm:pi-condense`). Tag-driven and CI-executed: `release.sh` bumps the version, commits, and pushes a `vX.Y.Z` tag; pushing the tag triggers `.github/workflows/release.yml`, which gates on `tag == package.json`, runs `bun test src/`, and publishes via OIDC trusted publishing + provenance. **Never run `npm publish` by hand.** The `release.sh` config header is the only per-repo block; keep it in sync with the sibling `pi-cohort` / `pi-gauntlet` copies. See `.agents/skills/release/SKILL.md` for the full flow + `--dry-run` / `sync-presets` flags.
 - **Smoke-test new behavior end-to-end** with `pi -e ./index.ts --no-extensions -p "..."` against an isolated `$PI_CODING_AGENT_DIR`. Inspect session JSONL entries (`jq -r 'select(.type == "custom" or .type == "custom_message") | .customType' session.jsonl | sort | uniq -c`) to verify the expected `context-prune-*` entries are written.
@@ -74,7 +80,9 @@ src/
   types.ts                         # all shared types, constants, DEFAULT_CONFIG
   (other src/*.ts)                 # frontier, config, dedup, tree-browser
 .agents/skills/                    # in-repo skills (release)
-doc/specs/                         # specs + plans (superpowers brainstorming/writing-plans)
+.pi/gauntlet-overrides.md          # per-repo pi-gauntlet skill overrides (plan retention, ticket convention)
+doc/specs/                         # durable specs (superpowers brainstorming); reach main
+doc/plans/                         # ephemeral plans (superpowers writing-plans); git rm before ship, never on main
 .worktrees/                        # git worktrees for feature branches (gitignored)
 PRUNING.md                         # algorithm + design rationale + research refs
 README.md                          # install + config + command reference
