@@ -1,6 +1,6 @@
 {
   "name": "pi-condense",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Pi extension that summarizes completed tool-call batches, replaces raw outputs with short stubs in future context, and recovers any original on demand via context_tree_query.",
   "author": "Jacek Juraszek",
   "license": "MIT",
