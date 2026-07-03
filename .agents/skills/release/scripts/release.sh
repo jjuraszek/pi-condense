@@ -224,18 +224,25 @@ cmd_verify() {
   local version="${1:-$(current_version)}"
 
   echo
-  echo "== CI: release workflow =="
+  echo "== CI: release workflow (tag v${version}) =="
   if command -v gh >/dev/null 2>&1; then
-    local run_id
-    run_id="$(gh run list --workflow="${RELEASE_WORKFLOW}" --event=push --limit=1 \
-      --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+    # Pin to THIS tag's run (headBranch == the tag) and poll until it registers.
+    # A bare --limit=1 races: it can match a prior release run that is already
+    # green and report success while this tag's run has not appeared yet.
+    local run_id=""
+    for _ in $(seq 1 12); do
+      run_id="$(gh run list --workflow="${RELEASE_WORKFLOW}" --branch="v${version}" --limit=1 \
+        --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+      [[ -n "$run_id" ]] && break
+      sleep 5
+    done
     if [[ -n "$run_id" ]]; then
       gh run watch "$run_id" --exit-status || {
         echo "release workflow failed; inspect with: gh run view $run_id --log-failed" >&2
         return 1
       }
     else
-      echo "no recent release run found yet; check https://github.com/${REPO_SLUG}/actions"
+      echo "no run found for tag v${version} yet; check https://github.com/${REPO_SLUG}/actions"
     fi
   else
     echo "gh not installed; watch https://github.com/${REPO_SLUG}/actions manually"
