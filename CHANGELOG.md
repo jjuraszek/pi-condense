@@ -9,6 +9,12 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-03
+
+- **Prune summaries are now hidden from Pi's main window** (`display: false` at both injection sites in `index.ts`). They stay in LLM context and session history (recoverable via `context_tree_query`) but no longer print the full markdown block into the TUI. Mirrors upstream `pi-context-prune` `2fd6127`.
+- **Sharpened the summarizer prompt** (`src/summarizer.ts`): the key-outcome bullet now requires copying file paths, identifiers, signatures, and error strings *verbatim* (never reworded), and the summarizer skips tool calls that succeeded with nothing reusable to record. Scoped to short tokens - values/full output stay summarized, so the ~8x median compression and the oversized guard are unaffected.
+- **`context_tree_query` description now shows a literal call example** (`{ toolCallIds: ["t12", "t3"] }`) and consolidates the two near-duplicate parameter descriptions into one that marks the field required. Reduces the empty-first-call retry seen in real sessions. No schema or behavior change.
+
 ## [2.0.0] - 2026-07-02
 
 - **Renamed the package `pi-context-prune` -> `pi-condense`** and switched distribution from git-tag pins to npm. Install with `pi install npm:pi-condense` (was `git:github.com/jjuraszek/pi-context-prune@vX.Y.Z`). Migrate pinned `settings.json` entries; `release.sh sync-presets` reports stale pins.

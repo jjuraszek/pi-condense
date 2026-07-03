@@ -50,7 +50,7 @@ function summaryMsg(timestamp: number, toolCallIds: string[]): any {
     role: "custom",
     customType: "context-prune-summary",
     content: "summary text",
-    display: true,
+    display: false,
     details: { toolCallRefs: toolCallIds.map((id, i) => ({ shortId: `t${i + 1}`, toolCallId: id })) },
     timestamp,
   };

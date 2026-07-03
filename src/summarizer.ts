@@ -14,10 +14,10 @@ import { serializeBatchForSummarizer } from "./batch-capture.js";
 const SYSTEM_PROMPT = `You are summarizing a batch of tool calls made by an AI coding assistant.
 For each tool call provide:
 - Tool name and a one-sentence description of what it did
-- Key outcome: success/failure and the most important data returned
+- Key outcome, plus any file paths, identifiers, signatures, or error strings copied verbatim - never reword these
 - Any findings the future conversation needs to remember
 
-Keep each tool call to 1-3 bullet points. Be concise.`;
+Keep each tool call to 1-3 bullet points. Skip calls that succeeded with nothing reusable to record. Be concise.`;
 
 const RANGE_SYSTEM_PROMPT = `You are fusing several per-step summaries of one CLOSED sub-task from an AI coding assistant's history into a SINGLE cohesive summary.
 - Merge overlapping or repeated information; do not restate each step separately.
