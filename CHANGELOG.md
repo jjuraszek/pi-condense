@@ -9,6 +9,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-04
+
+- **Per-bullet recovery refs in prune summaries** (closes #2). Each per-tool block in a summary now carries its own inline `` `tN` `` ref, so the model recovers a specific tool's raw output in one hop instead of guessing which flat-footer ref maps to which bullet. The serializer labels each tool block `[[N:toolname]]` (`src/batch-capture.ts`), the summarizer prompt tells the model to copy that label onto its first bullet (`src/summarizer.ts`), and `substituteInlineRefs` (`src/summary-refs.ts`) validates the echoed tool name against the tool at position N before rewriting to `` `tN` ``. The flat footer is retained unchanged as the always-correct fallback. Deterministic number->shortId map over the shared post-dedup `batch.toolCalls` order; the tool-name tag downgrades a confident wrong-ref (skip-induced renumber) to footer-only, and mismatched / out-of-range / wrapped / mid-line labels are stripped (fence-aware leak guard) so no raw `[[N:name]]` token ever leaks into context. No new tool, config key, or index.
+
 ## [2.0.1] - 2026-07-03
 
 - **Prune summaries are now hidden from Pi's main window** (`display: false` at both injection sites in `index.ts`). They stay in LLM context and session history (recoverable via `context_tree_query`) but no longer print the full markdown block into the TUI. Mirrors upstream `pi-context-prune` `2fd6127`.
