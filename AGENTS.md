@@ -2,41 +2,50 @@
 
 Pi extension. Captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Targeted at long agent sessions where raw tool outputs dominate the prompt.
 
+<!-- agents-core:begin v1 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Communication Style
 
-Same rules as the parent `~/.pi/agent.anthropic/AGENTS.md`. Applied to chat, commit messages, PR descriptions, code review, and any artifact authored in this repo.
+Same rules as the parent `~/.pi/agent*/AGENTS.md`. Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
 
-- **Human, condensed, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, and `.md` files. Terse is not vague - keep it exact.
+- **Human, terse, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, `.md` files. Terse is not vague - keep it exact.
 - **Suppress process narration.** No intent classification, phase announcements, tool/subagent preamble, status updates, pleasantries. Start with substance.
 - **Output instead:** outcomes, decisions needing input, verification results, blockers.
 - **Bullets over prose. Short paragraphs.** No wall-of-text, no tutorial tone unless asked.
-- **Show an example when it clarifies a complex point.** Context-management behavior is easy to get subtly wrong in prose - a small before/after or a concrete ref (`t12`, a stub line) beats a paragraph. Use examples to disambiguate, not to pad.
+- **Show an example when it clarifies a complex point** - a small before/after or a concrete ref beats a paragraph. Examples disambiguate, they don't pad.
 - **End on the ask, not a summary.** Diffs/outputs speak for themselves.
-- **Match the recipient's register** in human-facing artifacts (issues, PRs, chat). Casual thread → casual reply.
+- **Match the recipient's register** in human-facing artifacts (issues, PRs, chat).
+- **Prefer ASCII.** `-` not em/en-dashes, `...` not the ellipsis glyph, straight quotes. Non-ASCII only for a justified visual mark.
 
-LLM-readable artifacts (`AGENTS.md`, `README.md`, `PRUNING.md`, `doc/specs/*.md`, `.agents/skills/*/SKILL.md`, code comments where *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
+LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, agent personas, spec docs, code comments where the *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
 
 ## Code & Documentation Discipline
 
-- **Every line of code is a liability - the best change is often no new code.** Before adding, check whether an existing knob, path, or default already does it (the alternatives to two proposed features turned out to be already shipped). Add only what the task requires: no premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives. **This applies to documentation too** - a doc line that doesn't help a future reader act is a liability; cut it.
-- **No belt-and-suspenders.** Don't validate / null-check / guard the same thing at multiple layers — pick one. Validate at the boundary once.
-- **Delete dead code, don't comment it out.** If a replacement is uncertain, branch from the deletion commit so you can revert.
-- **Comments only when the *why* is non-obvious** — hidden constraint, subtle invariant, surprising workaround. Don't restate what the code does. No docstrings on self-evident params/returns. No banner comments. Don't reference the current task or callers — that belongs in the commit message.
-- **Docs are a contract.** Dense, current, no preamble. If a sentence doesn't help a future reader act on the contract, cut it. AGENTS.md routes; PRUNING.md explains the algorithm; README.md installs/configures. Each stays terse.
-- **Markdown tables use compact separators** (`|---|`, never padded).
-- **Ticket convention.** Every GitHub issue follows **Context -> Problem -> Idea (how to address) -> Acceptance Criteria**, then the idea is **roasted by 2 subagents and the consolidated roast is posted as a comment** before the issue is ready. A roast that kills or shrinks the idea is a success, not a failure - file only what survives (see issue #2).
-- **Surface, don't auto-fix.** A bug fix doesn't drag surrounding cleanup; a one-shot operation doesn't grow a helper. Mention adjacent issues separately.
+- **Code is a liability.** Add only what the task requires. No premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives.
+- **Docs are a contract.** Dense, current, no preamble. If a sentence doesn't help a future reader act, cut it - this applies to documentation as much as code.
+- **No belt-and-suspenders.** Don't validate / null-check / guard the same thing at multiple layers - validate at the boundary once.
+- **Delete dead code, don't comment it out.** Branch from the deletion commit if reversibility matters.
+- **Comments only when the *why* is non-obvious.** No docstrings on self-evident params/returns. No banner/separator comments. Don't reference the current task or PR - that belongs in the commit message.
+- **Markdown tables use compact `|---|` separators.** Never padded columns.
+- **Surface, don't auto-fix.** A bug fix doesn't drag in surrounding cleanup; mention adjacent issues separately.
+
+## Ticket convention
+
+Every GitHub issue follows **Context -> Problem -> Idea (how to address) -> Acceptance Criteria**, then the idea is **roasted by 2 subagents and the consolidated roast is posted as a comment** before the issue is ready. A roast that kills or shrinks the idea is a success - file only what survives.
 
 ## Ground Truth Before Reasoning
 
-Never guess Pi's API or message shapes. Read the source.
+Never guess Pi's API, message shapes, config, or values - read the source; the source wins; if it is missing, say so and ask, don't fabricate. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner` - treat its shipped `.d.ts` as API truth. Repo-specific source pointers, if any, follow.
+
+<!-- agents-core:end v1 -->
+
+## Ground truth pointers
+
+Repo-specific sources (the principle is in the shared core above); field names matter and the type files are authoritative:
 
 - **Pi event/extension API:** `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` — `ExtensionAPI`, `ExtensionContext`, every `pi.on(...)` event payload, `appendEntry`, `setActiveTools`, `setWidget`, `sendMessage`.
 - **LLM message shapes:** `node_modules/@earendil-works/pi-ai/dist/types.d.ts` — `AssistantMessage`, `ToolResultMessage`, `ToolCall`, `UsageInfo`. Field names matter (`id` vs `toolCallId`, `arguments` vs `input`); the type files are authoritative.
 - **pi-ai's auto-repair behavior:** `node_modules/@earendil-works/pi-ai/dist/providers/transform-messages.js` — `insertSyntheticToolResults` injects `{ isError: true, "No result provided" }` for orphaned tool calls. Knowing this is the reason `src/pruner.ts` returns stub messages instead of deleting them.
 - **Session entry layout:** `node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts` — `getBranch()` returns `SessionEntry[]` (wrapped messages), not `AgentMessage[]`.
-
-If the source contradicts an assumption, the source wins. If the source is missing, say so and ask — don't fabricate.
 
 ## Routing
 
@@ -50,6 +59,7 @@ If the source contradicts an assumption, the source wins. If the source is missi
 | File an issue / ticket | Ticket convention above (Context -> Problem -> Idea -> ACs + 2-subagent roast comment) |
 | Override a pi-gauntlet skill for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
 | Historical context for a past change | `doc/specs/*.md` (newest first) |
+| Change the shared AGENTS core (style / discipline / ticket / ground-truth) | edit [`AGENTS.core.md`](AGENTS.core.md), run `node scripts/check-agents-core.mjs --fix`, copy both files to sibling repos |
 
 ## Workflow
 

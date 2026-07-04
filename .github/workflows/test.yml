@@ -20,5 +20,7 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: bun install
+      - name: Check shared AGENTS core
+        run: node scripts/check-agents-core.mjs
       - name: Run tests
         run: bun test src/
