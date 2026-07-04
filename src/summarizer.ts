@@ -17,7 +17,9 @@ For each tool call provide:
 - Key outcome, plus any file paths, identifiers, signatures, or error strings copied verbatim - never reword these
 - Any findings the future conversation needs to remember
 
-Keep each tool call to 1-3 bullet points. Skip calls that succeeded with nothing reusable to record. Be concise.`;
+Keep each tool call to 1-3 bullet points. Skip calls that succeeded with nothing reusable to record. Be concise.
+
+Begin the first bullet of each tool call with that tool's [[N:toolname]] label, copied verbatim (both the number and the name) from its line in the input, as the plain, first thing on the line - no bold, backticks, or list numbering around it. Do not renumber, rename, or invent labels; if you skip a tool, skip its label too.`;
 
 const RANGE_SYSTEM_PROMPT = `You are fusing several per-step summaries of one CLOSED sub-task from an AI coding assistant's history into a SINGLE cohesive summary.
 - Merge overlapping or repeated information; do not restate each step separately.

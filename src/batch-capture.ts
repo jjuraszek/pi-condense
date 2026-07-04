@@ -151,7 +151,7 @@ export function serializeBatchForSummarizer(batch: CapturedBatch): string {
     parts.push(`Assistant said: ${batch.assistantText}\n`);
   }
 
-  const toolParts = batch.toolCalls.map((tc) => {
+  const toolParts = batch.toolCalls.map((tc, index) => {
     const status = tc.isError ? "ERROR" : "OK";
     const argsJson = JSON.stringify(tc.args, null, 2);
 
@@ -162,7 +162,7 @@ export function serializeBatchForSummarizer(batch: CapturedBatch): string {
       resultText = resultText.slice(0, MAX_CHARS) + ` ...[${remaining} chars truncated]`;
     }
 
-    return `Tool: ${tc.toolName}(${argsJson})\nResult (${status}): ${resultText}`;
+    return `[[${index + 1}:${tc.toolName}]] Tool: ${tc.toolName}(${argsJson})\nResult (${status}): ${resultText}`;
   });
 
   parts.push(toolParts.join("\n---\n"));

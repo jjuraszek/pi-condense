@@ -22,7 +22,7 @@ import { pruneMessages } from "./src/pruner.js";
 import { isProtected } from "./src/protected.js";
 import { registerQueryTool } from "./src/query-tool.js";
 import { registerCommands, setPruneStatusWidget } from "./src/commands.js";
-import { formatSummaryToolCallRefs, makeSummaryDetails } from "./src/summary-refs.js";
+import { formatSummaryToolCallRefs, makeSummaryDetails, substituteInlineRefs } from "./src/summary-refs.js";
 import type { ContextPruneConfig, CapturedBatch, PruneFrontier, FlushOptions } from "./src/types.js";
 import {
   DEFAULT_CONFIG,
@@ -166,7 +166,7 @@ export default function (pi: ExtensionAPI) {
 
     // Use pre-captured batches if provided (avoids double-capture when the
     // caller previewed the queue before opening the progress overlay).
-    let batches: CapturedBatch[] = options.previewedBatches ?? capturePendingBatches(ctx);
+    const batches: CapturedBatch[] = options.previewedBatches ?? capturePendingBatches(ctx);
 
     if (batches.length === 0) return { ok: false, reason: "empty" };
 
@@ -387,7 +387,9 @@ export default function (pi: ExtensionAPI) {
         }
 
         const summaryRefs = indexer.allocateSummaryRefs(batch);
-        const summaryText = result.summaryText + formatSummaryToolCallRefs(summaryRefs);
+        const toolNames = batch.toolCalls.map((tc) => tc.toolName);
+        const decorated = substituteInlineRefs(result.summaryText, summaryRefs, toolNames);
+        const summaryText = decorated + formatSummaryToolCallRefs(summaryRefs);
         const shouldSkipOversized = summaryText.length > batchRawCharCount;
 
         statsAccum.add(result.usage);

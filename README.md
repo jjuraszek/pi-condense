@@ -192,7 +192,7 @@ Set it from the slash command (saves immediately):
 
 ## Tools surfaced to the LLM
 
-**`context_tree_query`** — always available when the extension is loaded. Pruned summaries end with short refs like `Summarized tool refs: \`t1\`, \`t2\`. Use \`context_tree_query\` with these refs to retrieve the original full outputs.` The model passes those refs (or full `toolCallId`s) and gets back the original tool result text from the session index. Content-hash-deduped duplicates resolve to the original's record automatically.
+**`context_tree_query`** — always available when the extension is loaded. Pruned summaries end with short refs like `Summarized tool refs: \`t1\`, \`t2\`. Use \`context_tree_query\` with these refs to retrieve the original full outputs.` The model passes those refs (or full `toolCallId`s) and gets back the original tool result text from the session index. Each per-tool bullet in the summary also carries its own inline `` `tN` `` ref, so recovering a specific tool is a single hop; the footer still lists every ref as a fallback. Content-hash-deduped duplicates resolve to the original's record automatically.
 
 ## Footer status widget
 
@@ -224,6 +224,7 @@ interface ExternalCostUpdate {
 ```
 
 Semantics:
+
 - **Cumulative per session**, not all-time. Re-emitted on every update; aggregators key by `source` and replace the previous value.
 - **Live only.** Not persisted; not re-emitted on `session_start`. An aggregator that restarts mid-session sees cost from zero until the next summarizer call.
 - Designed for aggregators like pi-cohort that show a unified Σ$ total across extensions.

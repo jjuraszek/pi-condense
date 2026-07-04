@@ -59,3 +59,39 @@ export function makeSummaryDetails(batch: CapturedBatch, refs: SummaryToolCallRe
     timestamp: batch.timestamp,
   };
 }
+
+/**
+ * Rewrites line-leading `[[N:name]]` labels emitted by the summarizer into
+ * inline `` `tN` `` refs. `refs` and `toolNames` are positionally aligned to
+ * the batch's tool-call order. The echoed name is validated against the tool
+ * at position N; a mismatch or out-of-range N strips the label (footer-only).
+ * A catch-all strip pass on non-fenced lines removes any surviving well-formed
+ * label token (wrapped, numbered, or blockquoted) so no raw `[[N:name]]` token
+ * ever leaks into context; fenced code blocks remain exempt.
+ */
+export function substituteInlineRefs(
+  text: string,
+  refs: SummaryToolCallRef[],
+  toolNames: string[],
+): string {
+  const LABEL = /^(\s*(?:[-*]\s+)?)\[\[(\d+):([^\]\n]+)\]\]\s*/;
+  const lines = text.split("\n");
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trimStart().startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    lines[i] = lines[i].replace(LABEL, (_m, prefix: string, numStr: string, name: string) => {
+      const n = Number(numStr);
+      const ref = refs[n - 1];
+      const expected = toolNames[n - 1];
+      if (!ref || expected === undefined) return prefix;
+      if (name.trim().toLowerCase() !== expected.trim().toLowerCase()) return prefix;
+      return `${prefix}\`${ref.shortId}\` `;
+    });
+    lines[i] = lines[i].replace(/\[\[\d+:[^\]\n]+\]\]\s*/g, "");
+  }
+  return lines.join("\n");
+}

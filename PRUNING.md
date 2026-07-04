@@ -181,7 +181,7 @@ graph TB
 **Key points:**
 
 - The `AssistantMessage` tool-call blocks are **kept** (they carry the `toolCallId`s the model uses to reference originals via `context_tree_query`).
-- `ToolResultMessage` entries for summarized tool calls are **replaced with a small stub** (`[Summarized in pruner summary, ref \`tN\`. Use context_tree_query to retrieve full output.]`) carrying `role: "toolResult"`, the original `toolCallId`/`toolName`/`timestamp`, and `isError: false`. The stub preserves role alternation, so pi-ai's `transformMessages.insertSyntheticToolResults` no longer injects a synthetic `{ isError: true, "No result provided" }` for the (no-longer-)orphaned tool call. See [Stub-replace instead of delete](#stub-replace-instead-of-delete).
+- `ToolResultMessage` entries for summarized tool calls are **replaced with a small stub** (`[Summarized in pruner summary, ref \`tN\`. Use context_tree_query to retrieve full output.]`) carrying`role: "toolResult"`, the original`toolCallId`/`toolName`/`timestamp`, and`isError: false`. The stub preserves role alternation, so pi-ai's`transformMessages.insertSyntheticToolResults` no longer injects a synthetic `{ isError: true, "No result provided" }` for the (no-longer-)orphaned tool call. See [Stub-replace instead of delete](#stub-replace-instead-of-delete).
 - Every pruned tool call is also copied into the pruner's runtime/session index with its `toolCallId`, tool name, args, status, turn index, timestamp, and full `resultText`.
 - A summary message is injected as a `"steer"` (`pi.sendMessage` runtime path) or appended directly via `sessionManager.appendCustomMessageEntry` (session path, used when Pi may already be shutting down). Both deliver before the next LLM call.
 - The session JSONL file retains the original tool-result entries unchanged — pruning only affects what the *next* request sees in active context.
@@ -210,6 +210,7 @@ That distinction is the core idea:
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  [summary]  ... build failed: circular dependency ...                   │
+│             - `t1` read config.ts -> 3 exports                          │
 │             Summarized tool refs: `t1`                                  │
 │             Use `context_tree_query` with these refs                    │
 │                                                                         │
@@ -286,7 +287,7 @@ So after pruning, the model is working with a **two-layer memory**:
 The intended recovery flow is:
 
 1. The model reads a summary message.
-2. The summary lists the short refs (`t1`, `t2`, …) that were summarized.
+2. The summary lists the short refs (`t1`, `t2`, …) that were summarized. Each per-tool bullet also carries its own inline `` `tN` `` ref (copied from a `[[N:toolname]]` label the summarizer emits, validated against the tool at that position), so the model can jump from a bullet straight to its ref; the flat footer still lists every ref as a fallback.
 3. The model decides the summary is not enough and wants exact raw output.
 4. The model calls `context_tree_query({ toolCallIds: ["t1", ...] })`. The tool accepts short refs and full `toolCallId`s interchangeably (`indexer.resolveToolCallId`).
 5. The tool looks up those IDs in the pruner index.
@@ -598,6 +599,7 @@ The pruner now keeps the toolResult message but replaces its content with a smal
 ```
 
 Properties:
+
 - `role: "toolResult"` and the original `toolCallId` / `toolName` / `timestamp` are preserved — role alternation is intact; no synthetic-result injection.
 - `isError: false`, so the model does not interpret the stub as a tool failure.
 - The stub references the **short ref** (`t1`, `t2`, …) the indexer assigned at summary time. Legacy entries from before short-refs landed fall back to the raw `toolCallId`.
@@ -652,6 +654,7 @@ Set `minBatchChars: 0` to disable. The default `1000` skips obvious trivial batc
 `dedupByContentHash: boolean` (default `true`) catches re-reads of already-pruned tool outputs at zero LLM cost.
 
 Mechanism:
+
 1. When a batch enters `flushPending`, each tool call is hashed by `SHA-1(toolName + "\0" + normalize(resultText))`.
 2. The indexer's `contentHashToOriginal` map (populated by every earlier `addBatch` / `reconstructFromSession`) is consulted.
 3. A hit means an earlier prune already covered identical content. The duplicate is registered as an alias of the original via `indexer.registerDuplicate(newId, originalId, appendEntry)`:
@@ -702,12 +705,14 @@ Summarizing tool-call history is not just a hack — it is an active research ar
 SUPO integrates summarization directly into the RL training pipeline for tool-using agents. Instead of treating context compression as an afterthought, the policy gradient is derived to optimize **both** tool-use behavior **and** summarization strategy end-to-end.
 
 **Method:**
+
 - Periodically compresses tool-using history via LLM-generated summaries
 - Retains task-relevant information in compact form
 - Derives a policy gradient that lets standard LLM RL infrastructure optimize both behaviors simultaneously
 - Enables training beyond fixed context limits
 
 **Key results:**
+
 - Significantly improved success rate on interactive function calling and search tasks
 - **Same or lower working context length** compared to baselines that don't summarize
 - Test-time scaling: increasing the maximum summarization rounds during evaluation further improves performance
@@ -726,12 +731,14 @@ SUPO proves that summarization is not just about saving tokens — it actively *
 ReSum addresses the fundamental conflict between **exploration** (needing many tool calls) and **context limits** (fixed window size). Current agents append every thought/action/observation to history until they crash into the context ceiling.
 
 **Method:**
+
 - Periodically invokes an external **summary tool** to condense interaction history
 - The agent restarts reasoning from the compressed summary
 - Introduces **ReSum-GRPO**: adapts Group Relative Policy Optimization with **advantage broadcasting** — propagates final trajectory rewards across all segments so early exploration steps get proper credit
 - Trained a specialized **ReSumTool-30B** to extract key evidence and propose next steps
 
 **Key results:**
+
 - **4.5% improvement** over ReAct in training-free settings
 - **Further 8.2% gain** with ReSum-GRPO training
 - A 30B ReSum-enhanced agent with only 1K training samples achieves competitive performance with leading open-source models
@@ -751,6 +758,7 @@ ReSum validates the exact architecture `pi-condense` uses: an external summarize
 ACON is a unified framework that compresses **both** environment observations and interaction histories into "concise yet informative condensations." It treats compression as an optimization problem: maximize task reward while minimizing context cost.
 
 **Method:**
+
 - **Gradient-free** — uses natural language space optimization (no model fine-tuning)
 - **Failure-driven guideline optimization:** runs the agent with and without compression, collects cases where compression caused failure, and uses an optimizer LLM to refine compression guidelines
 - Two-step alternation:
@@ -759,6 +767,7 @@ ACON is a unified framework that compresses **both** environment observations an
 - **Distillation:** optimized compressor can be distilled into smaller models (e.g., Qwen-14B) with >95% accuracy retention
 
 **Key results:**
+
 - **26–54% reduction in peak tokens** across AppWorld, OfficeBench, and Multi-objective QA
 - Preserves task performance with large models
 - **Smaller LMs improve 20–46%** as agents when context compression removes distracting noise
@@ -782,6 +791,7 @@ Lineage: simplified take on DCP's `maxContextLimit` nudging — a single thresho
 Use case: a single enormous tool result can jump context usage by 20–30 percentage points in one turn; `autoBudgetThreshold` misses this until the next turn. `budgetTurnDelta` catches the spike immediately.
 
 **`previousFraction` tracking:**
+
 - Reset to `null` on `session_start` and `session_tree` (session reload).
 - Left unchanged on a null-tokens turn immediately following a provider-side compaction (treating a post-compaction null as `0` would produce a spurious spike on the next real turn).
 - The post-restart first turn cannot fire a delta trigger (no prior fraction to compare) and falls back to `autoBudgetThreshold` alone.
@@ -838,6 +848,7 @@ raw messages from session
 ### Identification model
 
 Pi-ai's `Message` union (`UserMessage | AssistantMessage | ToolResultMessage`) has no `.id` field. Chain compression uses:
+
 - `timestamp: number` to identify user / final-assistant boundary messages
 - `toolCallId` sets to identify middle assistant turns and their tool results
 
@@ -920,11 +931,13 @@ Error purge replaces those arg bodies with compact stubs after the error has coo
 ```
 
 **What triggers a purge:**
+
 - The matching `ToolResultMessage` has `isError: true`.
 - The error occurred at least `purgeErrors.cooldownTurns` assistant turns ago (default 2). The cooldown gives the model 1–2 turns to retry before context is mutated.
 - The JSON-stringified argument body is at least `purgeErrors.minArgChars` characters long (default 500). Small args are not worth the substitution.
 
 **What error purge does NOT touch:**
+
 - The `ToolResultMessage` content — the error message stays visible so the model can see what went wrong.
 - Non-errored `toolCall` argument bodies.
 - Argument bodies below `minArgChars`.
@@ -959,6 +972,7 @@ Thinking strip is a deterministic, zero-LLM transform (Phase 4) that keeps `thin
 ### Provider safety
 
 Anthropic's extended-thinking contract during tool use:
+
 - Only the **last assistant turn's** thinking is required; "you can omit thinking blocks from prior assistant role turns" and the API auto-filters them.
 - A message's thinking blocks must be dropped **all-or-nothing** ("the entire sequence of consecutive thinking blocks must match the outputs … you can't rearrange or modify the sequence"). The strip reuses `withoutThinkingBlocks`, which removes every thinking block (and its signature) from a message.
 
