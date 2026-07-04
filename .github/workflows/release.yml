@@ -40,3 +40,31 @@ jobs:
         run: bun test src/
       - name: Publish to npm
         run: npm publish --provenance --access public
+
+  release-notes:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/edit the GitHub Release
+    steps:
+      - uses: actions/checkout@v5
+      - name: Publish CHANGELOG section as release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v ver="$ver" '
+            /^## / {
+              if (started) exit
+              h=$0; sub(/^##[ \t]+/, "", h); sub(/^v/, "", h); sub(/^\[/, "", h)
+              if (h ~ ("^" ver "([^0-9.]|$)")) started=1
+            }
+            started
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::no CHANGELOG section found for $GITHUB_REF_NAME"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md \
+            || gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
