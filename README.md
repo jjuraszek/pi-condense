@@ -1,10 +1,16 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jjuraszek/pi-condense/main/pi-condense.png" alt="pi-condense" width="180">
+</p>
+
 # pi-condense
 
-A [Pi coding-agent](https://github.com/badlogic/pi-mono) extension that summarizes completed tool-call batches, replaces raw tool outputs with short stubs in future context, and lets the LLM recover any original via the `context_tree_query` tool.
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jjurasszek)
+
+A [Pi coding-agent](https://github.com/earendil-works/pi) extension that summarizes completed tool-call batches, replaces raw tool outputs with short stubs in future context, and lets the LLM recover any original via the `context_tree_query` tool.
 
 The session JSONL file is never modified — pruning only affects what each *next* request sees.
 
-Fork of [`championswimmer/pi-context-prune`](https://github.com/championswimmer/pi-context-prune) with additional pre-flush safeguards, agent-message batching, chain compression, and an npm release flow.
+Adds pre-flush safeguards, agent-message batching, chain compression, and an npm release flow on top of the original approach from [`championswimmer/pi-context-prune`](https://github.com/championswimmer/pi-context-prune).
 
 📖 For the algorithm, design rationale, prompt-cache interaction, and the research behind summarization-based context management, see **[PRUNING.md](PRUNING.md)**.
 
@@ -42,7 +48,7 @@ pi -e ~/repos/pi-condense/index.ts
 
 Pin a specific version with `npm:pi-condense@X.Y.Z`. Upgrade by re-running `pi install`. Remove with `pi remove pi-condense`. Once installed, the extension auto-loads on every `pi` invocation; no flags needed.
 
-> Diverges from upstream `championswimmer/pi-context-prune`; see [CHANGELOG.md](CHANGELOG.md) for what differs.
+> See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Quick start
 
@@ -235,6 +241,10 @@ Semantics:
 - Summarizer calls are synchronous inside `turn_end` (or `message_end` for `agent-message` mode), so they add latency between turns proportional to the summarizer model's response time. Pick a fast model.
 - Content-hash dedup only matches against records already in the indexer (cross-flush). Two identical outputs within the *same* flush are not deduped — both go through the summarizer.
 - The tree browser does not inline original tool outputs — use `context_tree_query` for that.
+
+## Support
+
+If this saves you tokens, [buy me a coffee](https://buymeacoffee.com/jjurasszek).
 
 ## References
 

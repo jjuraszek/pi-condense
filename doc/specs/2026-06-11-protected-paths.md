@@ -8,7 +8,7 @@ The pruner treats all `read` results as data, but skill bodies are standing inst
 
 Observed failure (real session): an SDD run read `subagent-driven-development/SKILL.md`; the pruner replaced it ~6 turns later with a 2-sentence summary that omitted the closing-loop step, and the session marked verify complete without running the gate. Verified against the session JSONL: all 4 SKILL.md reads (`writing-plans`, `subagent-driven-development`, `finishing-a-development-branch`, `linear`) were indexed and summarized. All 4 went through `read` with a `path` argument.
 
-`protectedTools` cannot fix this: it is tool-name based, and protecting all of `read` defeats the pruner. This bites hardest with pi-superpowers, where skill files carry multi-step workflow gates.
+`protectedTools` cannot fix this: it is tool-name based, and protecting all of `read` defeats the pruner. This bites hardest with pi-gauntlet, where skill files carry multi-step workflow gates.
 
 ## Decision
 

@@ -9,6 +9,18 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-07-05
+
+Branding, funding, and gallery preview. No behavior change.
+
+### Added
+- **Logo + pi.dev gallery preview.** Repo-root `pi-condense.png` (640x640), shown in the README and wired as `pi.image`.
+- **Buy Me a Coffee funding.** `funding` in `package.json`, `.github/FUNDING.yml`, and a README badge.
+
+### Changed
+- Sharpened `description`; added `context-pruning`, `llm`, `prompt-caching` keywords.
+- README reframed product-first (credit to `championswimmer/pi-context-prune` kept as attribution); fixed a stale `pi-superpowers` -> `pi-gauntlet` reference in a spec doc.
+
 ## [2.1.1] - 2026-07-04
 
 - **`release.yml` posts GitHub Release notes.** A new `release-notes` job (`needs: publish`, `contents: write`) extracts the CHANGELOG section matching the pushed tag with `awk` (skipping `## [Unreleased]`) and publishes it as the GitHub Release body via `gh release create` (falling back to `gh release edit`). No LLM or API key; only `github.token`.

@@ -1,7 +1,7 @@
 {
   "name": "pi-condense",
   "version": "2.1.1",
-  "description": "Pi extension that summarizes completed tool-call batches, replaces raw outputs with short stubs in future context, and recovers any original on demand via context_tree_query.",
+  "description": "Pi coding-agent extension that summarizes completed tool-call batches, replaces raw outputs with short stubs, compresses closed tool-call chains, and recovers any original on demand via context_tree_query.",
   "author": "Jacek Juraszek",
   "license": "MIT",
   "type": "module",
@@ -19,8 +19,11 @@
     "pi-coding-agent",
     "context",
     "context-management",
+    "context-pruning",
     "pruning",
     "summarization",
+    "llm",
+    "prompt-caching",
     "ai"
   ],
   "engines": {
@@ -40,7 +43,12 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/jjuraszek/pi-condense/main/pi-condense.png"
+  },
+  "funding": {
+    "type": "buymeacoffee",
+    "url": "https://buymeacoffee.com/jjurasszek"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
