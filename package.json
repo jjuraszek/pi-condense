@@ -1,6 +1,6 @@
 {
   "name": "pi-condense",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Pi coding-agent extension that summarizes completed tool-call batches, replaces raw outputs with short stubs, compresses closed tool-call chains, and recovers any original on demand via context_tree_query.",
   "author": "Jacek Juraszek",
   "license": "MIT",
