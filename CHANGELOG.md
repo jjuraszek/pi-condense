@@ -9,6 +9,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-06
+
+- **Recovery grace window for `context_tree_query` output.** The pruner used to re-stub its own recovery output at the next turn boundary, forcing a retrieve -> re-stub -> re-query loop the agent experiences as "fighting the pruner" (observed in a real session: a recovered tool dump was re-summarized on the very next flush, so the agent had to keep re-querying the same ref). A new `recoveryGraceTurns` setting (default `3`, `0` disables) keeps a recovered output verbatim for that many user-turn-groups before reverting to the stub. Enforced at **render time** in two places - Phase 1 stub-replace (`src/pruner.ts`) and chain-compression eligibility (`src/chain-compressor.ts`, which defers compressing any chain whose span still holds an in-grace recovery id) - never at capture, so the frontier, dedup, spill, and live `turn_end` paths are unchanged. The window is computed positionally from the message stream (no new `ToolCallRecord` field). Default `3` covers ~81% of same-ref re-queries observed in the local session corpus; the accepted trade-off is that a reference past the window is re-stubbed and may be re-queried, keeping context regrowth bounded rather than permanent. Tunable via `/pruner recovery-grace [n]` and the `/pruner settings` overlay. See [PRUNING.md § What Pruning Does](PRUNING.md#what-pruning-does).
+
 ## [2.2.1] - 2026-07-06
 
 - **Fix probe starvation in the summarizer outage fallback.** `FallbackController.onFallbackOnlyFail` reset the re-probe cooldown on every steady-state fallback failure, so a fallback (session) model that failed at least once per 10-minute cooldown perpetually pushed out the primary re-probe - a recovered `summarizerModel` was never re-tested and summarization stayed on the pricier session model indefinitely (the exact stall the feature exists to kill, in the fallback direction). The method is now a no-op on `lastProbeAt`: the primary re-probe fires on schedule regardless of fallback failures. In-memory only; no wire/config change.
