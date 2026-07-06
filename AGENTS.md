@@ -86,6 +86,7 @@ src/
   pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune → thinking-strip
   commands.ts                      # /pruner subcommands, settings overlay, status widget
   summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
+  summarizer-fallback.ts           # pure: sticky in-memory FallbackController for summarizer-model outages (transient-only, 10-min re-probe)
   stats.ts                         # StatsAccumulator + formatting helpers
   types.ts                         # all shared types, constants, DEFAULT_CONFIG
   (other src/*.ts)                 # frontier, config, dedup, tree-browser

@@ -158,6 +158,8 @@ Single tool results larger than `spillThreshold` chars are written to `<session-
 
 The `default` setting reuses whatever model you have active in pi — convenient but wasteful, since summary writing doesn't need a top-tier coding model. Picking the smallest/fastest model on your plan saves both latency and cost.
 
+If the configured summarizer model suffers a transient outage while your active pi model is healthy, pi-condense automatically falls back to the session model for the duration (with a one-time notice) and probes the configured model back every few minutes — no configuration needed.
+
 | Plan | Suggested summarizer |
 |---|---|
 | OpenAI / Codex / Copilot | `openai/gpt-4.1-mini`, `google/gemini-2.5-flash`, `xai/grok-3-fast` |

@@ -688,6 +688,38 @@ The last attempted prune boundary is persisted as `context-prune-frontier` so `f
 - **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages) = JSON.stringify(messages).length`, comparing the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all four reclaim mechanisms in a single point (stub-replace, error-purge, chain-range-prune, thinking-strip); appears on the status line as `│ prune: ON · 92k->14k (-85%) │` once at least one prune has occurred (the `│ … │` wrapper keeps the segment visually isolated in the shared footer, load-order independent).
 - **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
 
+### Summarizer outage fallback
+
+Provider incidents are routinely per-model: a cheap summarizer model (e.g.
+Haiku) can be down while the session's main model (Sonnet/Opus) stays healthy.
+Without a fallback, `runSummarization` returns `null`, the batch is re-queued,
+and the next flush retries the same dead model — pruning stalls for the whole
+outage and context grows unbounded.
+
+`src/summarizer-fallback.ts` adds a sticky, in-memory `FallbackController` that
+engages only on **transient** failures of the configured summarizer model and
+only when a distinct fallback model exists (`summarizerModel` != `default` and
+the resolved model differs from `ctx.model`):
+
+- **Classification is coarse** (pi-ai surfaces no status code on the throw):
+  `auth` (pre-flight key failure) and `unusable` (empty / length-truncated)
+  never trip the controller; a `transient` stream error / `stopReason: error`
+  does. Aborts propagate unchanged.
+- **Enter:** a transient primary failure is retried once on the session model.
+  If that succeeds, the session flips to fallback and a one-time warning fires.
+- **Sticky + probe:** while in fallback, all calls route to the session model.
+  After a 10-minute cooldown (`COOLDOWN_MS`, internal, not configurable) one
+  batch of the next flush probes the primary; success recovers (info notify),
+  failure stays in fallback.
+- **In-memory only:** no `context-prune-*` entry; `reset()` on `session_start`.
+  A restart mid-outage re-detects on the next flush.
+
+Cost note: the initial detection flush can fire up to N doomed primary calls
+before the outage is known; steady state is 0 doomed calls, plus exactly 1
+probe per 10 minutes. After the primary recovers, summarization keeps running
+on the (often pricier) session model for up to one cooldown before the probe
+switches back.
+
 ---
 
 ## Why Summarization Works: Research Evidence

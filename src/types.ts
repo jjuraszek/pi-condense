@@ -42,6 +42,8 @@
  *     NOT a hidden side-channel. It makes an explicit LLM call from turn_end.
  */
 
+import type { FallbackController } from "./summarizer-fallback.js";
+
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /** customType for summary custom_message entries (appear in LLM context) */
@@ -728,6 +730,12 @@ export interface SummarizeBatchOptions {
    * batch is treated as aborted (not a summarizer failure).
    */
   signal?: AbortSignal;
+  /**
+   * Session-scoped outage-fallback controller. When present AND a distinct
+   * fallback model exists, runSummarization routes/retries via the controller
+   * (see src/summarizer-fallback.ts). Absent => today's single-attempt behavior.
+   */
+  controller?: FallbackController;
 }
 
 /** Options for summarizeBatches() when callers want live per-batch text progress. */
@@ -739,6 +747,12 @@ export interface SummarizeBatchesOptions {
    * When fired, all in-flight stream calls are cancelled.
    */
   signal?: AbortSignal;
+  /**
+   * Session-scoped outage-fallback controller. When present AND a distinct
+   * fallback model exists, runSummarization routes/retries via the controller
+   * (see src/summarizer-fallback.ts). Absent => today's single-attempt behavior.
+   */
+  controller?: FallbackController;
 }
 
 /**

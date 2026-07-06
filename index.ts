@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
 import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode } from "./src/batch-capture.js";
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
+import { FallbackController } from "./src/summarizer-fallback.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
 import { isProtected } from "./src/protected.js";
@@ -51,6 +52,9 @@ export default function (pi: ExtensionAPI) {
 
   // Shared stats accumulator — tracks cumulative token/cost stats for summarizer calls
   const statsAccum = new StatsAccumulator();
+
+  // Session-scoped summarizer outage-fallback controller (in-memory; reset on session_start).
+  const fallbackController = new FallbackController();
 
   // Shared prune frontier — tracks the last completed prune attempt boundary
   const frontier = new PruneFrontierTracker();
@@ -152,7 +156,7 @@ export default function (pi: ExtensionAPI) {
   const makeFuseRange = (ctx: any): ((text: string) => Promise<string | null>) | undefined => {
     if (!currentConfig.value.chainCompression.fuseRangeSummary) return undefined;
     return async (text: string) => {
-      const r = await summarizeRange(text, currentConfig.value, ctx, {});
+      const r = await summarizeRange(text, currentConfig.value, ctx, { controller: fallbackController });
       if (r) {
         statsAccum.add(r.usage);
         statsAccum.addRangesSummarized(1);
@@ -303,6 +307,7 @@ export default function (pi: ExtensionAPI) {
           options.onProgress(i, batches.length, batches[i], "start");
           const r = await summarizeBatch(batches[i], currentConfig.value, ctx, {
             signal: options.signal,
+            controller: fallbackController,
             onTextProgress: (receivedChars) => {
               reportBatchTextProgress(i, batches.length, batches[i], receivedChars);
             },
@@ -326,6 +331,7 @@ export default function (pi: ExtensionAPI) {
               reportBatchTextProgress(origIndex, batches.length, batch, receivedChars);
             },
             signal: options.signal,
+            controller: fallbackController,
           });
           for (let k = 0; k < nonTrivialIndices.length; k++) {
             results[nonTrivialIndices[k]] = ntResults[k];
@@ -647,6 +653,7 @@ export default function (pi: ExtensionAPI) {
 
     // Rebuild stats accumulator from persisted session entries
     statsAccum.reconstructFromSession(ctx);
+    fallbackController.reset();
 
     // Rebuild prune frontier from persisted session entries
     frontier.reconstructFromSession(ctx);
