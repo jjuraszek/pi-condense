@@ -9,6 +9,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-07-06
+
+- **Fix probe starvation in the summarizer outage fallback.** `FallbackController.onFallbackOnlyFail` reset the re-probe cooldown on every steady-state fallback failure, so a fallback (session) model that failed at least once per 10-minute cooldown perpetually pushed out the primary re-probe - a recovered `summarizerModel` was never re-tested and summarization stayed on the pricier session model indefinitely (the exact stall the feature exists to kill, in the fallback direction). The method is now a no-op on `lastProbeAt`: the primary re-probe fires on schedule regardless of fallback failures. In-memory only; no wire/config change.
+
 ## [2.2.0] - 2026-07-06
 
 - **Summarizer outage fallback to the session model.** Per-model provider outages (e.g. a cheap `summarizerModel` like Haiku degraded while the session's main model stays healthy) previously stalled pruning for the whole outage - `runSummarization` returned null and the batch retried the same dead model every flush, growing context unbounded. A new sticky in-memory `FallbackController` (`src/summarizer-fallback.ts`) now routes summarization to `ctx.model` on a **transient** failure of the configured model, retrying the failed call once on the session model. Fallback is sticky: while engaged, all calls use the session model until a single probe batch re-tests the configured model after a 10-minute cooldown, then auto-recovers. Trigger is transient-only - auth (pre-flight key failure), unusable (empty/truncated), and abort never trip it. A one-time `warning` fires on enter and an `info` on recovery via `ctx.ui.notify` (UI only, never injected into LLM context). No config key: the target is always `ctx.model`, and the controller is inert when no distinct fallback model exists (`summarizerModel: default` or the resolved model equals `ctx.model`), preserving today's single-attempt behavior byte-for-byte. State is in-memory only (reset on `session_start`, no `context-prune-*` entry).

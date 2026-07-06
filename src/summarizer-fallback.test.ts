@@ -133,6 +133,23 @@ describe("unusable probe does not falsely recover", () => {
   });
 });
 
+describe("probe schedule survives steady-state fallback failures", () => {
+  it("onFallbackOnlyFail does not push out the next primary probe", () => {
+    const t = { now: 0 };
+    const c = new FallbackController(clockAt(t));
+    c.onPrimaryFailFallbackOk(false); // enter, lastProbeAt = 0
+    // fallback keeps failing every minute, well within the cooldown
+    for (let i = 1; i < 10; i++) {
+      t.now = i * 60_000;
+      expect(c.chooseTarget()).toEqual({ target: "fallback", wasProbe: false });
+      c.onFallbackOnlyFail();
+    }
+    // at COOLDOWN_MS the primary must still be probed despite the failures
+    t.now = COOLDOWN_MS;
+    expect(c.chooseTarget()).toEqual({ target: "primary", wasProbe: true });
+  });
+});
+
 describe("reset", () => {
   it("clears all state", () => {
     const t = { now: 5 };

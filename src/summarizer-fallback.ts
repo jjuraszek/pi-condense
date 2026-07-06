@@ -96,10 +96,14 @@ export class FallbackController {
     }
   }
 
-  /** A steady-state fallback call (already in fallback) failed transiently. */
-  onFallbackOnlyFail(): void {
-    this.lastProbeAt = this.now();
-  }
+  /**
+   * A steady-state fallback call (already in fallback) failed transiently.
+   * Deliberately a no-op on `lastProbeAt`: a fallback failure is not a probe,
+   * so it must not push out the next primary re-probe. Resetting the cooldown
+   * here starves the probe whenever the fallback fails at least once per
+   * COOLDOWN_MS, leaving a recovered primary undetected indefinitely.
+   */
+  onFallbackOnlyFail(): void {}
 
   /** A primary call succeeded. Recover only when it was the probe. */
   onPrimarySuccess(wasProbe: boolean): FallbackTransition {
