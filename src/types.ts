@@ -78,6 +78,10 @@ export const CUSTOM_TYPE_DEDUP_ALIAS = "context-prune-dedup-alias";
  */
 export const CUSTOM_TYPE_CHAIN = "context-prune-chain";
 
+/** The registered name of the recovery tool (src/query-tool.ts). Shared so the
+ * grace checks in pruner.ts / chain-compressor.ts cannot drift from registration. */
+export const QUERY_TOOL_NAME = "context_tree_query";
+
 /** pi.events channel for cross-extension cost contributions (an aggregator like pi-subagents folds these into one total). */
 export const EXTERNAL_COST_CHANNEL = "cost:external";
 
@@ -186,6 +190,19 @@ export const MIN_BATCH_CHARS_PRESETS: { value: string; label: string }[] = [
 ];
 
 /**
+ * Cycling presets for the `recoveryGraceTurns` setting in the SettingsList.
+ * Stored as strings; converted to number when applied. "0" disables the grace
+ * (recovery output stubs immediately, pre-feature behavior).
+ */
+export const RECOVERY_GRACE_PRESETS: { value: string; label: string }[] = [
+  { value: "0", label: "0 (disabled)" },
+  { value: "1", label: "1" },
+  { value: "3", label: "3 (default)" },
+  { value: "5", label: "5" },
+  { value: "8", label: "8" },
+];
+
+/**
  * Cycling presets for the `autoBudgetThreshold` setting (stored as strings;
  * the settings UI cycles string values). "0" is the disabled sentinel → null.
  * Other values are 0–1 fractions of the context window (e.g. "0.8" = flush at 80%).
@@ -256,6 +273,14 @@ export interface ContextPruneConfig {
    * Default: 1000.
    */
   minBatchChars: number;
+  /**
+   * User-turn-groups a `context_tree_query` (recovery) output stays verbatim in
+   * context after recovery, before it reverts to the normal stub. Bounds the
+   * retrieve->re-stub->re-query loop without permanent retention. 0 disables
+   * (recovery output stubs immediately). Enforced at render time in pruner.ts
+   * (Phase 1) and chain-compressor.ts (eligibility), not at capture.
+   */
+  recoveryGraceTurns: number;
   /**
    * Tool names whose outputs must NEVER be pruned or summarized. Tool calls
    * with matching `toolName` are filtered out of the pruning capture path so
@@ -454,6 +479,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   batchingMode: "turn",
   quietOversizedSkips: false,
   minBatchChars: 1000,
+  recoveryGraceTurns: 3,
   protectedTools: [],
   protectedPaths: ["**/skills/**/*.md"],
   chainCompression: {

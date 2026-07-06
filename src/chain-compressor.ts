@@ -13,11 +13,16 @@ import type { BlockRefIssuer } from "./block-refs.js";
  * @param chains Must be in chronological order (oldest first), as emitted by
  *   chain-detector. Ordering is not validated here; out-of-order input silently
  *   picks wrong chains because the rolling-window slice is positional.
+ * @param inGraceToolCallIds Recovery ids still within their grace window. Chains
+ *   spanning one of these ids are deferred from compression, but the rolling-window
+ *   boundary itself is computed BEFORE grace exclusion, so a grace-protected chain
+ *   never shrinks the window buffer or shifts which other chains become eligible.
  */
 export function selectEligible(
   chains: ChainRange[],
   rollingWindow: number,
   alreadyCompressed: Set<number>,
+  inGraceToolCallIds: Set<string> = new Set(),
 ): ChainRange[] {
   const candidates = chains.filter(
     (c) =>
@@ -25,7 +30,8 @@ export function selectEligible(
       !alreadyCompressed.has(c.startUserTimestamp) &&
       c.middleToolCallIds.length > 0,
   );
-  return candidates.slice(0, Math.max(0, candidates.length - rollingWindow));
+  const toCompress = candidates.slice(0, Math.max(0, candidates.length - rollingWindow));
+  return toCompress.filter((c) => !c.middleToolCallIds.some((id) => inGraceToolCallIds.has(id)));
 }
 
 /**
@@ -71,6 +77,7 @@ export async function compressEligible(
   chains: ChainRange[],
   rollingWindow: number,
   deps: CompressEligibleDeps,
+  inGraceToolCallIds: Set<string> = new Set(),
 ): Promise<CompressEligibleResult> {
   const alreadyCompressedTimestamps = new Set(
     deps.indexer.getChainEntries().map((e) => e.startUserTimestamp),
@@ -85,7 +92,7 @@ export async function compressEligible(
     }
   }
 
-  const eligible = selectEligible(chains, rollingWindow, alreadyCompressedTimestamps);
+  const eligible = selectEligible(chains, rollingWindow, alreadyCompressedTimestamps, inGraceToolCallIds);
 
   const compressedEntries: ChainCompressionEntry[] = [];
   for (const chain of eligible) {

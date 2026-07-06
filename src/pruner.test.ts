@@ -451,6 +451,123 @@ describe("render-time protection re-check", () => {
   });
 });
 
+describe("pruneMessages recovery grace", () => {
+  const mkQueryResult = (toolCallId: string, timestamp: number) => ({
+    role: "toolResult",
+    toolCallId,
+    toolName: "context_tree_query",
+    content: [{ type: "text", text: "VERBATIM RECOVERY OUTPUT" }],
+    isError: false,
+    timestamp,
+  });
+  const mkUser = (timestamp: number) => ({ role: "user", content: [{ type: "text", text: "go" }], timestamp });
+
+  it("renders a context_tree_query recovery output verbatim at age 0 within grace", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover"]),
+      shortRefs: new Map([["tc-recover", "t1"]]),
+    });
+    const messages = [mkQueryResult("tc-recover", 1)];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    expect(out[0].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+  });
+
+  it("stubs a context_tree_query recovery output aged past the grace window", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover"]),
+      shortRefs: new Map([["tc-recover", "t1"]]),
+    });
+    const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
+    expect(tr.content[0].text).toContain("context_tree_query");
+    expect(tr.content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
+  });
+
+  it("stubs at age 0 when recoveryGraceTurns is 0 (feature off)", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover"]),
+      shortRefs: new Map([["tc-recover", "t1"]]),
+    });
+    const messages = [mkQueryResult("tc-recover", 1)];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 0);
+    expect(out[0].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
+    expect(out[0].content[0].text).toContain("context_tree_query");
+  });
+
+  it("does not apply the grace window to non-context_tree_query outputs", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-bash"]),
+      shortRefs: new Map([["tc-bash", "t1"]]),
+    });
+    const messages = [
+      {
+        role: "toolResult",
+        toolCallId: "tc-bash",
+        toolName: "bash",
+        content: [{ type: "text", text: "VERBATIM RECOVERY OUTPUT" }],
+        isError: false,
+        timestamp: 1,
+      },
+    ];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    expect(out[0].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
+    expect(out[0].content[0].text).toContain("context_tree_query");
+  });
+
+  it("isProtected precedence: a protected context_tree_query output stays verbatim even with grace off", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover"]),
+      shortRefs: new Map([["tc-recover", "t1"]]),
+      records: new Map([["tc-recover", {
+        toolCallId: "tc-recover", toolName: "context_tree_query", args: { path: "/h/skills/x/SKILL.md" },
+        resultText: "", isError: false, turnIndex: 0, timestamp: 1,
+      }]]),
+    });
+    const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
+    const { messages: out } = pruneMessages(
+      messages, indexer, undefined, undefined, undefined,
+      { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
+      0,
+    );
+    const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
+    expect(tr.content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+  });
+
+  it("renders a spilled context_tree_query recovery output verbatim at age 0 within grace", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover"]),
+      shortRefs: new Map([["tc-recover", "t1"]]),
+      records: new Map([["tc-recover", {
+        toolCallId: "tc-recover", toolName: "context_tree_query", args: {},
+        resultText: "", resultPreview: "PREVIEW-HEAD", spillPath: "/blobs/tc-recover.txt",
+        spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
+      }]]),
+    });
+    const messages = [mkQueryResult("tc-recover", 1)];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    expect(out[0].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+  });
+
+  it("stubs a spilled context_tree_query recovery output aged past the grace window to the spill-pointer stub", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover"]),
+      shortRefs: new Map([["tc-recover", "t1"]]),
+      records: new Map([["tc-recover", {
+        toolCallId: "tc-recover", toolName: "context_tree_query", args: {},
+        resultText: "", resultPreview: "PREVIEW-HEAD", spillPath: "/blobs/tc-recover.txt",
+        spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
+      }]]),
+    });
+    const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
+    expect(tr.content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
+    expect(tr.content[0].text).toContain("/blobs/tc-recover.txt");
+    expect(tr.content[0].text).toContain("spilled");
+  });
+});
+
 describe("sizeMessages", () => {
   it("counts hidden fields (thinking blocks), not just visible text", () => {
     // Two messages with identical visible .text but different hidden content.

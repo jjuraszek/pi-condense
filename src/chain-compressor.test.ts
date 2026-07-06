@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { selectEligible, compressEligible } from "./chain-compressor.js";
 import type { ChainCompressorIndexerDeps } from "./chain-compressor.js";
 import type { ChainRange, ChainCompressionEntry } from "./types.js";
@@ -279,5 +279,37 @@ describe("compressEligible", () => {
       now: () => 1,
     });
     expect(result.compressedEntries[0].rangeSummaryText).toBeUndefined();
+  });
+});
+
+describe("selectEligible - recovery grace deferral", () => {
+  const chain = (startTs: number, ids: string[]) =>
+    ({
+      startUserTimestamp: startTs,
+      finalAssistantTimestamp: startTs + 10,
+      middleToolCallIds: ids,
+      protectedToolCallIds: [],
+    }) as any;
+  it("defers a chain whose span holds an in-grace recovery id", () => {
+    const chains = [chain(1, ["a", "t1"]), chain(2, ["b"])];
+    const eligible = selectEligible(chains, 0, new Set(), new Set(["t1"]));
+    expect(eligible.map((c) => c.startUserTimestamp)).toEqual([2]);
+  });
+  it("compresses normally when no in-grace recovery id is present", () => {
+    const chains = [chain(1, ["a", "t1"]), chain(2, ["b"])];
+    const eligible = selectEligible(chains, 0, new Set(), new Set());
+    expect(eligible.map((c) => c.startUserTimestamp)).toEqual([1, 2]);
+  });
+  it("defers only the grace chain without shrinking the rolling-window buffer", () => {
+    // 5 eligible chains, rollingWindow=2 -> the window boundary is at n-W=3, so chains
+    // 1,2,3 are candidates for compression and 4,5 sit in the protected buffer.
+    // The in-grace id lives on chain 4, which is already outside the compress slice and
+    // must not affect it. A pre-slice filter (the bug) removes chain 4 from `candidates`
+    // before the boundary is computed, shrinking it to 4 items and shifting the cut to
+    // n-W=2 -> wrongly dropping chain 3 too. The fix computes the boundary first, so the
+    // in-buffer grace id changes nothing and the compress set stays [1, 2, 3].
+    const chains = [chain(1, ["a"]), chain(2, ["b"]), chain(3, ["c"]), chain(4, ["d", "t1"]), chain(5, ["e"])];
+    const eligible = selectEligible(chains, 2, new Set(), new Set(["t1"]));
+    expect(eligible.map((c) => c.startUserTimestamp)).toEqual([1, 2, 3]);
   });
 });

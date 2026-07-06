@@ -185,6 +185,9 @@ graph TB
 - Every pruned tool call is also copied into the pruner's runtime/session index with its `toolCallId`, tool name, args, status, turn index, timestamp, and full `resultText`.
 - A summary message is injected as a `"steer"` (`pi.sendMessage` runtime path) or appended directly via `sessionManager.appendCustomMessageEntry` (session path, used when Pi may already be shutting down). Both deliver before the next LLM call.
 - The session JSONL file retains the original tool-result entries unchanged — pruning only affects what the *next* request sees in active context.
+- **Recovery grace window (`recoveryGraceTurns`, default 3):** after the model recovers a tool call via `context_tree_query`, that tool call's output is rendered **verbatim** (not re-stubbed) for the next N user-turn-groups, then reverts to the normal stub. Without this, the pruner re-prunes its own recovery output on the very next flush, forcing the model into a retrieve -> re-stub -> re-query loop ("fighting the pruner") whenever it keeps referencing the same recovered data across a few turns.
+  - Enforced at **render time**, in Phase 1 stub-replace and in chain-compression eligibility — NOT at capture time. Capture-time exclusion would collide with frontier trim: a tool call already past the frontier is dropped forever, so excluding a recovered call from capture would either need to resurrect frontier state or degrade the lifetime bound into permanent verbatim retention for anything ever recovered.
+  - Trade-off: this bounds but does not eliminate regrowth. A tool call still referenced after its grace window expires is re-stubbed and may be re-queried again — the accepted cost of keeping the window's context-growth impact bounded instead of unbounded.
 
 ---
 

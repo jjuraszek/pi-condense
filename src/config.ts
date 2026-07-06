@@ -52,6 +52,12 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       merged.minBatchChars >= 0
         ? Math.floor(merged.minBatchChars)
         : DEFAULT_CONFIG.minBatchChars,
+    recoveryGraceTurns:
+      typeof merged.recoveryGraceTurns === "number" &&
+      Number.isFinite(merged.recoveryGraceTurns) &&
+      merged.recoveryGraceTurns >= 0
+        ? Math.floor(merged.recoveryGraceTurns)
+        : DEFAULT_CONFIG.recoveryGraceTurns,
     dedupByContentHash:
       typeof merged.dedupByContentHash === "boolean"
         ? merged.dedupByContentHash

@@ -4,6 +4,7 @@ import { isProtected, type ProtectionConfig } from "./protected.js";
 import { applyChainCompressions } from "./chain-range-prune.js";
 import { purgeErroredArgs } from "./error-purge.js";
 import { stripOldThinking } from "./thinking-strip.js";
+import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 
 /**
  * Estimate of a message array's context weight. Serializing the whole array
@@ -66,10 +67,12 @@ export function pruneMessages(
   errorPurge?: ErrorPurgeConfig,
   thinkingStrip?: ThinkingStripConfig,
   protection?: ProtectionConfig,
+  recoveryGraceTurns: number = 0,
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
   const beforeChars = sizeMessages(messages);
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
+  const inGrace = inGraceRecoveryToolCallIds(messages, recoveryGraceTurns);
   const next = messages.map((msg) => {
     if (msg.role === "toolResult" && indexer.isSummarized(msg.toolCallId)) {
       const record = indexer.getRecord(msg.toolCallId);
@@ -79,6 +82,9 @@ export function pruneMessages(
       // Dedup aliases resolve to the original record, so an alias whose own
       // path is protected but whose original isn't stays stubbed (edge case).
       if (protection && record && isProtected(record.toolName, record.args, protection)) {
+        return msg;
+      }
+      if (inGrace.has(msg.toolCallId)) {
         return msg;
       }
       pruned = true;

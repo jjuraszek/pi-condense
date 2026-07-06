@@ -87,6 +87,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "batchingMode": "turn",
     "quietOversizedSkips": false,
     "minBatchChars": 1000,
+    "recoveryGraceTurns": 3,
     "protectedTools": [],
     "protectedPaths": ["**/skills/**/*.md"],
     "dedupByContentHash": true,
@@ -118,6 +119,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `batchingMode` | `turn` / `agent-message` | `turn` | How coarse each summary is (independent of `pruneOn`) |
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard — batches smaller than this skip the LLM entirely |
+| `recoveryGraceTurns` | non-negative integer (user-turn-groups), `0` disables | `3` | After a `context_tree_query` recovery, render that tool's output verbatim for this many user-turn-groups before re-stubbing it. Enforced at render time (Phase 1 + chain-compression eligibility), not at capture time. See [PRUNING.md § What Pruning Does](PRUNING.md#what-pruning-does) |
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` — protected outputs are never lost. |
 | `protectedPaths` | `string[]` | `["**/skills/**/*.md"]` | Globs matched against a tool call's `args.path`; matching outputs are never pruned (same semantics as `protectedTools`, including `<protected-output>` relocation in compressed chains). Already-summarized matching reads are repaired on the next turn; chain-compressed ones are not. Set `[]` to disable. |
 | `dedupByContentHash` | `true` / `false` | `true` | Re-reads of identical (toolName, content) skip the LLM and alias the original |
@@ -192,6 +194,7 @@ Set it from the slash command (saves immediately):
 | `/pruner protected-tools [names]` | Show or edit the never-pruned tool allowlist (comma- or space-separated; `none` clears) |
 | `/pruner protected-paths [globs]` | Show or edit the never-pruned path globs (`none` clears) |
 | `/pruner min-batch-chars [n]` | Show or set the pre-flush trivial-batch threshold (`0` disables) |
+| `/pruner recovery-grace [n]` | Show or set the post-recovery verbatim grace window, in user-turn-groups (`0` disables) |
 | `/pruner dedup [on\|off\|status]` | Toggle pre-flush content-hash dedup |
 | `/pruner tree` | Foldable browser of pruned tool calls; `Ctrl-O` opens the full summary in an overlay |
 | `/pruner compact` | Retroactively compress every eligible closed chain (bypasses `rollingWindow`) |

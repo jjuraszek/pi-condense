@@ -3,10 +3,11 @@ import { Type } from "@sinclair/typebox";
 import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ToolCallIndexer } from "./indexer.js";
+import { QUERY_TOOL_NAME } from "./types.js";
 
 export function registerQueryTool(pi: ExtensionAPI, indexer: ToolCallIndexer): void {
   pi.registerTool({
-    name: "context_tree_query",
+    name: QUERY_TOOL_NAME,
     label: "Query Original Tool History",
     description:
       "Retrieve original tool call results that have been pruned from active context. Pass the short refs listed in a pruner-summary message, e.g. context_tree_query({ toolCallIds: [\"t12\", \"t3\"] }), to get back the full original outputs.",

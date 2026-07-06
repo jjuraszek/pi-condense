@@ -36,6 +36,7 @@ import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
+import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
 
@@ -530,6 +531,7 @@ export default function (pi: ExtensionAPI) {
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
           const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage), protectionPredicate);
+          const inGrace = inGraceRecoveryToolCallIds(branchMessages, currentConfig.value.recoveryGraceTurns);
           const { compressedEntries } = await compressEligible(
             chains,
             currentConfig.value.chainCompression.rollingWindow,
@@ -540,6 +542,7 @@ export default function (pi: ExtensionAPI) {
               now: () => Date.now(),
               fuseRange: makeFuseRange(ctx),
             },
+            inGrace,
           );
           if (compressedEntries.length > 0) {
             statsAccum.addChainsCompressed(compressedEntries.length);
@@ -825,6 +828,7 @@ export default function (pi: ExtensionAPI) {
       currentConfig.value.purgeErrors,
       currentConfig.value.thinkingStrip,
       currentConfig.value,
+      currentConfig.value.recoveryGraceTurns,
     );
     if (result.pruned) {
       messages = result.messages;
@@ -847,6 +851,7 @@ export default function (pi: ExtensionAPI) {
       .filter((e: any) => e.type === "message" && e.message)
       .map((e: any) => e.message);
     const chains = detectChains(branchMessages, protectionPredicate);
+    const inGrace = inGraceRecoveryToolCallIds(branchMessages, currentConfig.value.recoveryGraceTurns);
     const result = await compressEligible(
       chains,
       0, // effectiveK=0: compress every closed chain not already compressed
@@ -857,6 +862,7 @@ export default function (pi: ExtensionAPI) {
         now: () => Date.now(),
         fuseRange: makeFuseRange(ctx),
       },
+      inGrace,
     );
     if (result.compressedEntries.length > 0) {
       statsAccum.addChainsCompressed(result.compressedEntries.length);

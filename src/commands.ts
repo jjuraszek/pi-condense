@@ -11,6 +11,7 @@ import {
   PROGRESS_WIDGET_ID,
   SUMMARIZER_THINKING_LEVELS,
   MIN_BATCH_CHARS_PRESETS,
+  RECOVERY_GRACE_PRESETS,
   AUTO_BUDGET_PRESETS,
   ROLLING_WINDOW_PRESETS,
   KEEP_LAST_TURNS_PRESETS,
@@ -99,6 +100,7 @@ const SUBCOMMANDS = [
   { value: "protected-tools", label: "protected-tools — show or edit the never-pruned tool allowlist" },
   { value: "protected-paths", label: "protected-paths — show or edit the never-pruned path globs" },
   { value: "min-batch-chars", label: "min-batch-chars — show or set the pre-flush trivial-batch threshold" },
+  { value: "recovery-grace", label: "recovery-grace - show or set how long context_tree_query output stays verbatim (user-turn-groups)" },
   { value: "dedup",   label: "dedup     — toggle pre-flush content-hash dedup (on/off/status)" },
   { value: "help",    label: "help      — show this help" },
 ] as const;
@@ -190,6 +192,13 @@ function minBatchCharsDescription(config: ContextPruneConfig): string {
   return `Pre-flush guard: skip batches whose total raw resultText is below this many chars (no LLM call, frontier advances anyway). Currently ${config.minBatchChars}. Useful for sessions with many tiny tool calls. Set to 0 to disable.`;
 }
 
+function recoveryGraceDescription(config: ContextPruneConfig): string {
+  if (config.recoveryGraceTurns === 0) {
+    return "context_tree_query output is stubbed immediately (grace disabled). Set to a positive integer to keep recovered output verbatim for that many user-turn-groups.";
+  }
+  return `context_tree_query (recovery) output stays verbatim for ${config.recoveryGraceTurns} user-turn-group(s) after recovery, then reverts to the stub. Bounds the recover->re-stub->re-query loop. Currently ${config.recoveryGraceTurns}. Set to 0 to disable.`;
+}
+
 function autoBudgetThresholdDescription(config: ContextPruneConfig): string {
   if (config.autoBudgetThreshold == null) {
     return `Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of prune-on mode. Currently off. Pick a percentage to enable.`;
@@ -244,6 +253,8 @@ Usage:
   /pruner protected-paths <globs>          Set the globs (comma- or space-separated; 'none' clears)
   /pruner min-batch-chars                  Show the current pre-flush trivial-batch threshold
   /pruner min-batch-chars <n>              Set the threshold (non-negative integer; 0 disables)
+  /pruner recovery-grace                   Show the current recovery grace window (user-turn-groups)
+  /pruner recovery-grace <n>               Set the window (non-negative integer; 0 disables)
   /pruner compact                          Retroactively compress all closed chains (ignores rollingWindow; force-compresses every eligible chain)
   /pruner dedup                            Show the current pre-flush content-hash dedup state
   /pruner dedup on|off                     Enable or disable content-hash dedup
@@ -547,6 +558,15 @@ export function registerCommands(
               description: minBatchCharsDescription(config),
             },
             {
+              id: "recoveryGraceTurns",
+              label: "Recovery grace (user-turn-groups)",
+              values: RECOVERY_GRACE_PRESETS.map((p) => p.value),
+              currentValue: RECOVERY_GRACE_PRESETS.some((p) => p.value === String(config.recoveryGraceTurns))
+                ? String(config.recoveryGraceTurns)
+                : RECOVERY_GRACE_PRESETS[2].value,
+              description: recoveryGraceDescription(config),
+            },
+            {
               id: "autoBudgetThreshold",
               label: "Auto-flush at context %",
               values: AUTO_BUDGET_PRESETS.map((p) => p.value),
@@ -704,6 +724,13 @@ export function registerCommands(
               const mbItem = items.find((item) => item.id === "minBatchChars");
               if (mbItem) {
                 mbItem.description = minBatchCharsDescription(newConfig);
+              }
+            } else if (id === "recoveryGraceTurns") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.recoveryGraceTurns = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CONFIG.recoveryGraceTurns;
+              const rgItem = items.find((item) => item.id === "recoveryGraceTurns");
+              if (rgItem) {
+                rgItem.description = recoveryGraceDescription(newConfig);
               }
             } else if (id === "autoBudgetThreshold") {
               const parsed = Number.parseFloat(newValue);
@@ -1149,6 +1176,29 @@ export function registerCommands(
             parsed === 0
               ? "minBatchChars set to 0 — pre-flush trivial-batch skipping disabled."
               : `minBatchChars set to ${parsed}.`,
+          );
+          break;
+        }
+
+        case "recovery-grace": {
+          const arg = subArgs[0];
+          if (!arg) {
+            const cur = currentConfig.value.recoveryGraceTurns;
+            const state = cur === 0 ? "disabled" : `${cur} user-turn-group(s)`;
+            ctx.ui.notify(`Current recovery grace: ${state}.`);
+            break;
+          }
+          const parsed = Number.parseInt(arg, 10);
+          if (!Number.isFinite(parsed) || parsed < 0) {
+            ctx.ui.notify(`Invalid recovery-grace: "${arg}". Expected a non-negative integer (0 disables).`, "warning");
+            break;
+          }
+          currentConfig.value = { ...currentConfig.value, recoveryGraceTurns: parsed };
+          saveConfig(currentConfig.value);
+          ctx.ui.notify(
+            parsed === 0
+              ? "recovery-grace set to 0 - context_tree_query output stubs immediately."
+              : `recovery-grace set to ${parsed} user-turn-group(s).`,
           );
           break;
         }
