@@ -9,15 +9,21 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-06
+
+- **Summarizer outage fallback to the session model.** Per-model provider outages (e.g. a cheap `summarizerModel` like Haiku degraded while the session's main model stays healthy) previously stalled pruning for the whole outage - `runSummarization` returned null and the batch retried the same dead model every flush, growing context unbounded. A new sticky in-memory `FallbackController` (`src/summarizer-fallback.ts`) now routes summarization to `ctx.model` on a **transient** failure of the configured model, retrying the failed call once on the session model. Fallback is sticky: while engaged, all calls use the session model until a single probe batch re-tests the configured model after a 10-minute cooldown, then auto-recovers. Trigger is transient-only - auth (pre-flight key failure), unusable (empty/truncated), and abort never trip it. A one-time `warning` fires on enter and an `info` on recovery via `ctx.ui.notify` (UI only, never injected into LLM context). No config key: the target is always `ctx.model`, and the controller is inert when no distinct fallback model exists (`summarizerModel: default` or the resolved model equals `ctx.model`), preserving today's single-attempt behavior byte-for-byte. State is in-memory only (reset on `session_start`, no `context-prune-*` entry).
+
 ## [2.1.2] - 2026-07-05
 
 Branding, funding, and gallery preview. No behavior change.
 
 ### Added
+
 - **Logo + pi.dev gallery preview.** Repo-root `pi-condense.png` (640x640), shown in the README and wired as `pi.image`.
 - **Buy Me a Coffee funding.** `funding` in `package.json`, `.github/FUNDING.yml`, and a README badge.
 
 ### Changed
+
 - Sharpened `description`; added `context-pruning`, `llm`, `prompt-caching` keywords.
 - README reframed product-first (credit to `championswimmer/pi-context-prune` kept as attribution); fixed a stale `pi-superpowers` -> `pi-gauntlet` reference in a spec doc.
 
