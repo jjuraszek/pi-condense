@@ -2,6 +2,16 @@
 
 Pi extension. Captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Targeted at long agent sessions where raw tool outputs dominate the prompt.
 
+## Part of one platform (cross-repo synergy)
+
+This repo is one of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** (coordination), **pi-condense** (context economy, this repo), **pi-gauntlet** (process) - that compose into one governed agent workflow. They ship and version independently, but documentation is deliberately cross-referential: a concept is explained in its owning repo and *linked* from the others, never duplicated.
+
+- Only hard code dependency: pi-gauntlet -> pi-cohort (`subagent()`). pi-condense has no code dependency on any sibling.
+- Real runtime coupling: pi-condense emits `cost:external`; pi-cohort aggregates it into `Σ$`. Naming is one-directional - pi-condense names pi-cohort as the intended consumer; the channel itself is generic.
+- pi-quiver is an independent toolbox; no code coupling with pi-condense.
+
+When editing docs here, if a claim belongs to a sibling's concern (e.g. how `subagent()` dispatch works, or the gauntlet gate pipeline), link the sibling's doc rather than restating it. When a change alters the `cost:external` payload shape or semantics, update pi-cohort's observability docs in the same logical change and note it in both CHANGELOGs.
+
 <!-- agents-core:begin v1 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Communication Style
 
