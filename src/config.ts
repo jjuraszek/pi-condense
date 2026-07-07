@@ -15,8 +15,14 @@ import { DEFAULT_CONFIG, PRUNE_ON_MODES, SUMMARIZER_THINKING_LEVELS } from "./ty
  * Resolved against `getAgentDir()` so it honors `PI_CODING_AGENT_DIR`
  * (defaults to `~/.pi/agent`). Each pi preset directory therefore gets its
  * own context-prune config — including its own summarizer model.
+ *
+ * Computed lazily on each read/write rather than frozen at module load, so the
+ * resolved path always reflects the current `PI_CODING_AGENT_DIR` regardless of
+ * when the module was first imported.
  */
-export const SETTINGS_PATH = join(getAgentDir(), "settings.json");
+export function settingsPath(): string {
+  return join(getAgentDir(), "settings.json");
+}
 
 /** Top-level key under which context-prune state lives in `settings.json`. */
 export const SETTINGS_KEY = "contextPrune" as const;
@@ -106,7 +112,7 @@ async function readJsonObject(path: string): Promise<Record<string, unknown> | u
 
 /** Reads `<agent-dir>/settings.json` and returns the `contextPrune` block, or defaults. */
 export async function loadConfig(): Promise<ContextPruneConfig> {
-  const main = await readJsonObject(SETTINGS_PATH);
+  const main = await readJsonObject(settingsPath());
   const namespaced = main?.[SETTINGS_KEY];
   if (namespaced && typeof namespaced === "object" && !Array.isArray(namespaced)) {
     return normalize(namespaced as Partial<ContextPruneConfig>);
@@ -123,10 +129,11 @@ export async function loadConfig(): Promise<ContextPruneConfig> {
  * last-write-wins race only loses a single change, never corrupts the file.
  */
 export async function saveConfig(config: ContextPruneConfig): Promise<void> {
-  const current = (await readJsonObject(SETTINGS_PATH)) ?? {};
+  const path = settingsPath();
+  const current = (await readJsonObject(path)) ?? {};
   const next = { ...current, [SETTINGS_KEY]: config };
-  await mkdir(dirname(SETTINGS_PATH), { recursive: true });
-  const tmpPath = `${SETTINGS_PATH}.${randomBytes(8).toString("hex")}.tmp`;
+  await mkdir(dirname(path), { recursive: true });
+  const tmpPath = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`);
-  await rename(tmpPath, SETTINGS_PATH);
+  await rename(tmpPath, path);
 }

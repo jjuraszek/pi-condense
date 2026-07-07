@@ -5,22 +5,23 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "./types.js";
 
 /**
- * config.ts computes SETTINGS_PATH from getAgentDir() at module-load time, so
- * PI_CODING_AGENT_DIR must be set before the module is imported. normalize()
- * itself isn't exported; loadConfig() is the only public entry point that
- * exercises it, so these tests drive normalization indirectly by writing
- * settings.json into an isolated agent dir and reading it back.
+ * config.ts resolves the settings path from getAgentDir() lazily on each
+ * read/write, so PI_CODING_AGENT_DIR set here is honored regardless of import
+ * order (bun shares the module registry across test files). normalize() itself
+ * isn't exported; loadConfig() is the only public entry point that exercises
+ * it, so these tests drive normalization indirectly by writing settings.json
+ * into an isolated agent dir and reading it back.
  */
 let tmpDir: string;
 let loadConfig: typeof import("./config.js").loadConfig;
-let SETTINGS_PATH: string;
+let settingsPath: typeof import("./config.js").settingsPath;
 
 beforeAll(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "pi-condense-config-test-"));
   process.env.PI_CODING_AGENT_DIR = tmpDir;
   const mod = await import("./config.js");
   loadConfig = mod.loadConfig;
-  SETTINGS_PATH = mod.SETTINGS_PATH;
+  settingsPath = mod.settingsPath;
 });
 
 afterAll(async () => {
@@ -29,7 +30,7 @@ afterAll(async () => {
 });
 
 async function writeContextPrune(overrides: Record<string, unknown>): Promise<void> {
-  await writeFile(SETTINGS_PATH, JSON.stringify({ contextPrune: overrides }));
+  await writeFile(settingsPath(), JSON.stringify({ contextPrune: overrides }));
 }
 
 describe("loadConfig recoveryGraceTurns normalization", () => {
