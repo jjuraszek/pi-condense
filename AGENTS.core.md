@@ -1,6 +1,6 @@
 ## Communication Style
 
-Same rules as the parent `~/.pi/agent*/AGENTS.md`. Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
+Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
 
 - **Human, terse, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, `.md` files. Terse is not vague - keep it exact.
 - **Suppress process narration.** No intent classification, phase announcements, tool/subagent preamble, status updates, pleasantries. Start with substance.
