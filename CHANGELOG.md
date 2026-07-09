@@ -9,6 +9,8 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-09
+
 - **Summarizer call timeout.** Every summarizer stream call is now bounded by an idle timeout (`summarizerIdleTimeoutMs`, default 20s - reset on every stream event, so it never false-aborts a flowing or reasoning generation) and a total-duration ceiling (`summarizerMaxTimeoutMs`, default 180s). Previously a stalled-but-open provider connection hung the whole agent turn indefinitely, since `runOnce` had no time budget and the automatic flush paths pass no abort signal. A timeout classifies as transient and feeds the existing outage-fallback retry (one bounded session-model attempt when a distinct `summarizerModel` is set), then surfaces a `warning` notice. Both timers are `0`-disablable and exposed in `/pruner settings` and `/pruner status`.
 
 ## [2.3.0] - 2026-07-06
