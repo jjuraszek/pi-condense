@@ -64,3 +64,38 @@ describe("loadConfig recoveryGraceTurns normalization", () => {
     expect(config.recoveryGraceTurns).toBe(DEFAULT_CONFIG.recoveryGraceTurns);
   });
 });
+
+describe("loadConfig summarizer timeout normalization", () => {
+  it("defaults both timeouts when absent", async () => {
+    await writeContextPrune({});
+    const config = await loadConfig();
+    expect(config.summarizerIdleTimeoutMs).toBe(DEFAULT_CONFIG.summarizerIdleTimeoutMs);
+    expect(config.summarizerMaxTimeoutMs).toBe(DEFAULT_CONFIG.summarizerMaxTimeoutMs);
+  });
+
+  it("preserves explicit 0 (disabled) for both", async () => {
+    await writeContextPrune({ summarizerIdleTimeoutMs: 0, summarizerMaxTimeoutMs: 0 });
+    const config = await loadConfig();
+    expect(config.summarizerIdleTimeoutMs).toBe(0);
+    expect(config.summarizerMaxTimeoutMs).toBe(0);
+  });
+
+  it("falls back to default for a negative idle timeout", async () => {
+    await writeContextPrune({ summarizerIdleTimeoutMs: -5 });
+    const config = await loadConfig();
+    expect(config.summarizerIdleTimeoutMs).toBe(DEFAULT_CONFIG.summarizerIdleTimeoutMs);
+  });
+
+  it("falls back to default for NaN max timeout", async () => {
+    // JSON.stringify serializes NaN to null; normalize's typeof-number guard rejects it.
+    await writeContextPrune({ summarizerMaxTimeoutMs: Number.NaN });
+    const config = await loadConfig();
+    expect(config.summarizerMaxTimeoutMs).toBe(DEFAULT_CONFIG.summarizerMaxTimeoutMs);
+  });
+
+  it("floors a fractional idle timeout", async () => {
+    await writeContextPrune({ summarizerIdleTimeoutMs: 1234.9 });
+    const config = await loadConfig();
+    expect(config.summarizerIdleTimeoutMs).toBe(1234);
+  });
+});

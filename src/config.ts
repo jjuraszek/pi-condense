@@ -58,6 +58,18 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       merged.minBatchChars >= 0
         ? Math.floor(merged.minBatchChars)
         : DEFAULT_CONFIG.minBatchChars,
+    summarizerIdleTimeoutMs:
+      typeof merged.summarizerIdleTimeoutMs === "number" &&
+      Number.isFinite(merged.summarizerIdleTimeoutMs) &&
+      merged.summarizerIdleTimeoutMs >= 0
+        ? Math.floor(merged.summarizerIdleTimeoutMs)
+        : DEFAULT_CONFIG.summarizerIdleTimeoutMs,
+    summarizerMaxTimeoutMs:
+      typeof merged.summarizerMaxTimeoutMs === "number" &&
+      Number.isFinite(merged.summarizerMaxTimeoutMs) &&
+      merged.summarizerMaxTimeoutMs >= 0
+        ? Math.floor(merged.summarizerMaxTimeoutMs)
+        : DEFAULT_CONFIG.summarizerMaxTimeoutMs,
     recoveryGraceTurns:
       typeof merged.recoveryGraceTurns === "number" &&
       Number.isFinite(merged.recoveryGraceTurns) &&

@@ -12,6 +12,8 @@ import {
   SUMMARIZER_THINKING_LEVELS,
   MIN_BATCH_CHARS_PRESETS,
   RECOVERY_GRACE_PRESETS,
+  SUMMARIZER_IDLE_TIMEOUT_PRESETS,
+  SUMMARIZER_MAX_TIMEOUT_PRESETS,
   AUTO_BUDGET_PRESETS,
   ROLLING_WINDOW_PRESETS,
   KEEP_LAST_TURNS_PRESETS,
@@ -197,6 +199,19 @@ function recoveryGraceDescription(config: ContextPruneConfig): string {
     return "context_tree_query output is stubbed immediately (grace disabled). Set to a positive integer to keep recovered output verbatim for that many user-turn-groups.";
   }
   return `context_tree_query (recovery) output stays verbatim for ${config.recoveryGraceTurns} user-turn-group(s) after recovery, then reverts to the stub. Bounds the recover->re-stub->re-query loop. Currently ${config.recoveryGraceTurns}. Set to 0 to disable.`;
+}
+
+function idleTimeoutDescription(config: ContextPruneConfig): string {
+  if (config.summarizerIdleTimeoutMs === 0) {
+    return "Summarizer idle timeout DISABLED - a stalled stream is only bounded by the ceiling (or not at all if that is 0 too).";
+  }
+  return `Abort a summarizer call after ${Math.round(config.summarizerIdleTimeoutMs / 1000)}s of silence (no stream event). Resets on every event, so it never aborts a flowing generation; a timeout feeds the same outage-fallback retry as a provider error. Set 0 to disable.`;
+}
+function maxTimeoutDescription(config: ContextPruneConfig): string {
+  if (config.summarizerMaxTimeoutMs === 0) {
+    return "Summarizer total-duration ceiling DISABLED - only the idle timeout bounds a call.";
+  }
+  return `Hard ceiling on total duration of a single summarizer call: ${Math.round(config.summarizerMaxTimeoutMs / 1000)}s. Backstop for a stream that dribbles forever without going idle. Set 0 to disable.`;
 }
 
 function autoBudgetThresholdDescription(config: ContextPruneConfig): string {
@@ -567,6 +582,24 @@ export function registerCommands(
               description: recoveryGraceDescription(config),
             },
             {
+              id: "summarizerIdleTimeoutMs",
+              label: "Summarizer idle timeout",
+              values: SUMMARIZER_IDLE_TIMEOUT_PRESETS.map((p) => p.value),
+              currentValue: SUMMARIZER_IDLE_TIMEOUT_PRESETS.some((p) => p.value === String(config.summarizerIdleTimeoutMs))
+                ? String(config.summarizerIdleTimeoutMs)
+                : (SUMMARIZER_IDLE_TIMEOUT_PRESETS.find((p) => p.value === String(DEFAULT_CONFIG.summarizerIdleTimeoutMs))?.value ?? SUMMARIZER_IDLE_TIMEOUT_PRESETS[0].value), // fall back to the default preset if a custom value isn't in the cycle
+              description: idleTimeoutDescription(config),
+            },
+            {
+              id: "summarizerMaxTimeoutMs",
+              label: "Summarizer max timeout",
+              values: SUMMARIZER_MAX_TIMEOUT_PRESETS.map((p) => p.value),
+              currentValue: SUMMARIZER_MAX_TIMEOUT_PRESETS.some((p) => p.value === String(config.summarizerMaxTimeoutMs))
+                ? String(config.summarizerMaxTimeoutMs)
+                : (SUMMARIZER_MAX_TIMEOUT_PRESETS.find((p) => p.value === String(DEFAULT_CONFIG.summarizerMaxTimeoutMs))?.value ?? SUMMARIZER_MAX_TIMEOUT_PRESETS[0].value), // fall back to the default preset if a custom value isn't in the cycle
+              description: maxTimeoutDescription(config),
+            },
+            {
               id: "autoBudgetThreshold",
               label: "Auto-flush at context %",
               values: AUTO_BUDGET_PRESETS.map((p) => p.value),
@@ -732,6 +765,16 @@ export function registerCommands(
               if (rgItem) {
                 rgItem.description = recoveryGraceDescription(newConfig);
               }
+            } else if (id === "summarizerIdleTimeoutMs") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.summarizerIdleTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CONFIG.summarizerIdleTimeoutMs;
+              const it = items.find((item) => item.id === "summarizerIdleTimeoutMs");
+              if (it) it.description = idleTimeoutDescription(newConfig);
+            } else if (id === "summarizerMaxTimeoutMs") {
+              const parsed = Number.parseInt(newValue, 10);
+              newConfig.summarizerMaxTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CONFIG.summarizerMaxTimeoutMs;
+              const it = items.find((item) => item.id === "summarizerMaxTimeoutMs");
+              if (it) it.description = maxTimeoutDescription(newConfig);
             } else if (id === "autoBudgetThreshold") {
               const parsed = Number.parseFloat(newValue);
               newConfig.autoBudgetThreshold =
@@ -839,8 +882,9 @@ export function registerCommands(
           const statsLine = s.callCount > 0
             ? `\n  --- summarizer ---\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`
             : "\n  (no summarizer calls yet)";
+          const fmtTimeout = (ms: number) => (ms === 0 ? "disabled" : `${Math.round(ms / 1000)}s`);
           ctx.ui.notify(
-            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}${statsLine}`,
+            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  idle to:  ${fmtTimeout(cfg.summarizerIdleTimeoutMs)}\n  max to:   ${fmtTimeout(cfg.summarizerMaxTimeoutMs)}\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}${statsLine}`,
           );
           break;
         }

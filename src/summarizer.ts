@@ -90,12 +90,20 @@ type RunOutcome =
   | { kind: "ok"; result: SummarizeResult }
   | { kind: "auth"; message: string }
   | { kind: "unusable" }
-  | { kind: "transient"; message: string };
+  | { kind: "transient"; message: string; timedOut?: boolean };
 
 /** Human label for a model in notify text: prefer name, fall back to provider/id. */
 function modelLabel(model: any): string {
   if (!model) return "unknown model";
   return model.name || `${model.provider}/${model.id}`;
+}
+
+/** Combines any present abort signals into one; undefined if none are given. */
+function combineSignals(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const present = signals.filter((s): s is AbortSignal => !!s);
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  return AbortSignal.any(present); // Node 20+; host runtime is node 24.5.0
 }
 
 /**
@@ -113,6 +121,29 @@ async function runOnce(
   ctx: ExtensionContext,
   options: SummarizeBatchOptions
 ): Promise<RunOutcome> {
+  const idleMs = config.summarizerIdleTimeoutMs;
+  const maxMs = config.summarizerMaxTimeoutMs;
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  let timeoutKind: "idle" | "ceiling" | null = null;
+  let idleTimerId: ReturnType<typeof setTimeout> | null = null;
+  let ceilingTimerId: ReturnType<typeof setTimeout> | null = null;
+
+  const bumpIdle = () => {
+    if (idleTimerId !== null) clearTimeout(idleTimerId);
+    if (idleMs > 0) {
+      idleTimerId = setTimeout(() => {
+        timedOut = true;
+        timeoutKind = "idle";
+        timeoutController.abort();
+      }, idleMs);
+    }
+  };
+  const timeoutMessage = () =>
+    timeoutKind === "ceiling"
+      ? `summarizer ${modelLabel(model)} exceeded ${Math.round(maxMs / 1000)}s ceiling`
+      : `summarizer ${modelLabel(model)} stalled (no output for ${Math.round(idleMs / 1000)}s)`;
+
   try {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok) {
@@ -120,8 +151,8 @@ async function runOnce(
       return { kind: "auth", message: authMessage };
     }
 
-    // Pass the abort signal so the underlying fetch is cancelled immediately
-    // when the user presses Esc while the tool is running.
+    // Pass the combined signal so the underlying fetch is cancelled immediately
+    // either when the user presses Esc, or when an idle/ceiling timeout fires.
     const responseStream = stream(
       model,
       {
@@ -133,8 +164,24 @@ async function runOnce(
           },
         ],
       },
-      { apiKey: auth.apiKey, headers: auth.headers, signal: options.signal, ...summarizerThinkingOptions(config) }
+      {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        signal: combineSignals(options.signal, timeoutController.signal),
+        ...summarizerThinkingOptions(config),
+      }
     );
+
+    // Ceiling arms once at call start; idle arms/resets on every stream event
+    // (including before the first one, so it also bounds time-to-first-token).
+    if (maxMs > 0) {
+      ceilingTimerId = setTimeout(() => {
+        timedOut = true;
+        timeoutKind ??= "ceiling";
+        timeoutController.abort();
+      }, maxMs);
+    }
+    bumpIdle();
 
     let lastReportedChars = -1;
     options.onTextProgress?.(0);
@@ -147,6 +194,10 @@ async function runOnce(
     };
 
     for await (const event of responseStream) {
+      // Reset idle on ANY event (text_* and thinking_*), not just text — a
+      // reasoning-heavy model stays alive via thinking_delta and is never
+      // false-aborted for being quiet on text while it reasons.
+      bumpIdle();
       // Belt-and-suspenders: break early when signal fires mid-stream.
       if (options.signal?.aborted) break;
       if (event.type === "text_start" || event.type === "text_delta" || event.type === "text_end") {
@@ -167,6 +218,7 @@ async function runOnce(
       throw new Error("summarize: stream stopped with reason aborted");
     }
     if (response.stopReason === "error") {
+      if (timedOut) return { kind: "transient", message: timeoutMessage(), timedOut: true };
       return { kind: "transient", message: response.errorMessage ?? "Summarizer stopped with reason: error" };
     }
 
@@ -182,7 +234,11 @@ async function runOnce(
     // Propagate abort errors upward so flushPending can check signal.aborted
     // and return { ok: false, reason: "aborted" } without showing a UI error.
     if (options.signal?.aborted) throw err;
+    if (timedOut) return { kind: "transient", message: timeoutMessage(), timedOut: true };
     return { kind: "transient", message: err.message };
+  } finally {
+    if (idleTimerId !== null) clearTimeout(idleTimerId);
+    if (ceilingTimerId !== null) clearTimeout(ceilingTimerId);
   }
 }
 
@@ -211,8 +267,13 @@ async function runSummarization(
   const controller = options.controller;
   const sessionModel = ctx.model;
 
-  const notifyError = (msg: string) =>
-    ctx.ui.notify(`pruner: summarization failed: ${msg}`, "error");
+  const notifyFailure = (o: { message: string; timedOut?: boolean }) =>
+    ctx.ui.notify(
+      o.timedOut
+        ? `pi-condense: ${o.message}; summarizer call abandoned`
+        : `pruner: summarization failed: ${o.message}`,
+      o.timedOut ? "warning" : "error",
+    );
 
   // No controller or no distinct fallback: single attempt, legacy behavior.
   if (!controller || !FallbackController.hasDistinctFallback(primary, sessionModel)) {
@@ -222,7 +283,7 @@ async function runSummarization(
         return r.result;
       case "auth":
       case "transient":
-        notifyError(r.message);
+        notifyFailure(r);
         return null;
       case "unusable":
         return null;
@@ -250,14 +311,14 @@ async function runSummarization(
       else emit(controller.onFallbackSuccess());
       return r.result;
     case "auth":
-      notifyError(r.message); // auth never trips the controller
+      notifyFailure(r); // auth never trips the controller
       return null;
     case "unusable":
       return null; // probe unusable => stay (no state change)
     case "transient": {
       if (decision.target === "fallback") {
         controller.onFallbackOnlyFail();
-        notifyError(r.message);
+        notifyFailure(r);
         return null;
       }
       // target was primary (initial detection or probe): retry once on the session model.
@@ -267,7 +328,7 @@ async function runSummarization(
         return r2.result; // suppress the legacy error notify — fallback rescued the call
       }
       controller.onBothDown();
-      notifyError(r2.kind === "transient" || r2.kind === "auth" ? r2.message : r.message);
+      notifyFailure(r2.kind === "transient" || r2.kind === "auth" ? r2 : r);
       return null;
     }
   }

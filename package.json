@@ -27,7 +27,7 @@
     "ai"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3.0"
   },
   "files": [
     "index.ts",

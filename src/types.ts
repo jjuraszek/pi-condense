@@ -203,6 +203,30 @@ export const RECOVERY_GRACE_PRESETS: { value: string; label: string }[] = [
 ];
 
 /**
+ * Cycling presets for `summarizerIdleTimeoutMs` (stored as strings; the
+ * settings UI cycles string values). "0" is the disabling sentinel.
+ */
+export const SUMMARIZER_IDLE_TIMEOUT_PRESETS: { value: string; label: string }[] = [
+  { value: "0", label: "0 (disabled)" },
+  { value: "10000", label: "10s" },
+  { value: "20000", label: "20s (default)" },
+  { value: "45000", label: "45s" },
+  { value: "90000", label: "90s" },
+];
+
+/**
+ * Cycling presets for `summarizerMaxTimeoutMs` (stored as strings). "0" is
+ * the disabling sentinel - no total-duration ceiling.
+ */
+export const SUMMARIZER_MAX_TIMEOUT_PRESETS: { value: string; label: string }[] = [
+  { value: "0", label: "0 (disabled)" },
+  { value: "120000", label: "120s" },
+  { value: "180000", label: "180s (default)" },
+  { value: "300000", label: "300s" },
+  { value: "600000", label: "600s" },
+];
+
+/**
  * Cycling presets for the `autoBudgetThreshold` setting (stored as strings;
  * the settings UI cycles string values). "0" is the disabled sentinel → null.
  * Other values are 0–1 fractions of the context window (e.g. "0.8" = flush at 80%).
@@ -281,6 +305,21 @@ export interface ContextPruneConfig {
    * (Phase 1) and chain-compressor.ts (eligibility), not at capture.
    */
   recoveryGraceTurns: number;
+  /**
+   * Idle (inactivity) timeout for a single summarizer stream call, in ms.
+   * Reset on every received stream event; armed before the first event so it
+   * also bounds time-to-first-token. If no event arrives within this window
+   * the call is aborted and classified transient (feeds the outage-fallback
+   * retry). 0 disables the idle timer. Default 20000.
+   */
+  summarizerIdleTimeoutMs: number;
+  /**
+   * Total-duration ceiling for a single summarizer stream call, in ms. Armed
+   * once at call start, never reset - a hard upper bound catching a stream
+   * that keeps dribbling events but never completes. Same transient/warning
+   * handling as the idle timeout. 0 disables the ceiling. Default 180000.
+   */
+  summarizerMaxTimeoutMs: number;
   /**
    * Tool names whose outputs must NEVER be pruned or summarized. Tool calls
    * with matching `toolName` are filtered out of the pruning capture path so
@@ -480,6 +519,8 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   quietOversizedSkips: false,
   minBatchChars: 1000,
   recoveryGraceTurns: 3,
+  summarizerIdleTimeoutMs: 20000,
+  summarizerMaxTimeoutMs: 180000,
   protectedTools: [],
   protectedPaths: ["**/skills/**/*.md"],
   chainCompression: {
