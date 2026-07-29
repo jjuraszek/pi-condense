@@ -7,7 +7,7 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
-## [Unreleased]
+## [2.4.1] - 2026-07-30
 
 - **Fix 421 Misdirected Request for GitHub Copilot business/enterprise seats.** The summarizer called pi-ai's `stream()` with the static model definition, whose shipped `baseUrl` pins the individual Copilot host (`api.individual.githubcopilot.com`); business/enterprise tokens are rejected there with `421 Misdirected Request`, so any `github-copilot/*` `summarizerModel` failed on those seats. `runOnce` now mirrors the main agent loop (pi's `model-runtime`): it resolves provider auth via `ctx.modelRegistry.getProviderAuth(model.provider)` and, when the resolved auth carries a seat-specific `baseUrl`, rebases the model onto it before streaming. Also bumps `@earendil-works/*` devDependencies to `^0.83.0` (needed for `getProviderAuth` on the extension-facing `ModelRegistry`) and imports `stream` from `@earendil-works/pi-ai/compat` (its export moved off the root in current pi-ai).
 
