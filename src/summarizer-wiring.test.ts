@@ -5,7 +5,7 @@ import { describe, it, expect, mock } from "bun:test";
 let streamImpl: (model: any, input?: any, opts?: any) => any = () => {
   throw new Error("streamImpl not set");
 };
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
   stream: (...args: any[]) => streamImpl(...args),
 }));
 
@@ -111,6 +111,7 @@ function makeCtx(notes: Note[], sessionModel: any = SESSION, primaryModel: any =
     modelRegistry: {
       find: () => primaryModel,
       getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
+      getProviderAuth: async () => undefined,
     },
     ui: { notify: (msg: string, level: string) => notes.push({ msg, level }) },
   } as any;

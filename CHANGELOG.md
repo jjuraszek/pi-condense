@@ -9,6 +9,8 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+- **Fix 421 Misdirected Request for GitHub Copilot business/enterprise seats.** The summarizer called pi-ai's `stream()` with the static model definition, whose shipped `baseUrl` pins the individual Copilot host (`api.individual.githubcopilot.com`); business/enterprise tokens are rejected there with `421 Misdirected Request`, so any `github-copilot/*` `summarizerModel` failed on those seats. `runOnce` now mirrors the main agent loop (pi's `model-runtime`): it resolves provider auth via `ctx.modelRegistry.getProviderAuth(model.provider)` and, when the resolved auth carries a seat-specific `baseUrl`, rebases the model onto it before streaming. Also bumps `@earendil-works/*` devDependencies to `^0.83.0` (needed for `getProviderAuth` on the extension-facing `ModelRegistry`) and imports `stream` from `@earendil-works/pi-ai/compat` (its export moved off the root in current pi-ai).
+
 ## [2.4.0] - 2026-07-09
 
 - **Summarizer call timeout.** Every summarizer stream call is now bounded by an idle timeout (`summarizerIdleTimeoutMs`, default 20s - reset on every stream event, so it never false-aborts a flowing or reasoning generation) and a total-duration ceiling (`summarizerMaxTimeoutMs`, default 180s). Previously a stalled-but-open provider connection hung the whole agent turn indefinitely, since `runOnce` had no time budget and the automatic flush paths pass no abort signal. A timeout classifies as transient and feeds the existing outage-fallback retry (one bounded session-model attempt when a distinct `summarizerModel` is set), then surfaces a `warning` notice. Both timers are `0`-disablable and exposed in `/pruner settings` and `/pruner status`.

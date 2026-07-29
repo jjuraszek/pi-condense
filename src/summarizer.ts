@@ -1,4 +1,4 @@
-import { stream } from "@earendil-works/pi-ai";
+import { stream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
@@ -151,10 +151,19 @@ async function runOnce(
       return { kind: "auth", message: authMessage };
     }
 
+    // Mirror the main loop (model-runtime stream): auth resolution can carry a
+    // seat-specific baseUrl (e.g. GitHub Copilot business/enterprise endpoints).
+    // The shipped model data pins the individual host, which 421s other seats,
+    // so the resolved auth baseUrl must win over the static model baseUrl.
+    const providerAuth = await ctx.modelRegistry.getProviderAuth(model.provider);
+    const effectiveModel = providerAuth?.auth.baseUrl
+      ? { ...model, baseUrl: providerAuth.auth.baseUrl }
+      : model;
+
     // Pass the combined signal so the underlying fetch is cancelled immediately
     // either when the user presses Esc, or when an idle/ceiling timeout fires.
     const responseStream = stream(
-      model,
+      effectiveModel,
       {
         messages: [
           {
