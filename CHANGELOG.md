@@ -7,7 +7,7 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
-## [Unreleased]
+## [2.4.2] - 2026-08-04
 
 - **No-op renders skip context serialization.** `pruneMessages` (`src/pruner.ts`) computed `sizeMessages` (a full `JSON.stringify` over the entire message array) unconditionally on every `context` render, including no-ops where the result is never read (`index.ts` consumes `beforeChars`/`afterChars` only under `if (result.pruned)`). It now computes both sizes lazily in the pruned branch and returns a `{ beforeChars: 0, afterChars: 0 }` sentinel on a no-op, so a render that prunes nothing does zero `JSON.stringify` over the array. CPU/GC only - zero token cost, no wire or return-shape change. Also corrects a stale fast-path comment in the `context` handler (`index.ts`): index/registry emptiness alone does not imply a no-op, because error-purge and thinking-strip prune independently.
 - **Bumped `engines.node` to `>=22.19.0`** to match the host pi runtime (`@earendil-works/pi-coding-agent@0.83.0`); drops advertised support for Node 20/21, which cannot run current pi. Bumped the `@sinclair/typebox` devDependency floor to `^0.34.52` (freshness only; the caret already resolved there).
