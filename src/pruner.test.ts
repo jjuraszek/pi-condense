@@ -591,14 +591,17 @@ describe("sizeMessages", () => {
 });
 
 describe("pruneMessages beforeChars/afterChars", () => {
-  it("no-op fast path: beforeChars === afterChars === sizeMessages(input) and pruned false", () => {
+  it("no-op returns {0,0} sentinel and pruned false (no serialization on no-op path)", () => {
     const indexer = makeMockIndexer();
+    // Non-empty input: a reverted fix that recomputes sizeMessages(messages)
+    // on the unconditional path would yield a nonzero beforeChars here and fail.
     const messages = [{ role: "user", content: "hello", timestamp: 1 }];
     const result = pruneMessages(messages, indexer);
     expect(result.pruned).toBe(false);
-    const expected = sizeMessages(messages);
-    expect(result.beforeChars).toBe(expected);
-    expect(result.afterChars).toBe(expected);
+    expect(result.beforeChars).toBe(0);
+    expect(result.afterChars).toBe(0);
+    // No-op returns the original array reference unchanged.
+    expect(result.messages).toBe(messages);
   });
 
   it("pruning path: beforeChars > afterChars when stubs shrink content", () => {

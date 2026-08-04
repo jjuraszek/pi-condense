@@ -27,7 +27,7 @@
     "ai"
   ],
   "engines": {
-    "node": ">=20.3.0"
+    "node": ">=22.19.0"
   },
   "files": [
     "index.ts",
@@ -60,6 +60,6 @@
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-coding-agent": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",
-    "@sinclair/typebox": "^0.34.49"
+    "@sinclair/typebox": "^0.34.52"
   }
 }

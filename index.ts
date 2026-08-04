@@ -818,9 +818,11 @@ export default function (pi: ExtensionAPI) {
     let changed = false;
 
     // pruneMessages is the single source of truth for "is there work to do".
-    // It fast-paths (returns the original array reference) when both the
-    // tool-call index and chain registry are empty, so calling it
-    // unconditionally is safe and avoids a split gate here.
+    // It returns the original array reference (pruned: false) only when none of
+    // the four phases changed anything; index/registry emptiness alone does not
+    // imply a no-op, since error-purge (phase 2) and thinking-strip (phase 4)
+    // prune independently of them. Calling it unconditionally is safe and avoids
+    // a split gate here.
     const result = pruneMessages(
       messages,
       indexer,

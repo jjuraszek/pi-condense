@@ -55,6 +55,12 @@ export function sizeMessages(messages: any[]): number {
  *   - `pruned: false` — nothing matched; the returned `messages` is the
  *     **original input array reference** so the caller can cheaply skip
  *     the reconstruction path.
+ *   - `beforeChars` / `afterChars` — serialized context size (`sizeMessages`)
+ *     before and after pruning when `pruned` is true. When `pruned` is false
+ *     both are `0`: a no-op sentinel, not a measurement — the size is never
+ *     computed on the no-op path (zero `JSON.stringify` over the array), and
+ *     the only consumer (`index.ts` live-reclaim) reads them solely under
+ *     `if (result.pruned)`.
  *
  * AssistantMessage tool-call blocks (which carry the IDs) are kept
  * unchanged so the model can still reference them by id when calling
@@ -69,7 +75,6 @@ export function pruneMessages(
   protection?: ProtectionConfig,
   recoveryGraceTurns: number = 0,
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
-  const beforeChars = sizeMessages(messages);
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
   const inGrace = inGraceRecoveryToolCallIds(messages, recoveryGraceTurns);
@@ -158,5 +163,7 @@ export function pruneMessages(
     }
   }
 
-  return { messages: current, pruned, beforeChars, afterChars: pruned ? sizeMessages(current) : beforeChars };
+  return pruned
+    ? { messages: current, pruned, beforeChars: sizeMessages(messages), afterChars: sizeMessages(current) }
+    : { messages, pruned, beforeChars: 0, afterChars: 0 };
 }
