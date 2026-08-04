@@ -32,6 +32,7 @@ export class PruneFrontierTracker {
       rawCharCount: data.rawCharCount ?? 0,
       summaryCharCount: data.summaryCharCount ?? 0,
       outcome: data.outcome ?? "summarized",
+      thinkingStripBoundaryTimestamp: data.thinkingStripBoundaryTimestamp,
     };
   }
 

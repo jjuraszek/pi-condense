@@ -1015,17 +1015,17 @@ Anthropic's extended-thinking contract during tool use:
 
 ### Transform position
 
-Thinking strip runs **last**, after chain-range-prune, so "last K assistant turns" is measured over the turns that actually survive to the LLM:
+Thinking strip runs **last**, after chain-range-prune, at render time:
 
 ```
 [stub-replace] → [error-purge] → [chain-range-prune] → [thinking-strip]
 ```
 
-In a session with no closed chains, Phases 1–3 may be no-ops and thinking strip does all the work. Where chain compression *does* fire, the two cooperate: chain compression drops whole old middle turns (including their thinking); thinking strip mops up thinking in the surviving recent / in-flight turns beyond K.
+The keep-window is a flush-computed assistant-message timestamp (the `keepLastTurns`-back boundary over the **raw** session branch — see the **Cache impact** note below), not a render-time recount over the post-phase-3 survivors. So when chain compression drops closed middle turns inside the window, fewer than `keepLastTurns` *surviving* turns may retain thinking — deliberate, and it only ever strips more, never re-adds. In a session with no closed chains, Phases 1–3 may be no-ops and thinking strip does all the work. Where chain compression *does* fire, the two cooperate: chain compression drops whole old middle turns (including their thinking); thinking strip mops up thinking in the surviving recent / in-flight turns beyond the boundary.
 
 ### Cache impact
 
-Each new assistant turn slides the keep-window by one, stripping the turn that falls out and invalidating the prefix cache from that point (~K turns deep). The stable cached prefix (everything older than the window) still grows monotonically; only a K-deep tail churns. The trade vs the status quo: without stripping, thinking accrues without bound and is billed as cached input on every request until the window overflows; with stripping, total context is bounded at the cost of re-processing the last ~K turns' thinking each turn. Net-positive for long sessions; a literal no-op for sessions under `keepLastTurns` turns. Smaller K is cheaper on both savings and churn (worse only for reasoning continuity).
+pi-ai serializes prompt-cache breakpoints only at `tools`, `system`, and the last conversation message (verified in `@earendil-works/pi-ai` `api/anthropic-messages.js` `convertMessages`) - there is **no in-history breakpoint**. So the strip boundary is flush-gated, not per-render: it is a persisted assistant-message timestamp on the `context-prune-frontier` entry that stays fixed between flushes and advances only on a non-empty flush. Between flushes every render is byte-stable in its historical prefix, so the cache holds through a whole tool loop; the boundary moves at most once per flush (~once per request), turning the old k-busts-per-render into ~1-per-request. That residual bust is not always free: for a request shorter than `keepLastTurns` turns the boundary (tail-K) sits deeper than the current request's just-summarized tool results, so thinking-strip is the dominant invalidator, ~1 deep reprocess per request; for a request longer than `keepLastTurns` turns summarization's stub-replace reaches deeper and subsumes it (~0 marginal). Retained thinking is bounded to `keepLastTurns` raw-session turns, drifting up to `keepLastTurns + turns-since-flush` between flushes (deliberate: the frozen boundary is what buys cache stability). Note `error-purge` still mutates old history off a live per-render count, an independent cache-bust source not addressed here.
 
 ### Recovery
 

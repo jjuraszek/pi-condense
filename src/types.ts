@@ -730,6 +730,14 @@ export interface PruneFrontier {
   summaryCharCount: number;
   /** Whether the attempt actually pruned or was skipped for being oversized */
   outcome: PruneFrontierOutcome;
+  /**
+   * Assistant-message timestamp marking the flush-gated thinking-strip boundary:
+   * thinking is stripped from every assistant message older than this. Advances
+   * only at flushes (stays fixed between them so renders are prefix-stable and the
+   * prompt cache survives a tool loop). Absent on pre-feature entries - the render
+   * path then falls back to the live-count window. See src/thinking-strip.ts.
+   */
+  thinkingStripBoundaryTimestamp?: number;
 }
 
 /**

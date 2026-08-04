@@ -5,7 +5,7 @@ import { compressEligible } from "./chain-compressor.js";
 import { pruneMessages } from "./pruner.js";
 import { detectChains } from "./chain-detector.js";
 import { isProtected } from "./protected.js";
-import type { ChainRange, ChainCompressionConfig } from "./types.js";
+import type { ChainRange, ChainCompressionConfig, ThinkingStripConfig } from "./types.js";
 
 // End-to-end of the in-memory B path (everything except the LLM call, which is
 // the shared runSummarization already exercised live): a span's per-batch
@@ -248,5 +248,47 @@ describe("range compression integration", () => {
     const synthetic = out.find((m: any) => m.role === "user" && m.content?.[0]?.text?.startsWith("<compressed-chain"));
     expect(synthetic.content[0].text).toContain("batch one body");
     expect(synthetic.content[0].text).toContain("batch two body");
+  });
+
+  test("boundary strips thinking on survivors after a real phase-3 chain drop", async () => {
+    const indexer = new ToolCallIndexer();
+    const blockRefs = new BlockRefIssuer();
+    indexer.registerSummaryRefs([{ shortId: "t1", toolCallId: "tc1" }]);
+    indexer.registerSummaryBody(["tc1"], "summary of batch 1");
+
+    const chain: ChainRange = {
+      startUserTimestamp: 100,
+      middleToolCallIds: ["tc1"],
+      finalAssistantTimestamp: 400,
+    };
+    const { compressedEntries } = await compressEligible([chain], 0, {
+      indexer,
+      blockRefs,
+      appendEntry: () => {},
+      now: () => 999,
+    });
+    expect(compressedEntries).toHaveLength(1);
+
+    // A later assistant turn (ts 500) that carries thinking and sits OLDER than the boundary.
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 100 },
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", arguments: {} }], timestamp: 200, usage: {}, stopReason: "tool_use" },
+      { role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "o1" }], isError: false, timestamp: 210 },
+      { role: "assistant", content: [{ type: "text", text: "mid" }], timestamp: 400, usage: {}, stopReason: "end_turn" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "old-think", thinkingSignature: "s" }, { type: "text", text: "after" }], timestamp: 500, usage: {}, stopReason: "stop" },
+    ];
+
+    const cc: ChainCompressionConfig = { enabled: true, rollingWindow: 0, stripFinalAssistantThinking: true, fuseRangeSummary: false };
+    const strip: ThinkingStripConfig = { enabled: true, keepLastTurns: 16 };
+    // Boundary 600: the ts=500 assistant is older -> its thinking must be stripped,
+    // even though phase 3 has dropped the tc1 chain from the array first.
+    const { messages: out, pruned } = pruneMessages(messages, indexer, cc, undefined, strip, undefined, 0, 600);
+    expect(pruned).toBe(true);
+    // Chain middle dropped:
+    expect(out.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
+    // Surviving ts=500 assistant older than boundary 600 -> thinking stripped:
+    const late = out.find((m: any) => m.role === "assistant" && m.timestamp === 500);
+    expect(late).toBeDefined();
+    expect(late.content.some((c: any) => c.type === "thinking")).toBe(false);
   });
 });

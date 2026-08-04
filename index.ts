@@ -36,6 +36,7 @@ import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
+import { computeThinkingBoundary } from "./src/thinking-strip.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
@@ -486,6 +487,34 @@ export default function (pi: ExtensionAPI) {
               ? "skipped-deduped"
               : "skipped-trivial";
 
+      // Raw session branch, unwrapped once and shared by the thinking-strip boundary
+      // computation and the chain-compression block below - both walk it, so avoid a
+      // second O(session-size) pass on every flush. Only materialized when at least
+      // one consumer is enabled.
+      let branchMessages: any[] | undefined;
+      if (currentConfig.value.thinkingStrip.enabled || currentConfig.value.chainCompression.enabled) {
+        branchMessages = ctx.sessionManager.getBranch()
+          .filter((e: any) => e.type === "message" && e.message)
+          .map((e: any) => e.message);
+      }
+
+      // Flush-gated thinking-strip boundary: recompute the (count - keepLastTurns)-th
+      // assistant timestamp over the RAW branch (+ the not-yet-persisted closing
+      // assistant), monotonically clamped. Stays on the frontier snapshot so renders
+      // between flushes read a fixed value and keep the cache prefix. Carries prev
+      // through when disabled. Must run regardless of chainCompression.enabled.
+      let thinkingBoundary = frontier.get()?.thinkingStripBoundaryTimestamp;
+      if (currentConfig.value.thinkingStrip.enabled) {
+        const assistantTimestamps = withClosingMessage(branchMessages!, options.closingMessage)
+          .filter((m: any) => m?.role === "assistant" && typeof m.timestamp === "number")
+          .map((m: any) => m.timestamp);
+        thinkingBoundary = computeThinkingBoundary(
+          assistantTimestamps,
+          currentConfig.value.thinkingStrip.keepLastTurns,
+          thinkingBoundary,
+        );
+      }
+
       const frontierSnapshot: PruneFrontier = {
         lastAttemptedToolCallId: lastTC.toolCallId,
         lastAttemptedToolName: lastTC.toolName,
@@ -496,6 +525,7 @@ export default function (pi: ExtensionAPI) {
         rawCharCount: totalRawCharCount,
         summaryCharCount: totalSummaryCharCount,
         outcome: flushOutcome,
+        thinkingStripBoundaryTimestamp: thinkingBoundary,
       };
 
       try {
@@ -524,14 +554,11 @@ export default function (pi: ExtensionAPI) {
       // Non-fatal: a failure here does not roll back the successful summarization.
       if (currentConfig.value.chainCompression.enabled) {
         try {
-          const branch = ctx.sessionManager.getBranch();
-          const branchMessages = branch
-            .filter((e: any) => e.type === "message" && e.message)
-            .map((e: any) => e.message);
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
-          const chains = detectChains(withClosingMessage(branchMessages, options.closingMessage), protectionPredicate);
-          const inGrace = inGraceRecoveryToolCallIds(branchMessages, currentConfig.value.recoveryGraceTurns);
+          // branchMessages was unwrapped once above (shared with the boundary block).
+          const chains = detectChains(withClosingMessage(branchMessages!, options.closingMessage), protectionPredicate);
+          const inGrace = inGraceRecoveryToolCallIds(branchMessages!, currentConfig.value.recoveryGraceTurns);
           const { compressedEntries } = await compressEligible(
             chains,
             currentConfig.value.chainCompression.rollingWindow,
@@ -831,6 +858,7 @@ export default function (pi: ExtensionAPI) {
       currentConfig.value.thinkingStrip,
       currentConfig.value,
       currentConfig.value.recoveryGraceTurns,
+      frontier.get()?.thinkingStripBoundaryTimestamp,
     );
     if (result.pruned) {
       messages = result.messages;

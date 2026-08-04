@@ -20,8 +20,29 @@ import type { ThinkingStripConfig } from "./types.js";
  * Returns the original array reference unchanged when nothing is stripped, so
  * `pruneMessages` can skip reconstruction.
  */
-export function stripOldThinking(messages: any[], config: ThinkingStripConfig): any[] {
+export function stripOldThinking(
+  messages: any[],
+  config: ThinkingStripConfig,
+  boundaryTimestamp?: number,
+): any[] {
   if (!config.enabled) return messages;
+
+  // Flush-gated path: strip by the persisted timestamp boundary. Fixed between
+  // flushes, so consecutive renders produce a byte-identical historical prefix.
+  // `!(ts < boundary)` keeps a timestamp-less assistant (undefined < n === false),
+  // which is the provider-safe default (never over-strip an unknown-age turn).
+  if (boundaryTimestamp !== undefined && boundaryTimestamp !== null) {
+    let changed = false;
+    const out = messages.map((msg) => {
+      if (msg?.role !== "assistant" || !(msg.timestamp < boundaryTimestamp)) return msg;
+      if (!Array.isArray(msg.content) || !msg.content.some((c: any) => c.type === "thinking")) return msg;
+      changed = true;
+      return withoutThinkingBlocks(msg);
+    });
+    return changed ? out : messages;
+  }
+
+  // Fallback: live-count window (pre-first-flush / pre-feature sessions).
   const keep = Math.max(1, config.keepLastTurns);
 
   const assistantIdx: number[] = [];
@@ -39,4 +60,24 @@ export function stripOldThinking(messages: any[], config: ThinkingStripConfig): 
     return withoutThinkingBlocks(msg);
   });
   return changed ? out : messages;
+}
+
+/**
+ * Flush-time computation of the thinking-strip boundary: the timestamp of the
+ * (count - keepLastTurns)-th assistant message, monotonically clamped so the
+ * boundary never moves backward (a mid-session `keepLastTurns` increase must not
+ * re-add thinking to an already-stripped message). Stateless recompute - no
+ * running counter. `keepLastTurns` is clamped to >= 1 to match `stripOldThinking`
+ * and avoid an out-of-bounds index.
+ */
+export function computeThinkingBoundary(
+  assistantTimestamps: number[],
+  keepLastTurns: number,
+  prev?: number,
+): number | undefined {
+  const keep = Math.max(1, keepLastTurns);
+  const count = assistantTimestamps.length;
+  if (count <= keep) return prev;
+  const candidate = assistantTimestamps[count - keep];
+  return Math.max(prev ?? candidate, candidate);
 }

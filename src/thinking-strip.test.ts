@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { stripOldThinking } from "./thinking-strip.js";
+import { stripOldThinking, computeThinkingBoundary } from "./thinking-strip.js";
 import type { ThinkingStripConfig } from "./types.js";
 
 const cfg = (enabled: boolean, keepLastTurns: number): ThinkingStripConfig => ({ enabled, keepLastTurns });
@@ -171,5 +171,87 @@ describe("stripOldThinking", () => {
     const out = stripOldThinking(msgs, cfg(true, 16));
     expect(out.length).toBe(msgs.length);
     out.forEach((m, i) => expect(m.role).toBe(msgs[i].role));
+  });
+});
+
+describe("stripOldThinking (boundaryTimestamp path)", () => {
+  test("strips assistants older than boundary, keeps boundary and newer", () => {
+    const msgs = convo(20);
+    const assistantTs = msgs.filter((m) => m.role === "assistant").map((m) => m.timestamp);
+    const boundary = assistantTs[4];
+    const out = stripOldThinking(msgs, cfg(true, 16), boundary);
+    expect(out).not.toBe(msgs);
+    const assistants = out.filter((m) => m.role === "assistant");
+    for (const a of assistants) {
+      if (a.timestamp < boundary) expect(hasThinking(a)).toBe(false);
+      else expect(hasThinking(a)).toBe(true);
+    }
+  });
+
+  test("prefix is byte-stable across a growing tail at a fixed boundary (the AC)", () => {
+    const msgs = convo(20);
+    const boundary = msgs.filter((m) => m.role === "assistant").map((m) => m.timestamp)[4];
+    const first = stripOldThinking(msgs, cfg(true, 16), boundary);
+    const prefixLen = first.length;
+    const grown = [...msgs, assistantToolsThinking(100, ["tcNew"]), toolResult(101, "tcNew")];
+    const second = stripOldThinking(grown, cfg(true, 16), boundary);
+    expect(JSON.stringify(second.slice(0, prefixLen))).toBe(JSON.stringify(first));
+  });
+
+  test("undefined boundary falls back to live-count (same as 2-arg)", () => {
+    const msgs = convo(20);
+    const viaUndefined = stripOldThinking(msgs, cfg(true, 16), undefined);
+    const viaTwoArg = stripOldThinking(msgs, cfg(true, 16));
+    expect(JSON.stringify(viaUndefined)).toBe(JSON.stringify(viaTwoArg));
+  });
+
+  test("assistant without a timestamp is kept, never stripped", () => {
+    const noTs: any = { role: "assistant", content: [{ type: "thinking", thinking: "x", thinkingSignature: "s" }, { type: "text", text: "y" }], usage: {}, stopReason: "stop" };
+    const msgs = [userMsg(1), noTs, ...convo(20).slice(1)];
+    const out = stripOldThinking(msgs, cfg(true, 16), 9999);
+    const kept = out.find((m) => m.role === "assistant" && m.timestamp === undefined);
+    expect(hasThinking(kept)).toBe(true);
+  });
+
+  test("post-chain-drop survivor array: surviving older turns stripped, boundary honored", () => {
+    const full = convo(20);
+    const assistantTs = full.filter((m) => m.role === "assistant").map((m) => m.timestamp);
+    const boundary = assistantTs[10];
+    const survivor = [...full.slice(0, 6), ...full.slice(8)];
+    const out = stripOldThinking(survivor, cfg(true, 16), boundary);
+    for (const a of out.filter((m) => m.role === "assistant")) {
+      if (a.timestamp < boundary) expect(hasThinking(a)).toBe(false);
+    }
+  });
+});
+
+describe("computeThinkingBoundary", () => {
+  const ts = Array.from({ length: 40 }, (_, i) => (i + 1) * 10);
+
+  test("count <= keep returns prev unchanged", () => {
+    expect(computeThinkingBoundary(ts.slice(0, 16), 16, undefined)).toBeUndefined();
+    expect(computeThinkingBoundary(ts.slice(0, 10), 16, 123)).toBe(123);
+  });
+
+  test("count > keep returns the (count-keep)-th timestamp", () => {
+    expect(computeThinkingBoundary(ts.slice(0, 20), 16, undefined)).toBe(ts[4]);
+  });
+
+  test("keepLastTurns=0 is clamped to 1 (no out-of-bounds)", () => {
+    expect(computeThinkingBoundary(ts.slice(0, 20), 0, undefined)).toBe(ts[19]);
+  });
+
+  test("monotonic clamp: never regresses when keepLastTurns increases", () => {
+    const first = computeThinkingBoundary(ts.slice(0, 40), 16, undefined);
+    expect(first).toBe(ts[24]);
+    const second = computeThinkingBoundary(ts.slice(0, 40), 32, first);
+    expect(second).toBe(first);
+  });
+
+  test("an added trailing turn (e.g. closingMessage) advances the boundary by one", () => {
+    const before = computeThinkingBoundary(ts.slice(0, 20), 16, undefined);
+    const after = computeThinkingBoundary(ts.slice(0, 21), 16, before);
+    expect(after).toBe(ts[5]);
+    expect(after).toBeGreaterThan(before as number);
   });
 });

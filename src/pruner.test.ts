@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { pruneMessages, sizeMessages } from "./pruner.js";
-import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
+import type { ChainCompressionConfig, ChainCompressionEntry, ThinkingStripConfig } from "./types.js";
+import { ToolCallIndexer } from "./indexer.js";
 
 // Minimal mock exposing only the ToolCallIndexer surface that pruneMessages calls.
 function makeMockIndexer({
@@ -408,6 +409,25 @@ describe("pruneMessages", () => {
     const hasThinking = (m: any) => m.content.some((c: any) => c.type === "thinking");
     expect(assistants.slice(0, 3).every((a: any) => !hasThinking(a))).toBe(true);
     expect(assistants.slice(-2).every((a: any) => hasThinking(a))).toBe(true);
+  });
+
+  it("threads thinkingBoundaryTimestamp into phase 4", () => {
+    const indexer = new ToolCallIndexer();
+    const strip: ThinkingStripConfig = { enabled: true, keepLastTurns: 16 };
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1 },
+      { role: "assistant", content: [{ type: "thinking", thinking: "old", thinkingSignature: "s" }, { type: "text", text: "a" }], timestamp: 10, usage: {}, stopReason: "stop" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "new", thinkingSignature: "s" }, { type: "text", text: "b" }], timestamp: 30, usage: {}, stopReason: "stop" },
+    ];
+    // Boundary 20: ts=10 assistant older -> stripped; ts=30 kept.
+    // Live-count would strip nothing (2 assistants < keepLastTurns=16), so a pass
+    // proves the boundary arg reached phase 4.
+    const { messages: out, pruned } = pruneMessages(messages, indexer, undefined, undefined, strip, undefined, 0, 20);
+    expect(pruned).toBe(true);
+    const older = out.find((m: any) => m.timestamp === 10) as any;
+    const newer = out.find((m: any) => m.timestamp === 30) as any;
+    expect(older.content.some((c: any) => c.type === "thinking")).toBe(false);
+    expect(newer.content.some((c: any) => c.type === "thinking")).toBe(true);
   });
 });
 

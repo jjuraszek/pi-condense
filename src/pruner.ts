@@ -74,6 +74,7 @@ export function pruneMessages(
   thinkingStrip?: ThinkingStripConfig,
   protection?: ProtectionConfig,
   recoveryGraceTurns: number = 0,
+  thinkingBoundaryTimestamp?: number,
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
@@ -156,7 +157,7 @@ export function pruneMessages(
 
   // Phase 4: thinking strip — keep thinking only on the last K assistant turns
   if (thinkingStrip?.enabled) {
-    const afterStrip = stripOldThinking(current, thinkingStrip);
+    const afterStrip = stripOldThinking(current, thinkingStrip, thinkingBoundaryTimestamp);
     if (afterStrip !== current) {
       current = afterStrip;
       pruned = true;
