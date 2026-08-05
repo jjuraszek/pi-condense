@@ -92,8 +92,7 @@ src/
   indexer.ts                       # tool-call index + chain registry + summary body tracking
   nested-placeholders.ts           # pure: {bN} substitution in chain summary text
   error-purge.ts                   # pure: replace failed toolCall arg bodies with stubs after cooldown
-  thinking-strip.ts                # pure: keep thinking on last K assistant turns, strip older (main-loop)
-  pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune → thinking-strip
+  pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune
   commands.ts                      # /pruner subcommands, settings overlay, status widget
   summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
   summarizer-fallback.ts           # pure: sticky in-memory FallbackController for summarizer-model outages (transient-only, 10-min re-probe)

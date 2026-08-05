@@ -16,7 +16,6 @@ import {
   SUMMARIZER_MAX_TIMEOUT_PRESETS,
   AUTO_BUDGET_PRESETS,
   ROLLING_WINDOW_PRESETS,
-  KEEP_LAST_TURNS_PRESETS,
   PURGE_COOLDOWN_PRESETS,
   PURGE_MIN_ARG_PRESETS,
   DEFAULT_CONFIG,
@@ -649,22 +648,6 @@ export function registerCommands(
               description: `Fuse a compressed chain's per-batch summaries into one cohesive LLM summary (one extra summarizer call per multi-batch span). Off keeps the per-batch concatenation. Currently ${config.chainCompression.fuseRangeSummary ? "ON" : "OFF"}.`,
             },
             {
-              id: "thinkingStripEnabled",
-              label: "Thinking strip",
-              values: ["true", "false"],
-              currentValue: String(config.thinkingStrip.enabled),
-              description: `Strip thinking blocks from assistant turns older than the last ${config.thinkingStrip.keepLastTurns}. Reclaims main-loop thinking accumulation; no-op under ${config.thinkingStrip.keepLastTurns} turns. Currently ${config.thinkingStrip.enabled ? "ON" : "OFF"}.`,
-            },
-            {
-              id: "thinkingStripKeepLastTurns",
-              label: "Thinking keep (last N turns)",
-              values: KEEP_LAST_TURNS_PRESETS.map((p) => p.value),
-              currentValue: KEEP_LAST_TURNS_PRESETS.some((p) => p.value === String(config.thinkingStrip.keepLastTurns))
-                ? String(config.thinkingStrip.keepLastTurns)
-                : KEEP_LAST_TURNS_PRESETS[2].value,
-              description: `Keep thinking on the last N assistant turns; strip older. Counts assistant turns, not chains. Currently ${config.thinkingStrip.keepLastTurns}.`,
-            },
-            {
               id: "purgeErrorsEnabled",
               label: "Error purge",
               values: ["true", "false"],
@@ -801,14 +784,6 @@ export function registerCommands(
               newConfig.chainCompression = { ...newConfig.chainCompression, stripFinalAssistantThinking: newValue === "true" };
             } else if (id === "chainCompressionFuseRange") {
               newConfig.chainCompression = { ...newConfig.chainCompression, fuseRangeSummary: newValue === "true" };
-            } else if (id === "thinkingStripEnabled") {
-              newConfig.thinkingStrip = { ...newConfig.thinkingStrip, enabled: newValue === "true" };
-            } else if (id === "thinkingStripKeepLastTurns") {
-              const parsed = Number.parseInt(newValue, 10);
-              newConfig.thinkingStrip = {
-                ...newConfig.thinkingStrip,
-                keepLastTurns: Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_CONFIG.thinkingStrip.keepLastTurns,
-              };
             } else if (id === "purgeErrorsEnabled") {
               newConfig.purgeErrors = { ...newConfig.purgeErrors, enabled: newValue === "true" };
             } else if (id === "purgeErrorsCooldown") {

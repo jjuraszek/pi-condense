@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "./types.js";
@@ -14,6 +14,7 @@ import { DEFAULT_CONFIG } from "./types.js";
  */
 let tmpDir: string;
 let loadConfig: typeof import("./config.js").loadConfig;
+let saveConfig: typeof import("./config.js").saveConfig;
 let settingsPath: typeof import("./config.js").settingsPath;
 
 beforeAll(async () => {
@@ -21,6 +22,7 @@ beforeAll(async () => {
   process.env.PI_CODING_AGENT_DIR = tmpDir;
   const mod = await import("./config.js");
   loadConfig = mod.loadConfig;
+  saveConfig = mod.saveConfig;
   settingsPath = mod.settingsPath;
 });
 
@@ -97,5 +99,29 @@ describe("loadConfig summarizer timeout normalization", () => {
     await writeContextPrune({ summarizerIdleTimeoutMs: 1234.9 });
     const config = await loadConfig();
     expect(config.summarizerIdleTimeoutMs).toBe(1234);
+  });
+});
+
+describe("loadConfig backward compatibility with removed thinkingStrip key", () => {
+  it("loads without error and round-trips a stale contextPrune.thinkingStrip block unchanged", async () => {
+    const stale = { enabled: true, keepLastTurns: 16 };
+    await writeContextPrune({ thinkingStrip: stale });
+
+    const config = await loadConfig();
+
+    // thinkingStrip is no longer a recognized key: DEFAULT_CONFIG carries no
+    // such field, so nothing reads or acts on it.
+    expect((DEFAULT_CONFIG as unknown as Record<string, unknown>).thinkingStrip).toBeUndefined();
+    // normalize() spreads { ...DEFAULT_CONFIG, ...existing } and re-spreads
+    // the merge, so the unrecognized key survives verbatim on the loaded value.
+    expect((config as unknown as Record<string, unknown>).thinkingStrip).toEqual(stale);
+
+    // saveConfig() re-serializes the same config object it's given, so the
+    // stale block written above must still be present, byte-equivalent, after
+    // a full load -> save round trip through the real settingsPath() file.
+    await saveConfig(config);
+    const raw = await readFile(settingsPath(), "utf-8");
+    const written = JSON.parse(raw);
+    expect(written.contextPrune.thinkingStrip).toEqual(stale);
   });
 });

@@ -1,23 +1,22 @@
 import type { ToolCallIndexer } from "./indexer.js";
-import type { ChainCompressionConfig, ErrorPurgeConfig, ThinkingStripConfig } from "./types.js";
+import type { ChainCompressionConfig, ErrorPurgeConfig } from "./types.js";
 import { isProtected, type ProtectionConfig } from "./protected.js";
 import { applyChainCompressions } from "./chain-range-prune.js";
 import { purgeErroredArgs } from "./error-purge.js";
-import { stripOldThinking } from "./thinking-strip.js";
 import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 
 /**
  * Estimate of a message array's context weight. Serializing the whole array
  * (not just visible text) is deliberate: it counts tool-call argument bodies
- * (error-purge), thinking blocks (thinking-strip), and tool-result arrays
- * (stub-replace / chain-range) so all reclaim mechanisms register.
+ * (error-purge) and tool-result arrays (stub-replace / chain-range) so all
+ * reclaim mechanisms register.
  */
 export function sizeMessages(messages: any[]): number {
   return JSON.stringify(messages).length;
 }
 
 /**
- * Transforms the `context` event message array in two passes:
+ * Transforms the `context` event message array in three phases:
  *
  * Phase 1 — stub-replace: ToolResultMessages for summarized tool calls are
  * replaced with short stubs pointing the model at `context_tree_query`.
@@ -43,12 +42,6 @@ export function sizeMessages(messages: any[]): number {
  * synthetic user message wrapping the existing per-batch summary text.
  * Only runs when `chainCompression.enabled` and chain entries exist.
  *
- * Phase 4 — thinking strip: keep `thinking` blocks only on the last
- * `keepLastTurns` assistant turns; strip them from older assistant messages
- * (preserving text + toolCall). Runs last so the window counts the assistant
- * turns that actually survive to the LLM. Only runs when
- * `thinkingStrip.enabled`.
- *
  * Return shape:
  *   - `pruned: true`  — at least one change happened; the returned
  *     `messages` is a freshly allocated array.
@@ -71,10 +64,8 @@ export function pruneMessages(
   indexer: ToolCallIndexer,
   chainCompression?: ChainCompressionConfig,
   errorPurge?: ErrorPurgeConfig,
-  thinkingStrip?: ThinkingStripConfig,
   protection?: ProtectionConfig,
   recoveryGraceTurns: number = 0,
-  thinkingBoundaryTimestamp?: number,
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
@@ -152,15 +143,6 @@ export function pruneMessages(
         current = compressed;
         pruned = true;
       }
-    }
-  }
-
-  // Phase 4: thinking strip — keep thinking only on the last K assistant turns
-  if (thinkingStrip?.enabled) {
-    const afterStrip = stripOldThinking(current, thinkingStrip, thinkingBoundaryTimestamp);
-    if (afterStrip !== current) {
-      current = afterStrip;
-      pruned = true;
     }
   }
 

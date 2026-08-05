@@ -36,7 +36,6 @@ import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
-import { computeThinkingBoundary } from "./src/thinking-strip.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
@@ -487,32 +486,13 @@ export default function (pi: ExtensionAPI) {
               ? "skipped-deduped"
               : "skipped-trivial";
 
-      // Raw session branch, unwrapped once and shared by the thinking-strip boundary
-      // computation and the chain-compression block below - both walk it, so avoid a
-      // second O(session-size) pass on every flush. Only materialized when at least
-      // one consumer is enabled.
+      // Raw session branch, unwrapped once for the chain-compression block below.
+      // Only materialized when chain compression is enabled.
       let branchMessages: any[] | undefined;
-      if (currentConfig.value.thinkingStrip.enabled || currentConfig.value.chainCompression.enabled) {
+      if (currentConfig.value.chainCompression.enabled) {
         branchMessages = ctx.sessionManager.getBranch()
           .filter((e: any) => e.type === "message" && e.message)
           .map((e: any) => e.message);
-      }
-
-      // Flush-gated thinking-strip boundary: recompute the (count - keepLastTurns)-th
-      // assistant timestamp over the RAW branch (+ the not-yet-persisted closing
-      // assistant), monotonically clamped. Stays on the frontier snapshot so renders
-      // between flushes read a fixed value and keep the cache prefix. Carries prev
-      // through when disabled. Must run regardless of chainCompression.enabled.
-      let thinkingBoundary = frontier.get()?.thinkingStripBoundaryTimestamp;
-      if (currentConfig.value.thinkingStrip.enabled) {
-        const assistantTimestamps = withClosingMessage(branchMessages!, options.closingMessage)
-          .filter((m: any) => m?.role === "assistant" && typeof m.timestamp === "number")
-          .map((m: any) => m.timestamp);
-        thinkingBoundary = computeThinkingBoundary(
-          assistantTimestamps,
-          currentConfig.value.thinkingStrip.keepLastTurns,
-          thinkingBoundary,
-        );
       }
 
       const frontierSnapshot: PruneFrontier = {
@@ -525,7 +505,6 @@ export default function (pi: ExtensionAPI) {
         rawCharCount: totalRawCharCount,
         summaryCharCount: totalSummaryCharCount,
         outcome: flushOutcome,
-        thinkingStripBoundaryTimestamp: thinkingBoundary,
       };
 
       try {
@@ -556,7 +535,7 @@ export default function (pi: ExtensionAPI) {
         try {
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
-          // branchMessages was unwrapped once above (shared with the boundary block).
+          // branchMessages was unwrapped once above, gated on chainCompression.enabled.
           const chains = detectChains(withClosingMessage(branchMessages!, options.closingMessage), protectionPredicate);
           const inGrace = inGraceRecoveryToolCallIds(branchMessages!, currentConfig.value.recoveryGraceTurns);
           const { compressedEntries } = await compressEligible(
@@ -846,19 +825,16 @@ export default function (pi: ExtensionAPI) {
 
     // pruneMessages is the single source of truth for "is there work to do".
     // It returns the original array reference (pruned: false) only when none of
-    // the four phases changed anything; index/registry emptiness alone does not
-    // imply a no-op, since error-purge (phase 2) and thinking-strip (phase 4)
-    // prune independently of them. Calling it unconditionally is safe and avoids
-    // a split gate here.
+    // the three phases changed anything; index/registry emptiness alone does not
+    // imply a no-op, since error-purge (phase 2) prunes independently of them.
+    // Calling it unconditionally is safe and avoids a split gate here.
     const result = pruneMessages(
       messages,
       indexer,
       currentConfig.value.chainCompression,
       currentConfig.value.purgeErrors,
-      currentConfig.value.thinkingStrip,
       currentConfig.value,
       currentConfig.value.recoveryGraceTurns,
-      frontier.get()?.thinkingStripBoundaryTimestamp,
     );
     if (result.pruned) {
       messages = result.messages;

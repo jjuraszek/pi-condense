@@ -28,12 +28,11 @@
 10. [Chain Compression](#chain-compression)
     - [Protected-output relocation](#protected-output-relocation)
 11. [Error Purge](#error-purge)
-12. [Main-loop Thinking Strip](#main-loop-thinking-strip)
-13. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
+12. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
     - [SUPO — Summarization augmented Policy Optimization](#supo--summarization-augmented-policy-optimization)
     - [ReSum — Recursive Summarization for Long-Horizon Agents](#resum--recursive-summarization-for-long-horizon-agents)
     - [ACON — Agent Context Optimization](#acon--agent-context-optimization)
-14. [Summary](#summary)
+13. [Summary](#summary)
 
 ---
 
@@ -688,7 +687,7 @@ The last attempted prune boundary is persisted as `context-prune-frontier` so `f
 - **Tree browser (`/pruner tree`):** interactive, foldable tree of pruned tool calls grouped under their summaries. `Ctrl-O` on a summary node opens the full markdown summary in a bordered overlay.
 - **Configurable summarizer thinking (`summarizerThinking`):** trade summary cost / latency for quality (`off` / `minimal` / `low` / `medium` / `high` / `xhigh`). `default` omits the option entirely so the provider chooses.
 - **Cumulative stats:** `context-prune-stats` entries track input/output tokens and cost of every summarizer call; full detail surfaces in `/pruner stats`. Cost is also emitted on the `cost:external` pi.events channel for external aggregators (cumulative per session, live only).
-- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages) = JSON.stringify(messages).length`, comparing the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all four reclaim mechanisms in a single point (stub-replace, error-purge, chain-range-prune, thinking-strip); appears on the status line as `│ prune: ON · 92k->14k (-85%) │` once at least one prune has occurred (the `│ … │` wrapper keeps the segment visually isolated in the shared footer, load-order independent).
+- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages) = JSON.stringify(messages).length`, comparing the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all three reclaim mechanisms in a single point (stub-replace, error-purge, chain-range-prune); appears on the status line as `│ prune: ON · 92k->14k (-85%) │` once at least one prune has occurred (the `│ … │` wrapper keeps the segment visually isolated in the shared footer, load-order independent).
 - **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
 
 ### Summarizer outage fallback
@@ -863,6 +862,8 @@ A **closed chain** is a span of messages from one user message through any numbe
 | Final text-only assistant | **Kept**, thinking blocks stripped (safe — no following tool cycle depends on the signature) |
 | Synthetic `<compressed-chain>` user message | **Injected** immediately after the start user message |
 
+**Why there is no separate thinking strip.** The synthetic `<compressed-chain>` block is injected as a `role: "user"` text message, which Anthropic reads as a genuine user turn. That closes the assistant cycle, and the API drops every prior thinking block from the context window server-side - verified against the live API: the same 8-turn loop bills 3152 thinking tokens with a full `toolResult` history and 0 once a user text block precedes the final assistant. So chain compression already reclaims thinking mass for free, as a side effect of the range drop that was rewriting that region anyway. Stub replacement does not have this effect: it preserves `role: "toolResult"`, so the cycle stays open. A dedicated strip phase shipped through v2.4.3; removed in v2.5.0 - see `doc/specs/2026-08-05-remove-thinking-strip.md`.
+
 ### Transform composition order
 
 ```
@@ -870,14 +871,13 @@ raw messages from session
   │
   ├─ [1] tool-result stub-replace   (per-batch; existing)
   ├─ [2] error-purge                (phase 2)
-  ├─ [3] chain-range-prune          (runs AFTER stubs)
-  │        for each compressed chain:
-  │          drop middle assistants (by toolCallId overlap)
-  │          drop middle toolResults (by toolCallId)
-  │          suppress per-batch summaries (by toolCallRefs overlap)
-  │          inject <compressed-chain> after start user
-  │          strip thinking from final assistant
-  └─ [4] thinking-strip             (keep thinking on last K assistant turns)
+  └─ [3] chain-range-prune          (runs AFTER stubs)
+           for each compressed chain:
+             drop middle assistants (by toolCallId overlap)
+             drop middle toolResults (by toolCallId)
+             suppress per-batch summaries (by toolCallRefs overlap)
+             inject <compressed-chain> after start user
+             strip thinking from final assistant
 ```
 
 ### Identification model
@@ -981,7 +981,7 @@ Error purge replaces those arg bodies with compact stubs after the error has coo
 **Transform position:** Error purge runs in Phase 2, after stub-replace and before chain range prune.
 
 ```
-[stub-replace] → [error-purge] → [chain-range-prune] → [thinking-strip]
+[stub-replace] → [error-purge] → [chain-range-prune]
 ```
 
 **Config keys:**
@@ -991,52 +991,6 @@ Error purge replaces those arg bodies with compact stubs after the error has coo
 | `purgeErrors.enabled` | `true` | Master toggle |
 | `purgeErrors.cooldownTurns` | `2` | Turns to wait after error before purging |
 | `purgeErrors.minArgChars` | `500` | Minimum argument body size to purge |
-
----
-
-## Main-loop Thinking Strip
-
-Chain compression and the summarizer target *tool* mass. But in long single-agent sessions the dominant cost is often **assistant `thinking` blocks**: on Opus 4.5+/Sonnet 4.6+ the API retains every prior-turn thinking block by default, and pi-ai replays them all (with signatures) on every request. One autonomous ops session held ~405 K tokens (~80% of a 500 K window) in thinking alone, untouched by every other strategy — chain compression only fires on *closed* spans, and that session was one long open span.
-
-Thinking strip is a deterministic, zero-LLM transform (Phase 4) that keeps `thinking` blocks only on the last `keepLastTurns` **assistant turns** and strips them from older assistant messages, leaving each message's `text` and `toolCall` blocks intact.
-
-### Turn unit
-
-`keepLastTurns` counts **assistant messages**, not user-bounded spans. The target failure mode is a single long open chain (zero subagents, near-zero user turns) where a span-based window would keep everything. Counting assistant turns directly bounds thinking accumulation regardless of whether any chain closes.
-
-### Provider safety
-
-Anthropic's extended-thinking contract during tool use:
-
-- Only the **last assistant turn's** thinking is required; "you can omit thinking blocks from prior assistant role turns" and the API auto-filters them.
-- A message's thinking blocks must be dropped **all-or-nothing** ("the entire sequence of consecutive thinking blocks must match the outputs … you can't rearrange or modify the sequence"). The strip reuses `withoutThinkingBlocks`, which removes every thinking block (and its signature) from a message.
-
-`keepLastTurns` is clamped to `>= 1`, so the most-recent assistant turn — the one that may be awaiting tool results — always keeps its thinking. This is the minimum safe window; the default of 16 is far above the floor and preserves recent reasoning continuity.
-
-### Transform position
-
-Thinking strip runs **last**, after chain-range-prune, at render time:
-
-```
-[stub-replace] → [error-purge] → [chain-range-prune] → [thinking-strip]
-```
-
-The keep-window is a flush-computed assistant-message timestamp (the `keepLastTurns`-back boundary over the **raw** session branch — see the **Cache impact** note below), not a render-time recount over the post-phase-3 survivors. So when chain compression drops closed middle turns inside the window, fewer than `keepLastTurns` *surviving* turns may retain thinking — deliberate, and it only ever strips more, never re-adds. In a session with no closed chains, Phases 1–3 may be no-ops and thinking strip does all the work. Where chain compression *does* fire, the two cooperate: chain compression drops whole old middle turns (including their thinking); thinking strip mops up thinking in the surviving recent / in-flight turns beyond the boundary.
-
-### Cache impact
-
-pi-ai serializes prompt-cache breakpoints only at `tools`, `system`, and the last conversation message (verified in `@earendil-works/pi-ai` `api/anthropic-messages.js` `convertMessages`) - there is **no in-history breakpoint**. So the strip boundary is flush-gated, not per-render: it is a persisted assistant-message timestamp on the `context-prune-frontier` entry that stays fixed between flushes and advances only on a non-empty flush. Between flushes every render is byte-stable in its historical prefix, so the cache holds through a whole tool loop; the boundary moves at most once per flush (~once per request), turning the old k-busts-per-render into ~1-per-request. That residual bust is not always free: for a request shorter than `keepLastTurns` turns the boundary (tail-K) sits deeper than the current request's just-summarized tool results, so thinking-strip is the dominant invalidator, ~1 deep reprocess per request; for a request longer than `keepLastTurns` turns summarization's stub-replace reaches deeper and subsumes it (~0 marginal). Retained thinking is bounded to `keepLastTurns` raw-session turns, drifting up to `keepLastTurns + turns-since-flush` between flushes (deliberate: the frozen boundary is what buys cache stability). Note `error-purge` still mutates old history off a live per-render count, an independent cache-bust source not addressed here.
-
-### Recovery
-
-Stripped thinking is **not** recoverable via `context_tree_query` — unlike tool outputs, thinking blocks are not indexed. The raw thinking remains in the session JSONL on disk (the `context` hook never mutates storage); reloading the session without the extension, or reading the file directly, shows the original blocks. Thinking is transient model-internal reasoning, so drop-without-recovery is intentional.
-
-### Config keys
-
-| Key | Default | Description |
-|---|---|---|
-| `thinkingStrip.enabled` | `true` | Master toggle (gated behind the top-level `enabled`) |
-| `thinkingStrip.keepLastTurns` | `16` | Keep thinking on the last N assistant turns; strip older. Clamped to `>= 1` |
 
 ---
 

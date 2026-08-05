@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { pruneMessages, sizeMessages } from "./pruner.js";
-import type { ChainCompressionConfig, ChainCompressionEntry, ThinkingStripConfig } from "./types.js";
-import { ToolCallIndexer } from "./indexer.js";
+import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
 
 // Minimal mock exposing only the ToolCallIndexer surface that pruneMessages calls.
 function makeMockIndexer({
@@ -375,7 +374,7 @@ describe("pruneMessages", () => {
     expect(pruned).toBe(false);
   });
 
-  it("composes stub-replace (Phase 1) with thinking-strip (Phase 4)", () => {
+  it("leaves thinking blocks on every assistant turn (no thinking-strip phase)", () => {
     const indexer = makeMockIndexer({ summarized: new Set(["c10"]), shortRefs: new Map([["c10", "t1"]]) });
     const mkAsst = (ts: number) => ({
       role: "assistant",
@@ -394,40 +393,17 @@ describe("pruneMessages", () => {
       messages.push(mkAsst(10 + i));
       messages.push({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text: "o" }], isError: false, timestamp: 100 + i });
     }
-    const { messages: out, pruned } = pruneMessages(messages, indexer, undefined, undefined, {
-      enabled: true,
-      keepLastTurns: 2,
+    const { messages: out, pruned } = pruneMessages(messages, indexer, {
+      enabled: true, rollingWindow: 0, stripFinalAssistantThinking: false, fuseRangeSummary: false,
     });
+    // Phase 1 still fires: c10's toolResult is stub-replaced.
     expect(pruned).toBe(true);
-
-    // Phase 1: c10 toolResult stub-replaced
     const tr = out.find((m: any) => m.role === "toolResult" && m.toolCallId === "c10") as any;
     expect(tr.content[0].text).toContain("`t1`");
-
-    // Phase 4: oldest 3 assistant turns stripped, last 2 keep thinking
+    // No phase strips thinking any more — all five assistants keep theirs.
     const assistants = out.filter((m: any) => m.role === "assistant");
-    const hasThinking = (m: any) => m.content.some((c: any) => c.type === "thinking");
-    expect(assistants.slice(0, 3).every((a: any) => !hasThinking(a))).toBe(true);
-    expect(assistants.slice(-2).every((a: any) => hasThinking(a))).toBe(true);
-  });
-
-  it("threads thinkingBoundaryTimestamp into phase 4", () => {
-    const indexer = new ToolCallIndexer();
-    const strip: ThinkingStripConfig = { enabled: true, keepLastTurns: 16 };
-    const messages: any[] = [
-      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1 },
-      { role: "assistant", content: [{ type: "thinking", thinking: "old", thinkingSignature: "s" }, { type: "text", text: "a" }], timestamp: 10, usage: {}, stopReason: "stop" },
-      { role: "assistant", content: [{ type: "thinking", thinking: "new", thinkingSignature: "s" }, { type: "text", text: "b" }], timestamp: 30, usage: {}, stopReason: "stop" },
-    ];
-    // Boundary 20: ts=10 assistant older -> stripped; ts=30 kept.
-    // Live-count would strip nothing (2 assistants < keepLastTurns=16), so a pass
-    // proves the boundary arg reached phase 4.
-    const { messages: out, pruned } = pruneMessages(messages, indexer, undefined, undefined, strip, undefined, 0, 20);
-    expect(pruned).toBe(true);
-    const older = out.find((m: any) => m.timestamp === 10) as any;
-    const newer = out.find((m: any) => m.timestamp === 30) as any;
-    expect(older.content.some((c: any) => c.type === "thinking")).toBe(false);
-    expect(newer.content.some((c: any) => c.type === "thinking")).toBe(true);
+    expect(assistants.length).toBe(5);
+    expect(assistants.every((a: any) => a.content.some((c: any) => c.type === "thinking"))).toBe(true);
   });
 });
 
@@ -457,7 +433,7 @@ describe("render-time protection re-check", () => {
 
   it("leaves a summarized record verbatim once its path matches protectedPaths", () => {
     const { messages, pruned } = pruneMessages(
-      [skillMsg], indexer as any, undefined, undefined, undefined,
+      [skillMsg], indexer as any, undefined, undefined,
       { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
     );
     expect(pruned).toBe(false);
@@ -488,7 +464,7 @@ describe("pruneMessages recovery grace", () => {
       shortRefs: new Map([["tc-recover", "t1"]]),
     });
     const messages = [mkQueryResult("tc-recover", 1)];
-    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     expect(out[0].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
   });
 
@@ -498,7 +474,7 @@ describe("pruneMessages recovery grace", () => {
       shortRefs: new Map([["tc-recover", "t1"]]),
     });
     const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
-    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
     expect(tr.content[0].text).toContain("context_tree_query");
     expect(tr.content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
@@ -510,7 +486,7 @@ describe("pruneMessages recovery grace", () => {
       shortRefs: new Map([["tc-recover", "t1"]]),
     });
     const messages = [mkQueryResult("tc-recover", 1)];
-    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 0);
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 0);
     expect(out[0].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
     expect(out[0].content[0].text).toContain("context_tree_query");
   });
@@ -530,7 +506,7 @@ describe("pruneMessages recovery grace", () => {
         timestamp: 1,
       },
     ];
-    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     expect(out[0].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
     expect(out[0].content[0].text).toContain("context_tree_query");
   });
@@ -546,7 +522,7 @@ describe("pruneMessages recovery grace", () => {
     });
     const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
     const { messages: out } = pruneMessages(
-      messages, indexer, undefined, undefined, undefined,
+      messages, indexer, undefined, undefined,
       { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
       0,
     );
@@ -565,7 +541,7 @@ describe("pruneMessages recovery grace", () => {
       }]]),
     });
     const messages = [mkQueryResult("tc-recover", 1)];
-    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     expect(out[0].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
   });
 
@@ -580,7 +556,7 @@ describe("pruneMessages recovery grace", () => {
       }]]),
     });
     const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
-    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, undefined, 3);
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
     expect(tr.content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
     expect(tr.content[0].text).toContain("/blobs/tc-recover.txt");
@@ -592,7 +568,7 @@ describe("sizeMessages", () => {
   it("counts hidden fields (thinking blocks), not just visible text", () => {
     // Two messages with identical visible .text but different hidden content.
     // sizeMessages must count the full serialized weight so all reclaim
-    // mechanisms (thinking-strip, error-purge, etc.) register correctly.
+    // mechanisms (stub-replace, error-purge, chain-range-prune) register correctly.
     const withThinking = [{
       role: "assistant",
       content: [

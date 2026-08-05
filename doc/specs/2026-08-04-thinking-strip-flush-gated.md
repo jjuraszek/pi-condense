@@ -1,5 +1,7 @@
 # Flush-gated thinking strip (timestamp-keyed boundary)
 
+> **Superseded by:** [doc/specs/2026-08-05-remove-thinking-strip.md](./2026-08-05-remove-thinking-strip.md) - fully
+
 Issue: [jjuraszek/pi-condense#3](https://github.com/jjuraszek/pi-condense/issues/3) - "thinkingStrip advances its window every render, so the prompt cache falls back to tools+system on ~57% of turns".
 
 Status: accepted (brainstorm). Target: v2.4.x. Worktree: `fix/thinking-strip-flush-gated`.
