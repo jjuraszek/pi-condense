@@ -6,6 +6,7 @@ import {
   type ChainCompressionEntry,
   type FlushOptions,
   type DiagnosticKind,
+  type ContextMetricsSnapshot,
   PRUNE_ON_MODES,
   BATCHING_MODES,
   STATUS_WIDGET_ID,
@@ -62,6 +63,7 @@ export function pruneStatusText(
   config: ContextPruneConfig,
   reclaim?: LiveReclaim,
   diagnostics?: Record<DiagnosticKind, number>,
+  metrics?: ContextMetricsSnapshot,
 ): string {
   if (!config.enabled) return "prune: OFF";
   const diag = diagnostics
@@ -72,11 +74,14 @@ export function pruneStatusText(
       ].filter(Boolean)
     : [];
   const suffix = diag.length > 0 ? ` \u00b7 diag ${diag.join("/")}` : "";
-  if (!reclaim || reclaim.beforeChars <= 0) return `prune: ON${suffix}`;
+  const metricsSuffix = metrics && metrics.frontierGapTokens > 0
+    ? ` \u00b7 think ${formatCompactCount(metrics.openCycleThinkingTokens)} \u00b7 gap ${formatCompactCount(metrics.frontierGapTokens)} \u00b7 chain ${metrics.largestChainSharePct}%`
+    : "";
+  if (!reclaim || reclaim.beforeChars <= 0) return `prune: ON${suffix}${metricsSuffix}`;
   const beforeTok = Math.round(reclaim.beforeChars / 4);
   const afterTok = Math.round(reclaim.afterChars / 4);
   const reduction = Math.max(0, Math.round((1 - afterTok / beforeTok) * 100));
-  return `prune: ON \u00b7 ${formatCompactCount(beforeTok)}->${formatCompactCount(afterTok)} (-${reduction}%)${suffix}`;
+  return `prune: ON \u00b7 ${formatCompactCount(beforeTok)}->${formatCompactCount(afterTok)} (-${reduction}%)${suffix}${metricsSuffix}`;
 }
 
 export function setPruneStatusWidget(
@@ -84,12 +89,13 @@ export function setPruneStatusWidget(
   config: ContextPruneConfig,
   value?: LiveReclaim | string,
   diagnostics?: Record<DiagnosticKind, number>,
+  metrics?: ContextMetricsSnapshot,
 ): void {
   if (!config.showPruneStatusLine) {
     ctx.ui.setStatus(STATUS_WIDGET_ID, undefined);
     return;
   }
-  const text = typeof value === "string" ? value : pruneStatusText(config, value, diagnostics);
+  const text = typeof value === "string" ? value : pruneStatusText(config, value, diagnostics, metrics);
   // Leading-only separator: the footer joins extension status segments with a
   // single space, so a trailing divider collides with the next segment's leading
   // one and renders doubled. One leading bar yields single dividers between
@@ -470,6 +476,9 @@ export function registerCommands(
   indexer: ToolCallIndexer,
   compactChains: (ctx: ExtensionCommandContext) => Promise<{ compressedEntries: ChainCompressionEntry[]; skipped: number }>,
   getDiagnosticCounts?: () => Record<DiagnosticKind, number>,
+  getContextMetrics?: (ctx: ExtensionCommandContext) => ContextMetricsSnapshot,
+  getCachedMetrics?: () => ContextMetricsSnapshot | undefined,
+  getRearmed?: () => boolean,
 ): void {
   // Register the /pruner command
   pi.registerCommand("pruner", {
@@ -816,7 +825,7 @@ export function registerCommands(
             }
             currentConfig.value = newConfig;
             saveConfig(newConfig);
-            setPruneStatusWidget(ctx, newConfig, getLiveReclaim(), getDiagnosticCounts?.());
+            setPruneStatusWidget(ctx, newConfig, getLiveReclaim(), getDiagnosticCounts?.(), getCachedMetrics?.());
             settingsList?.invalidate();
           };
 
@@ -851,7 +860,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: true };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning enabled.");
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.(), getCachedMetrics?.());
           break;
         }
 
@@ -860,7 +869,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: false };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning disabled.");
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.(), getCachedMetrics?.());
           break;
         }
 
@@ -873,8 +882,12 @@ export function registerCommands(
             ? `\n  --- summarizer ---\n  calls:       ${s.callCount}\n  input:       ${formatTokens(s.totalInputTokens)} tokens\n  output:      ${formatTokens(s.totalOutputTokens)} tokens\n  cost:        ${formatCost(s.totalCost)}`
             : "\n  (no summarizer calls yet)";
           const fmtTimeout = (ms: number) => (ms === 0 ? "disabled" : `${Math.round(ms / 1000)}s`);
+          const m = getContextMetrics?.(ctx);
+          const contextLine = m
+            ? `\n  --- context ---\n  thinking:     ${formatTokens(m.openCycleThinkingTokens)} tokens (open segment)\n  chain share:  ${m.largestChainSharePct}%\n  frontier gap: ${formatTokens(m.frontierGapTokens)} tokens${getRearmed?.() ? "\n  rearmed:      yes" : ""}`
+            : "";
           ctx.ui.notify(
-            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  idle to:  ${fmtTimeout(cfg.summarizerIdleTimeoutMs)}\n  max to:   ${fmtTimeout(cfg.summarizerMaxTimeoutMs)}\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}${statsLine}`,
+            `pruner status:\n  enabled:  ${cfg.enabled}\n  model:    ${cfg.summarizerModel}\n  thinking: ${summarizerThinkingLabel(cfg.summarizerThinking)} (${cfg.summarizerThinking})\n  idle to:  ${fmtTimeout(cfg.summarizerIdleTimeoutMs)}\n  max to:   ${fmtTimeout(cfg.summarizerMaxTimeoutMs)}\n  trigger:  ${mode}\n  batching: ${batchingModeLabel(cfg.batchingMode)} (${cfg.batchingMode})\n  dedup:    ${cfg.dedupByContentHash ? "on" : "off"}\n  status:   ${cfg.showPruneStatusLine ? "on" : "off"}${statsLine}${contextLine}`,
           );
           break;
         }
@@ -979,7 +992,7 @@ export function registerCommands(
             currentConfig.value = { ...currentConfig.value, pruneOn: modeArg as ContextPruneConfig["pruneOn"] };
           }
           saveConfig(currentConfig.value);
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.(), getCachedMetrics?.());
           break;
         }
 
@@ -1052,6 +1065,11 @@ export function registerCommands(
           const batches = capturePendingBatches(ctx);
           if (batches.length === 0) {
             ctx.ui.notify("pruner: nothing pending — no batches to summarize", "info");
+            // Still invoke flushPending so its finally-emitted flush-metrics entry
+            // records this attempt (outcome "empty") — the incident's exact
+            // undiagnosable "nothing pending" report is precisely what this log
+            // exists to make diagnosable on recurrence.
+            await flushPending(ctx, { previewedBatches: batches, trigger: "manual" });
             break;
           }
 
@@ -1076,7 +1094,7 @@ export function registerCommands(
 
           // Remove the widget and restore the normal footer status.
           clearWidget();
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.(), getCachedMetrics?.());
 
           if (!result.ok) {
             const suffix = "error" in result && result.error ? ` (${result.error})` : "";

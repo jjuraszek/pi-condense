@@ -87,6 +87,13 @@ export const CUSTOM_TYPE_CHAIN = "context-prune-chain";
  */
 export const CUSTOM_TYPE_DIAGNOSTIC = "context-prune-diagnostic";
 
+/**
+ * Per-flush-attempt observability record. Written once per non-concurrent
+ * flushPending invocation, regardless of outcome (including "empty" and
+ * "error"). Append-only log: never in LLM context, never reconstructed.
+ */
+export const CUSTOM_TYPE_FLUSH_METRICS = "context-prune-flush-metrics";
+
 export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep";
 
 export interface DiagnosticEntryData {
@@ -672,6 +679,30 @@ export interface SummaryMessageDetails {
   timestamp: number;
 }
 
+/** Snapshot of what the pruner cannot (yet) reclaim. All token values are Math.round(JSON-chars / 4). */
+export interface ContextMetricsSnapshot {
+  /** Est. tokens of thinking blocks retained in the trailing open segment. */
+  openCycleThinkingTokens: number;
+  /** max(largest closed chain, open segment) chars / total branch chars, 0-100. */
+  largestChainSharePct: number;
+  /** Est. tokens of summarization-eligible unsummarized toolResults after the frontier. */
+  frontierGapTokens: number;
+}
+
+export type FlushTrigger = "budget" | "delta" | "message-end" | "manual" | "rearmed";
+
+/** Payload of CUSTOM_TYPE_FLUSH_METRICS. */
+export interface FlushMetricsEntry {
+  ts: number;
+  trigger: FlushTrigger;
+  /** Batches after rescan+trim, before processing. */
+  capturedBatches: number;
+  processedBatches: number;
+  outcome: "summarized" | "skipped-oversized" | "skipped-deduped" | "skipped-trivial" | "empty" | "error";
+  /** Computed at flush ENTRY (pre-flush pressure). */
+  metrics: ContextMetricsSnapshot;
+}
+
 // ── Summarizer stats ────────────────────────────────────────────────────────
 
 /**
@@ -794,6 +825,8 @@ export interface FlushOptions {
    * the frontier. All pending batches are restored so the next flush can retry.
    */
   signal?: AbortSignal;
+  /** Which trigger initiated this flush. Defaults to "manual" when absent. */
+  trigger?: FlushTrigger;
   /**
    * The final text-only assistant message that triggered an agent-message flush.
    * pi emits `message_end` to extensions before persisting it to the session, so it

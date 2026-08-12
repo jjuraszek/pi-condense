@@ -965,6 +965,33 @@ The `context-prune-chain` session entry carries the matching `protectedToolCallI
 - **Model-driven trigger.** The compressor is autonomous (rolling window). A model-callable compress tool (DCP-style: the model compresses a sub-task as it closes) is not implemented; the earlier scaffolded `agentic-auto` mode + `context_prune` tool were removed in v1.0.0.
 - **Multi-turn span merging.** Each compressed span maps 1:1 to a closed chain (one user -> text-only-assistant round). Merging several consecutive closed spans into one topic summary is future work.
 
+### Single-chain sessions
+
+Phase 3 (chain compression) only ever acts on **closed** chains - a chain closes when a text-only assistant reply follows the tool-call round (see [What a closed chain is](#what-a-closed-chain-is)). A session that runs one long, uninterrupted tool chain - an autonomous agent loop that never emits a text-only reply - never closes a chain, so the rolling window has nothing to compress. The entire run accumulates as one open segment that Phase 3 cannot touch. This is a known design property, not a bug: closed-chain detection is load-bearing for Phase 3's positional-range resolution (`resolveRange`), and there is no forced-close/reopen valve (see [Deferred](#deferred) above and issue #6 - a corpus replay would be needed before any such valve is considered).
+
+Phase 1 (per-batch summarization) is unaffected by chain closure and remains the only lever for this shape of session. For long autonomous runs where no chain is expected to close:
+
+- Lower `autoBudgetThreshold` (e.g. `0.5`-`0.6` instead of the default `0.8`) so the budget trigger fires well before the open segment dominates the window.
+- Set `budgetTurnDelta` so a single turn's sudden context jump force-flushes even between budget-threshold crossings - this catches spikes a static threshold misses until the next turn.
+
+Neither knob makes a chain close; they just keep Phase 1 flushing on schedule so raw toolResults do not pile up unsummarized for the whole run.
+
+**Observability metrics** (`src/context-metrics.ts`, `computeContextMetrics`) exist precisely to make this shape of session visible instead of silently reporting `calls: 1` the way the triggering incident did. All three are chars/4 token estimates (`Math.round`, same convention as the reclaim footer) and surface on `/pruner status` (a `--- context ---` block), the footer status line (a compact suffix, shown only when the frontier gap is non-zero), and a `context-prune-flush-metrics` session entry written once per flush attempt regardless of outcome:
+
+| Metric | Definition |
+|---|---|
+| Open-cycle thinking tokens | Est. tokens of `thinking` content blocks in assistant messages strictly after the last text-only assistant reply (the open segment). Not windowed by the frontier, so a skip/oversized/trivial outcome (which advances the frontier without removing anything from context) never masks stranded thinking as ~0. |
+| Largest-chain share | `max(largest closed chain, open segment)` chars, as a percentage of total branch chars. Interrupted chains count as closed for this purpose - they are retained context regardless of compressibility. A single-chain session's whole branch is its open segment, so this reads near 100% for the incident shape. |
+| Frontier gap | Est. tokens of `ToolResultMessage`s after the persisted prune frontier that are summarization-eligible: not already summarized, not protected (`protectedTools`/`protectedPaths`). 0 when there is nothing left to capture. |
+
+See `doc/specs/2026-08-12-single-chain-observability-trigger-repair.md` for the incident and full design rationale.
+
+### Reload rearm
+
+A reload (`session_start` or `session_tree`) rescans the branch for completed-but-unflushed tool-call batches past the frontier (the same rescan `flushPending` itself uses, no queue reconstruction). If that rescan finds recoverable work, a transient in-memory flag arms: the next `turn_end` evaluates the budget/delta trigger even on a turn that contributes no new tool results itself, instead of silently requiring a fresh batch to reach the gate. No flush runs at reload time - arming only changes what an *existing* trigger sees on the next turn.
+
+The flag clears the moment any flush attempt runs (any outcome) and is re-evaluated on the next reload. A reload followed by total idleness - no further turns at all - gets visibility only: the footer, `/pruner status`, and the `agent_end` pending notice (`prune: recovered pending (reload)`) all reflect the recoverable work, but nothing flushes automatically. This is by design - no immediate flush at boot (print-mode sessions may die under it; a boot-time compact was not requested by the user).
+
 ---
 
 ## Occurrence Identity

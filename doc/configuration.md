@@ -136,7 +136,7 @@ Both timers can be set to `0` to disable them independently.
 | `/pruner` | Interactive picker over all subcommands |
 | `/pruner settings` | Settings overlay (toggle / cycle every option) |
 | `/pruner on` / `off` | Enable / disable pruning |
-| `/pruner status` | Show mode, model, trigger, cumulative stats |
+| `/pruner status` | Show mode, model, trigger, cumulative stats, and a `--- context ---` block (see below) |
 | `/pruner stats` | Detailed cumulative summarizer token/cost stats |
 | `/pruner model [id[:thinking]]` | Get / set summarizer model (and optionally thinking level) |
 | `/pruner thinking [level]` | Get / set summarizer reasoning effort |
@@ -170,7 +170,28 @@ Every rendered state is prefixed with a single leading `|` divider so the segmen
 - `| prune: 3 pending` - batches queued, waiting for the trigger
 - `| prune: summarizing...` - flush in progress
 - `| prune: ON . 92.0k->14.0k (-85%) . diag u1/o2` - same as above, plus a self-hiding diagnostic segment (`u`/`m`/`o` counters, each hidden at zero). See [PRUNING.md § Diagnostics](../PRUNING.md#diagnostics).
+- `| prune: ON . think 3.2k . gap 5.1k . chain 41%` - a context-pressure suffix, shown only when `frontierGapTokens > 0` (nothing to append when the frontier is fully caught up). All three are chars/4 token estimates, same convention as the reclaim ratio above:
+  - `think` - `openCycleThinkingTokens`: thinking-block tokens trapped in the still-open cycle (after the last text-only assistant reply), not yet eligible for pruning.
+  - `gap` - `frontierGapTokens`: summarization-eligible tool-result tokens sitting past the persisted prune frontier.
+  - `chain` - `largestChainSharePct`: the largest single chain's (or the open segment's) share of total branch chars.
+  See [PRUNING.md § Single-chain sessions](../PRUNING.md#single-chain-sessions) for exact definitions.
+- `| prune: recovered pending (reload)` - shown at `agent_end` when a session reload found recoverable unflushed work but no new turn re-queued it. See [PRUNING.md § Reload rearm](../PRUNING.md#reload-rearm) for what "recovered" means and when it actually flushes.
 
 Setting `showPruneStatusLine: false` hides the widget and silences the queued-turn notice; pruning still runs.
 
 The status line does not show cost. Full token/cost detail is available via `/pruner stats`. The extension also emits cumulative session cost on the `cost:external` pi.events channel for external aggregators - see [README § External cost channel](../README.md#external-cost-channel).
+
+### `/pruner status` context block
+
+When context metrics are available, `/pruner status` appends a `--- context ---` block below the settings summary:
+
+```
+--- context ---
+thinking:     3.2k tokens (open segment)
+chain share:  41%
+frontier gap: 5.1k tokens
+rearmed:      yes
+```
+
+- `thinking` / `chain share` / `frontier gap` are the same `openCycleThinkingTokens` / `largestChainSharePct` / `frontierGapTokens` metrics shown in the footer suffix above, formatted as full labels here instead of a compact suffix.
+- `rearmed: yes` appears only while the reload-rearm flag is armed (cleared the moment any flush attempt runs). See [PRUNING.md § Reload rearm](../PRUNING.md#reload-rearm).
