@@ -1,4 +1,5 @@
 import { describe, it, expect, mock } from "bun:test";
+import * as actualCompat from "@earendil-works/pi-ai/compat";
 
 // Stub pi-ai's `stream` so runSummarization can be exercised without a network
 // call. `streamImpl` is swapped per test to simulate primary/fallback outcomes.
@@ -6,6 +7,7 @@ let streamImpl: (model: any, input?: any, opts?: any) => any = () => {
   throw new Error("streamImpl not set");
 };
 mock.module("@earendil-works/pi-ai/compat", () => ({
+  ...actualCompat,
   stream: (...args: any[]) => streamImpl(...args),
 }));
 
