@@ -80,11 +80,16 @@ Every summarizer cost update is emitted on the shared `pi.events` channel `cost:
 | Term | Meaning |
 |---|---|
 | Stub | The short breadcrumb (`[Summarized in pruner summary, ref \`t1\`...]`) that replaces a pruned tool result in context |
-| `context_tree_query` | The tool the model calls to recover a stubbed original by ref |
+| `context_tree_query` | The tool the model calls to recover a stubbed original by ref (`tN`) or `toolCallId`. A reused id returns every matching occurrence, not just one, including any that were content-deduplicated to an earlier record - see [PRUNING.md § Occurrence Identity](PRUNING.md#occurrence-identity) |
 | Batch vs chain | A batch is one flush's worth of tool calls; a chain is a longer closed sequence eligible for range compression |
 | Prune frontier | The last attempted prune boundary - advances even on a skip, so nothing is reconsidered twice |
+| Diagnostics (`diag u/m/o`) | A self-hiding status-line segment surfacing prune-time degradations: `u` = unresolved chain range, `m` = detection/render id mismatch (informational, does not change what's dropped), `o` = orphan tool-result sweep. Each letter's count is omitted when zero; the whole segment disappears when all three are zero. Backing session entries are `context-prune-diagnostic` - see below |
 | Prompt-cache interaction | Why batching (not per-turn pruning) is the default - see [PRUNING.md](PRUNING.md#how-prefix-caching-works) |
 | `cost:external` | The shared cost-reporting channel pi-condense emits on (see above) |
+
+### Diagnostic entries (`context-prune-diagnostic`)
+
+The status-line `diag u<N>/m<N>/o<N>` segment above is backed by `context-prune-diagnostic` session entries - session-log-only, never added to what the model sees. Full mechanics: [PRUNING.md § Diagnostics](PRUNING.md#diagnostics).
 
 ## When to use / when NOT to use
 

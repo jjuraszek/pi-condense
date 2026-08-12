@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { substituteInlineRefs, formatSummaryToolCallRefs, type SummaryToolCallRef } from "./summary-refs.js";
+import {
+  substituteInlineRefs,
+  formatSummaryToolCallRefs,
+  buildShortToolCallRefs,
+  normalizeSummaryToolCallRefs,
+  type SummaryToolCallRef,
+} from "./summary-refs.js";
 
 describe("substituteInlineRefs", () => {
   const refs: SummaryToolCallRef[] = [
@@ -118,5 +124,49 @@ describe("substituteInlineRefs", () => {
       expect(body).toContain(`\`${ref.shortId}\``);
       expect(footer).toContain(`\`${ref.shortId}\``);
     }
+  });
+});
+
+describe("occurrence-aware summary refs", () => {
+  test("buildShortToolCallRefs carries resultTimestamp through", () => {
+    const { refs, nextIndex } = buildShortToolCallRefs(
+      [
+        { toolCallId: "bash_23", resultTimestamp: 2150 },
+        { toolCallId: "bash_23", resultTimestamp: 3150 },
+      ],
+      5,
+    );
+    expect(refs).toEqual([
+      { shortId: "t5", toolCallId: "bash_23", resultTimestamp: 2150 },
+      { shortId: "t6", toolCallId: "bash_23", resultTimestamp: 3150 },
+    ]);
+    expect(nextIndex).toBe(7);
+  });
+
+  test("buildShortToolCallRefs omits resultTimestamp when absent", () => {
+    const { refs } = buildShortToolCallRefs([{ toolCallId: "bash_1" }], 1);
+    expect(refs).toEqual([{ shortId: "t1", toolCallId: "bash_1" }]);
+    expect("resultTimestamp" in refs[0]).toBe(false);
+  });
+
+  test("normalizeSummaryToolCallRefs preserves a numeric resultTimestamp", () => {
+    const refs = normalizeSummaryToolCallRefs({
+      toolCallRefs: [{ shortId: "t1", toolCallId: "bash_1", resultTimestamp: 1150 }],
+    });
+    expect(refs).toEqual([{ shortId: "t1", toolCallId: "bash_1", resultTimestamp: 1150 }]);
+  });
+
+  test("normalizeSummaryToolCallRefs drops a non-numeric resultTimestamp", () => {
+    const refs = normalizeSummaryToolCallRefs({
+      toolCallRefs: [{ shortId: "t1", toolCallId: "bash_1", resultTimestamp: "nope" }],
+    });
+    expect(refs).toEqual([{ shortId: "t1", toolCallId: "bash_1" }]);
+    expect("resultTimestamp" in refs[0]).toBe(false);
+  });
+
+  test("legacy toolCallIds-only details still normalize", () => {
+    expect(normalizeSummaryToolCallRefs({ toolCallIds: ["bash_1"] })).toEqual([
+      { shortId: "bash_1", toolCallId: "bash_1" },
+    ]);
   });
 });

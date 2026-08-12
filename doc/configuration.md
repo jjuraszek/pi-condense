@@ -87,7 +87,7 @@ Inspired by DCP's `maxContextLimit` nudging; simplified to a single threshold th
 
 ### Spilled outputs
 
-Single tool results larger than `spillThreshold` chars are written to `<session-dir>/<sessionId>-blobs/<toolCallId>.txt` at capture time and replaced in context with a short stub (tool name, byte size, head preview, file path). The full body is recoverable via the native `read` tool at the embedded path (offset/limit supported) or via `context_tree_query` by id, which falls back to the inline preview if the sidecar is missing. Moving a session `.jsonl` without its `-blobs/` directory loses only the giant-blob recovery path; bodies under `spillThreshold` stay inline in the index entry as usual.
+Single tool results larger than `spillThreshold` chars are written to `<session-dir>/<sessionId>-blobs/<key>.txt` at capture time and replaced in context with a short stub (tool name, byte size, head preview, file path). `<key>` is the sanitized occurrence key `id@resultTimestamp` (`@` becomes `_`, so `bash_23@1150` -> `bash_23_1150.txt`), not the bare `toolCallId` - keying on the bare id alone would let two occurrences of one reused provider id share a path and the second overwrite the first's blob. Recovery reads the `spillPath` persisted on the record rather than re-deriving it from the id, so a bare-id-named sidecar (no occurrence timestamp) still resolves. See [PRUNING.md § Occurrence Identity](../PRUNING.md#occurrence-identity). The full body is recoverable via the native `read` tool at the embedded path (offset/limit supported) or via `context_tree_query` by id, which falls back to the inline preview if the sidecar is missing. Moving a session `.jsonl` without its `-blobs/` directory loses only the giant-blob recovery path; bodies under `spillThreshold` stay inline in the index entry as usual.
 
 ### Choosing a summarizer model
 
@@ -156,18 +156,21 @@ Both timers can be set to `0` to disable them independently.
 
 **`context_tree_query`** - always available when the extension is loaded. Pruned summaries end with short refs like `Summarized tool refs: \`t1\`, \`t2\`. Use \`context_tree_query\` with these refs to retrieve the original full outputs.` The model passes those refs (or full `toolCallId`s) and gets back the original tool result text from the session index. Each per-tool bullet in the summary also carries its own inline `` `tN` `` ref, so recovering a specific tool is a single hop; the footer still lists every ref as a fallback. Content-hash-deduped duplicates resolve to the original's record automatically.
 
+Short refs (`tN`) always resolve 1:1 and are the primary, recommended path; a reused `toolCallId` returns every matching occurrence instead of silently picking one, including occurrences deduplicated to an earlier record. See [PRUNING.md § Occurrence Identity](../PRUNING.md#occurrence-identity) for multi-occurrence recovery mechanics.
+
 ## Footer status widget
 
 A footer widget shows the current state, controlled by `showPruneStatusLine`:
 
-Every rendered state is wrapped in `| ... |` so the segment stays visually isolated in the shared footer regardless of where other extensions' status segments land (load-order independent).
+Every rendered state is prefixed with a single leading `|` divider so the segment stays visually isolated in the shared footer regardless of where other extensions' status segments land (load-order independent); there is no trailing divider - the footer's own space-join between segments already provides one.
 
-- `| prune: OFF |` - disabled
-- `| prune: ON |` - enabled, no flushes yet
-- `| prune: ON . 92k->14k (-85%) |` - enabled; live reclaim ratio (estimated tokens before->after, percent reduction). Updates on every `pruneMessages` call.
-- `| prune: 3 pending |` - batches queued, waiting for the trigger
-- `| prune: summarizing... |` - flush in progress
+- `| prune: OFF` - disabled
+- `| prune: ON` - enabled, no flushes yet
+- `| prune: ON . 92.0k->14.0k (-85%)` - enabled; live reclaim ratio (estimated tokens before->after, percent reduction). Updates on every `pruneMessages` call.
+- `| prune: 3 pending` - batches queued, waiting for the trigger
+- `| prune: summarizing...` - flush in progress
+- `| prune: ON . 92.0k->14.0k (-85%) . diag u1/o2` - same as above, plus a self-hiding diagnostic segment (`u`/`m`/`o` counters, each hidden at zero). See [PRUNING.md § Diagnostics](../PRUNING.md#diagnostics).
 
 Setting `showPruneStatusLine: false` hides the widget and silences the queued-turn notice; pruning still runs.
 
-Cost no longer appears on the status line. Full token/cost detail is available via `/pruner stats`. The extension also emits cumulative session cost on the `cost:external` pi.events channel for external aggregators - see [README § External cost channel](../README.md#external-cost-channel).
+The status line does not show cost. Full token/cost detail is available via `/pruner stats`. The extension also emits cumulative session cost on the `cost:external` pi.events channel for external aggregators - see [README § External cost channel](../README.md#external-cost-channel).

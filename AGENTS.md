@@ -86,17 +86,21 @@ Repo-specific sources (the principle is in the shared core above); field names m
 index.ts                           # extension entry point, wires all events
 src/
   chain-detector.ts                # pure: AgentMessage[] → ChainRange[] (detects closed chains)
-  chain-range-prune.ts             # pure: applies ChainCompressionEntry[] to messages in-flight
+  chain-range-prune.ts             # pure: resolves ChainCompressionEntry[] to positional index ranges and applies them to messages in-flight
   chain-compressor.ts              # orchestrator: rolling-window eligibility, persistence, range-summary fusion (async)
   block-refs.ts                    # monotonic b<N> issuer + rebuild from session
-  indexer.ts                       # tool-call index + chain registry + summary body tracking
+  indexer.ts                       # tool-call index + chain registry + summary body tracking (occurrence-keyed)
   nested-placeholders.ts           # pure: {bN} substitution in chain summary text
   error-purge.ts                   # pure: replace failed toolCall arg bodies with stubs after cooldown
-  pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune
+  occurrence-key.ts                # pure: id@resultTimestamp key ↔ bare-id derivation, the session-durable tool-call discriminant
+  orphan-sweep.ts                  # pure: removes toolResults whose id was not opened by the immediately preceding assistant turn (per-turn tracking)
+  diagnostics.ts                   # DiagnosticSink: writes context-prune-diagnostic entries, deduped per (kind, dedupKey), never in LLM context
+  pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune → orphan-sweep
   commands.ts                      # /pruner subcommands, settings overlay, status widget
   summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
   summarizer-fallback.ts           # pure: sticky in-memory FallbackController for summarizer-model outages (transient-only, 10-min re-probe)
   stats.ts                         # StatsAccumulator + formatting helpers
+  test-support.ts                  # shared test helpers (e.g. expectNoOrphanToolResults) used across multiple *.test.ts files
   types.ts                         # all shared types, constants, DEFAULT_CONFIG
   (other src/*.ts)                 # frontier, config, dedup, tree-browser
 .agents/skills/                    # in-repo skills (release)
@@ -118,7 +122,8 @@ Custom session entry types written by the extension (NOT in LLM context unless n
 | `context-prune-stats` | `statsAccum.persist` | Cumulative summarizer token/cost snapshot |
 | `context-prune-frontier` | `flushPending` | Last attempted prune boundary (advances even on `skipped-oversized` / `skipped-trivial` / `skipped-deduped`) |
 | `context-prune-dedup-alias` | `indexer.registerDuplicate` | One entry per content-hash dedup hit; rebuilt on `session_start` to repopulate `dedupAliasToOriginal` |
-| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context; carries optional `rangeSummaryText` (fused LLM range summary) when `fuseRangeSummary` is on; also carries optional `protectedToolCallIds` (verbatim protected outputs - ids protected by tool name or path glob - are relocated into the synthetic body as `<protected-output>` tags at render time). Rebuilt on `session_start` to repopulate the chain registry. |
+| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context; drops are decided **positionally** by `resolveRange` (`src/chain-range-prune.ts`), not by id. `droppedToolCallIds` is a diagnostic cross-check only (recorded-vs-actual mismatch emits `range-id-mismatch`, never changes what's dropped); `droppedOccurrenceKeys` (optional) is load-bearing - it's what the occurrence-keyed synthetic-body lookup (per-batch summary text/coverage) is keyed against; protected-output text is NOT keyed off it - `src/chain-range-prune.ts` pulls `protectedToolCallIds` live by bare id within the resolved range instead. Also carries optional `rangeSummaryText` (fused LLM range summary) when `fuseRangeSummary` is on, and optional `protectedToolCallIds` (verbatim protected outputs - ids protected by tool name or path glob - are relocated into the synthetic body as `<protected-output>` tags at render time). Rebuilt on `session_start` to repopulate the chain registry. |
+| `context-prune-diagnostic` | `pruneMessages` / `applyChainCompressions` (via `DiagnosticSink.report`, `src/diagnostics.ts`) | One entry per distinct `(kind, dedupKey)` prune-time degradation (`unresolved-range` / `range-id-mismatch` / `orphan-sweep`). Never in LLM context; deduped in-memory; reset on `session_start` and `session_tree`. Surfaced on the footer status widget as `diag u<N>/m<N>/o<N>`. See [PRUNING.md § Diagnostics](PRUNING.md#diagnostics). |
 
 ## Events emitted
 

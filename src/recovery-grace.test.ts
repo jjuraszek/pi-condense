@@ -3,6 +3,7 @@ import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 
 const user = () => ({ role: "user", content: [{ type: "text", text: "u" }] });
 const ctq = (id: string) => ({ role: "toolResult", toolCallId: id, toolName: "context_tree_query", content: [{ type: "text", text: "x" }] });
+const ctqAt = (id: string, timestamp: number) => ({ role: "toolResult", toolCallId: id, toolName: "context_tree_query", content: [{ type: "text", text: "x" }], timestamp });
 const bash = (id: string) => ({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text: "x" }] });
 
 describe("inGraceRecoveryToolCallIds", () => {
@@ -31,5 +32,17 @@ describe("inGraceRecoveryToolCallIds", () => {
     const set = inGraceRecoveryToolCallIds(msgs, 3);
     expect(set.has("t1")).toBe(false);
     expect(set.has("t2")).toBe(true);
+  });
+  it("keys a timestamped recovery output by occurrence (id@timestamp), not the bare id", () => {
+    const msgs = [user(), ctqAt("reused", 100)];
+    const set = inGraceRecoveryToolCallIds(msgs, 3);
+    expect(set.has("reused@100")).toBe(true);
+    expect(set.has("reused")).toBe(false);
+  });
+  it("does not conflate two occurrences of the same reused bare id", () => {
+    const msgs = [user(), ctqAt("reused", 100), user(), user(), user(), user(), ctqAt("reused", 200)];
+    const set = inGraceRecoveryToolCallIds(msgs, 3);
+    expect(set.has("reused@100")).toBe(false);
+    expect(set.has("reused@200")).toBe(true);
   });
 });

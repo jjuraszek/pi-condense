@@ -2,6 +2,26 @@ import { CUSTOM_TYPE_CHAIN } from "./types.js";
 import type { ChainRange, ChainCompressionEntry } from "./types.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import type { BlockRefIssuer } from "./block-refs.js";
+import { bareToolCallId, parseOccKey } from "./occurrence-key.js";
+
+/**
+ * Grace ids are keyed the same way `recovery-grace.ts` keys them: occurrence
+ * (`id@timestamp`) when the recovery message carried a timestamp, bare id
+ * otherwise. A chain's middles are compared occurrence-first (exact match on
+ * `middleOccurrenceKeys`, falling back to `middleToolCallIds` for chains built
+ * before the field existed), so a graced occurrence never defers a chain
+ * holding a DIFFERENT occurrence of the same reused provider id. The only
+ * bare-to-bare fallback is for grace entries that themselves have no
+ * timestamp discriminant — there is no exact key to compare in that case.
+ */
+function chainMatchesGrace(chain: ChainRange, inGraceToolCallIds: Set<string>): boolean {
+  const keys = chain.middleOccurrenceKeys?.length ? chain.middleOccurrenceKeys : chain.middleToolCallIds;
+  if (keys.some((k) => inGraceToolCallIds.has(k))) return true;
+  for (const g of inGraceToolCallIds) {
+    if (parseOccKey(g).resultTimestamp === undefined && keys.some((k) => bareToolCallId(k) === g)) return true;
+  }
+  return false;
+}
 
 /**
  * Pure eligibility filter: given all detected chains, return the subset
@@ -31,7 +51,7 @@ export function selectEligible(
       c.middleToolCallIds.length > 0,
   );
   const toCompress = candidates.slice(0, Math.max(0, candidates.length - rollingWindow));
-  return toCompress.filter((c) => !c.middleToolCallIds.some((id) => inGraceToolCallIds.has(id)));
+  return toCompress.filter((c) => !chainMatchesGrace(c, inGraceToolCallIds));
 }
 
 /**
@@ -96,19 +116,23 @@ export async function compressEligible(
 
   const compressedEntries: ChainCompressionEntry[] = [];
   for (const chain of eligible) {
-    if (!deps.indexer.hasPerBatchSummaryCoveringAny(chain.middleToolCallIds)) {
+    // summaryBodies / toolRefs live in occurrence-key space (src/indexer.ts).
+    // Bare ids would match nothing and silently skip every chain.
+    const lookupKeys = chain.middleOccurrenceKeys?.length ? chain.middleOccurrenceKeys : chain.middleToolCallIds;
+
+    if (!deps.indexer.hasPerBatchSummaryCoveringAny(lookupKeys)) {
       skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
       continue;
     }
 
     const blockId = deps.blockRefs.issue();
-    const toolRefs = deps.indexer.getToolRefsForToolCallIds(chain.middleToolCallIds);
+    const toolRefs = deps.indexer.getToolRefsForToolCallIds(lookupKeys);
 
     // B: fuse this span's per-batch summaries into one cohesive summary.
     // Gated on >= 2 summaries (nothing to fuse otherwise). Non-fatal.
     let rangeSummaryText: string | undefined;
     if (deps.fuseRange) {
-      const summaries = deps.indexer.getPerBatchSummariesForToolCallIds(chain.middleToolCallIds);
+      const summaries = deps.indexer.getPerBatchSummariesForToolCallIds(lookupKeys);
       if (summaries.length >= 2) {
         try {
           const fused = await deps.fuseRange(summaries.join("\n\n"));
@@ -128,6 +152,7 @@ export async function compressEligible(
       compressedAt: deps.now(),
       ...(rangeSummaryText ? { rangeSummaryText } : {}),
       ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
+      ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
     };
 
     deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);

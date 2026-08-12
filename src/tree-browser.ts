@@ -7,6 +7,7 @@ import type { ToolCallRecord } from "./types.js";
 import { CUSTOM_TYPE_SUMMARY } from "./types.js";
 import { normalizeSummaryToolCallRefs } from "./summary-refs.js";
 import type { ToolCallIndexer } from "./indexer.js";
+import { occKey } from "./occurrence-key.js";
 
 // ── Tree node types ─────────────────────────────────────────────────────────
 
@@ -119,7 +120,7 @@ export function buildPruneTree(
 
     const children: TreeNode[] = [];
     for (const ref of toolCallRefs) {
-      const record = indexer.getRecord(ref.toolCallId);
+      const record = indexer.getRecord(occKey(ref.toolCallId, ref.resultTimestamp));
       if (!record) continue;
       children.push(toolCallNode(record, 1));
     }

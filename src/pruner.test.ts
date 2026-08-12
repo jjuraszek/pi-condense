@@ -1,8 +1,20 @@
 import { describe, expect, it } from "bun:test";
 import { pruneMessages, sizeMessages } from "./pruner.js";
+import { ToolCallIndexer } from "./indexer.js";
+import { CUSTOM_TYPE_INDEX } from "./types.js";
 import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
+import { DiagnosticSink } from "./diagnostics.js";
+import { pruneWithZeroSweepAssertion } from "./test-support.js";
 
 // Minimal mock exposing only the ToolCallIndexer surface that pruneMessages calls.
+// `hasLegacyBareRecord` defaults to the bare `summarized` set: most of the fixture
+// messages in this file carry no occurrence-keyed records, so the fail-closed lookup
+// in pruneMessages falls through to this legacy-bare-id path for them, matching how
+// pre-upgrade sessions behave (that path must stay covered - it is a supported
+// shape). The "occurrence-keyed coverage" describe block below seeds `summarized` /
+// `records` / `shortRefs` with `id@timestamp`-shaped keys instead, so those tests
+// hit `isSummarized(key)` directly - the occurrence branch of the ladder - rather
+// than falling through to `hasLegacyBareRecord`.
 function makeMockIndexer({
   summarized = new Set<string>(),
   shortRefs = new Map<string, string>(),
@@ -18,6 +30,7 @@ function makeMockIndexer({
 } = {}) {
   return {
     isSummarized: (id: string) => summarized.has(id),
+    hasLegacyBareRecord: (id: string) => summarized.has(id),
     getShortRefForToolCallId: (id: string) => shortRefs.get(id),
     getRecord: (id: string) => records.get(id),
     getChainEntries: () => chainEntries,
@@ -45,6 +58,7 @@ describe("pruneMessages", () => {
       shortRefs: new Map([["tc1", "t1"]]),
     });
     const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }], timestamp: 0 },
       {
         role: "toolResult",
         toolCallId: "tc1",
@@ -56,8 +70,8 @@ describe("pruneMessages", () => {
     ];
     const { messages: out, pruned } = pruneMessages(messages, indexer);
     expect(pruned).toBe(true);
-    expect(out[0].content[0].text).toContain("`t1`");
-    expect(out[0].content[0].text).toContain("context_tree_query");
+    expect(out[1].content[0].text).toContain("`t1`");
+    expect(out[1].content[0].text).toContain("context_tree_query");
   });
 
   it("returns original array reference when nothing is summarized or compressed", () => {
@@ -317,9 +331,12 @@ describe("pruneMessages", () => {
         spillPath: "/blobs/tc1.txt", isError: false, turnIndex: 0, timestamp: 1,
       }]]),
     });
-    const messages = [{ role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1 }];
+    const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }], timestamp: 0 },
+      { role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1 },
+    ];
     const { messages: out } = pruneMessages(messages, indexer);
-    const text = out[0].content[0].text as string;
+    const text = out[1].content[0].text as string;
     expect(text).toContain("/blobs/tc1.txt");
     expect(text).toContain("?");
     expect(text).not.toContain("Summarized in pruner summary");
@@ -334,13 +351,16 @@ describe("pruneMessages", () => {
         spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
       }]]),
     });
-    const messages = [{
-      role: "toolResult", toolCallId: "tc1", toolName: "fetch",
-      content: [{ type: "text", text: "huge" }], isError: false, timestamp: 1,
-    }];
+    const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "fetch", input: {} }], timestamp: 0 },
+      {
+        role: "toolResult", toolCallId: "tc1", toolName: "fetch",
+        content: [{ type: "text", text: "huge" }], isError: false, timestamp: 1,
+      },
+    ];
     const { messages: out, pruned } = pruneMessages(messages, indexer);
     expect(pruned).toBe(true);
-    const text = out[0].content[0].text as string;
+    const text = out[1].content[0].text as string;
     expect(text).toContain("/blobs/tc1.txt");
     expect(text).toContain("PREVIEW-HEAD");
     expect(text).toContain("1048576");
@@ -359,6 +379,7 @@ describe("pruneMessages", () => {
     const indexer = makeMockIndexer({ chainEntries: [chainEntry] });
     const messages = [
       { role: "user", content: "hi", timestamp: 100 },
+      { role: "assistant", content: [{ type: "toolCall", id: "tc-x", name: "bash", input: {} }], timestamp: 140 },
       {
         role: "toolResult",
         toolCallId: "tc-x",
@@ -408,6 +429,7 @@ describe("pruneMessages", () => {
 });
 
 describe("render-time protection re-check", () => {
+  const skillAsst = { role: "assistant", content: [{ type: "toolCall", id: "tc-skill", name: "read", input: {} }], timestamp: 5 };
   const skillMsg = {
     role: "toolResult",
     toolCallId: "tc-skill",
@@ -433,17 +455,17 @@ describe("render-time protection re-check", () => {
 
   it("leaves a summarized record verbatim once its path matches protectedPaths", () => {
     const { messages, pruned } = pruneMessages(
-      [skillMsg], indexer as any, undefined, undefined,
+      [skillAsst, skillMsg], indexer as any, undefined, undefined,
       { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
     );
     expect(pruned).toBe(false);
-    expect(messages[0].content[0].text).toBe("FULL SKILL BODY");
+    expect(messages[1].content[0].text).toBe("FULL SKILL BODY");
   });
 
   it("still stubs when no protection config is passed", () => {
-    const { messages, pruned } = pruneMessages([skillMsg], indexer as any);
+    const { messages, pruned } = pruneMessages([skillAsst, skillMsg], indexer as any);
     expect(pruned).toBe(true);
-    expect(messages[0].content[0].text).toContain("context_tree_query");
+    expect(messages[1].content[0].text).toContain("context_tree_query");
   });
 });
 
@@ -457,15 +479,20 @@ describe("pruneMessages recovery grace", () => {
     timestamp,
   });
   const mkUser = (timestamp: number) => ({ role: "user", content: [{ type: "text", text: "go" }], timestamp });
+  const mkAsst = (toolCallId: string, toolName: string, timestamp: number) => ({
+    role: "assistant",
+    content: [{ type: "toolCall", id: toolCallId, name: toolName, input: {} }],
+    timestamp,
+  });
 
   it("renders a context_tree_query recovery output verbatim at age 0 within grace", () => {
     const indexer = makeMockIndexer({
       summarized: new Set(["tc-recover"]),
       shortRefs: new Map([["tc-recover", "t1"]]),
     });
-    const messages = [mkQueryResult("tc-recover", 1)];
+    const messages = [mkAsst("tc-recover", "context_tree_query", 0), mkQueryResult("tc-recover", 1)];
     const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
-    expect(out[0].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+    expect(out[1].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
   });
 
   it("stubs a context_tree_query recovery output aged past the grace window", () => {
@@ -473,7 +500,7 @@ describe("pruneMessages recovery grace", () => {
       summarized: new Set(["tc-recover"]),
       shortRefs: new Map([["tc-recover", "t1"]]),
     });
-    const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
+    const messages: any[] = [mkAsst("tc-recover", "context_tree_query", 0), mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
     const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
     expect(tr.content[0].text).toContain("context_tree_query");
@@ -485,10 +512,10 @@ describe("pruneMessages recovery grace", () => {
       summarized: new Set(["tc-recover"]),
       shortRefs: new Map([["tc-recover", "t1"]]),
     });
-    const messages = [mkQueryResult("tc-recover", 1)];
+    const messages = [mkAsst("tc-recover", "context_tree_query", 0), mkQueryResult("tc-recover", 1)];
     const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 0);
-    expect(out[0].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
-    expect(out[0].content[0].text).toContain("context_tree_query");
+    expect(out[1].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
+    expect(out[1].content[0].text).toContain("context_tree_query");
   });
 
   it("does not apply the grace window to non-context_tree_query outputs", () => {
@@ -497,6 +524,7 @@ describe("pruneMessages recovery grace", () => {
       shortRefs: new Map([["tc-bash", "t1"]]),
     });
     const messages = [
+      mkAsst("tc-bash", "bash", 0),
       {
         role: "toolResult",
         toolCallId: "tc-bash",
@@ -507,8 +535,8 @@ describe("pruneMessages recovery grace", () => {
       },
     ];
     const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
-    expect(out[0].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
-    expect(out[0].content[0].text).toContain("context_tree_query");
+    expect(out[1].content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
+    expect(out[1].content[0].text).toContain("context_tree_query");
   });
 
   it("isProtected precedence: a protected context_tree_query output stays verbatim even with grace off", () => {
@@ -520,7 +548,7 @@ describe("pruneMessages recovery grace", () => {
         resultText: "", isError: false, turnIndex: 0, timestamp: 1,
       }]]),
     });
-    const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
+    const messages: any[] = [mkAsst("tc-recover", "context_tree_query", 0), mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
     const { messages: out } = pruneMessages(
       messages, indexer, undefined, undefined,
       { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
@@ -540,9 +568,9 @@ describe("pruneMessages recovery grace", () => {
         spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
       }]]),
     });
-    const messages = [mkQueryResult("tc-recover", 1)];
+    const messages = [mkAsst("tc-recover", "context_tree_query", 0), mkQueryResult("tc-recover", 1)];
     const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
-    expect(out[0].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+    expect(out[1].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
   });
 
   it("stubs a spilled context_tree_query recovery output aged past the grace window to the spill-pointer stub", () => {
@@ -555,12 +583,295 @@ describe("pruneMessages recovery grace", () => {
         spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
       }]]),
     });
-    const messages: any[] = [mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
+    const messages: any[] = [mkAsst("tc-recover", "context_tree_query", 0), mkQueryResult("tc-recover", 1), mkUser(2), mkUser(3), mkUser(4), mkUser(5)];
     const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
     const tr = out.find((m: any) => m.toolCallId === "tc-recover") as any;
     expect(tr.content[0].text).not.toBe("VERBATIM RECOVERY OUTPUT");
     expect(tr.content[0].text).toContain("/blobs/tc-recover.txt");
     expect(tr.content[0].text).toContain("spilled");
+  });
+});
+
+describe("occurrence-keyed stub replacement", () => {
+  it("stubs the summarized occurrence and leaves the live one verbatim", () => {
+    const idx = new ToolCallIndexer();
+    idx.addBatch(
+      {
+        turnIndex: 0,
+        timestamp: 1000,
+        assistantText: "",
+        toolCalls: [{ toolCallId: "bash_23", toolName: "bash", args: {}, resultText: "OLD", isError: false, resultTimestamp: 1150 }],
+      } as any,
+      () => {},
+    );
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 1100 },
+      { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "OLD" }], isError: false, timestamp: 1150 },
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 3100 },
+      { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 3150 },
+    ];
+    const out = pruneMessages(messages, idx);
+    expect(out.messages[1].content[0].text).toContain("Summarized in pruner summary");
+    expect(out.messages[3].content[0].text).toBe("LIVE");
+  });
+
+  it("fail-closed: a timestamped result with no occurrence record is never stubbed", () => {
+    const idx = new ToolCallIndexer();
+    idx.addBatch(
+      {
+        turnIndex: 0,
+        timestamp: 1000,
+        assistantText: "",
+        toolCalls: [{ toolCallId: "bash_23", toolName: "bash", args: {}, resultText: "OLD", isError: false, resultTimestamp: 1150 }],
+      } as any,
+      () => {},
+    );
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 9100 },
+      { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 9150 },
+    ];
+    const out = pruneMessages(messages, idx);
+    expect(out.pruned).toBe(false);
+    expect(out.messages).toBe(messages);
+  });
+
+  it("fail-closed: a mixed legacy+occurrence bare id does not stub a live later occurrence (F1 regression)", () => {
+    const idx = new ToolCallIndexer();
+    idx.reconstructFromSession({
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: CUSTOM_TYPE_INDEX,
+            data: { toolCalls: [{ toolCallId: "bash_23", toolName: "bash", args: {}, resultText: "OLD-LEGACY", isError: false, turnIndex: 0, timestamp: 500 }] },
+          },
+        ],
+      },
+    } as any);
+    idx.addBatch(
+      {
+        turnIndex: 1,
+        timestamp: 2000,
+        assistantText: "",
+        toolCalls: [{ toolCallId: "bash_23", toolName: "bash", args: {}, resultText: "MID", isError: false, resultTimestamp: 2150 }],
+      } as any,
+      () => {},
+    );
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 9100 },
+      { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 9150 },
+    ];
+    const out = pruneMessages(messages, idx);
+    expect(out.messages[1].content[0].text).toBe("LIVE");
+    expect(out.pruned).toBe(false);
+  });
+
+  it("legacy bare-id records still stub (pre-upgrade sessions keep working)", () => {
+    const idx = new ToolCallIndexer();
+    idx.reconstructFromSession({
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: CUSTOM_TYPE_INDEX,
+            data: { toolCalls: [{ toolCallId: "bash_7", toolName: "bash", args: {}, resultText: "OLD", isError: false, turnIndex: 0, timestamp: 500 }] },
+          },
+        ],
+      },
+    } as any);
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_7", name: "bash", input: {} }], timestamp: 500 },
+      { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "OLD" }], isError: false, timestamp: 550 },
+    ];
+    const out = pruneMessages(messages, idx);
+    expect(out.pruned).toBe(true);
+    expect(out.messages[1].content[0].text).toContain("Summarized in pruner summary");
+  });
+
+  it("accepted limitation: a pure-legacy summarized bash_7 stubs a LIVE colliding bash_7 result (pre-upgrade sessions only)", () => {
+    const idx = new ToolCallIndexer();
+    idx.reconstructFromSession({
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: CUSTOM_TYPE_INDEX,
+            data: { toolCalls: [{ toolCallId: "bash_7", toolName: "bash", args: {}, resultText: "OLD", isError: false, turnIndex: 0, timestamp: 500 }] },
+          },
+        ],
+      },
+    } as any);
+
+    // No migration: a bare-keyed legacy record has no occurrence-keyed
+    // siblings, so hasLegacyBareRecord stays true even though a later, live,
+    // unrelated occurrence of the same reused provider id now exists.
+    expect(idx.hasLegacyBareRecord("bash_7")).toBe(true);
+
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_7", name: "bash", input: {} }], timestamp: 9100 },
+      { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 9150 },
+    ];
+    const out = pruneMessages(messages, idx);
+    // Accepted, documented exposure (PRUNING.md): a session spanning the
+    // upgrade keeps this pre-upgrade behavior for its legacy half - the live
+    // result is stub-replaced with the stale legacy record's content.
+    expect(out.pruned).toBe(true);
+    expect(out.messages[1].content[0].text).toContain("Summarized in pruner summary");
+  });
+});
+
+describe("orphan sweep in pruneMessages", () => {
+  it("a clean render returns the identical array reference with pruned false", () => {
+    const idx = new ToolCallIndexer();
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "a", name: "bash", input: {} }], timestamp: 1 },
+      { role: "toolResult", toolCallId: "a", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 2 },
+    ];
+    const out = pruneMessages(messages, idx);
+    expect(out.messages).toBe(messages);
+    expect(out.pruned).toBe(false);
+    expect(out.beforeChars).toBe(0);
+  });
+
+  it("sweeps an orphan and reports the diagnostic once across repeated renders of the same input", () => {
+    const idx = new ToolCallIndexer();
+    const appended: any[] = [];
+    const sink = new DiagnosticSink((_customType, data) => appended.push(data));
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "a", name: "bash", input: {} }], timestamp: 1 },
+      { role: "toolResult", toolCallId: "a", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 2 },
+      { role: "toolResult", toolCallId: "ghost", toolName: "bash", content: [{ type: "text", text: "y" }], isError: false, timestamp: 3 },
+    ];
+    const first = pruneMessages(messages, idx, undefined, undefined, undefined, 0, sink as any);
+    expect(first.pruned).toBe(true);
+    expect(first.messages).toHaveLength(2);
+    expect(first.messages.some((m: any) => m.toolCallId === "ghost")).toBe(false);
+    expect(first.messages.some((m: any) => m.toolCallId === "a")).toBe(true);
+
+    // Same orphan on a second render of the same (still-unsupplemented) input
+    // must not write a second diagnostic entry: DiagnosticSink dedups per
+    // (kind, dedupKey), and pruneMessages must compute the same dedupKey both
+    // times for the same swept id set.
+    const second = pruneMessages(messages, idx, undefined, undefined, undefined, 0, sink as any);
+    expect(second.pruned).toBe(true);
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0].kind).toBe("orphan-sweep");
+    expect(appended[0].detail).toContain("ghost");
+    expect(appended[0].detail).toContain("swept 1 orphan");
+  });
+
+  it("bounds the sweep dedup key and truncation marker for a large orphan set", () => {
+    const idx = new ToolCallIndexer();
+    const reports: any[] = [];
+    const sink = { report: (kind: string, key: string, detail: string) => reports.push({ kind, key, detail }), counts: () => ({}) as any };
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "keep", name: "bash", input: {} }], timestamp: 1 },
+      { role: "toolResult", toolCallId: "keep", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 2 },
+    ];
+    for (let i = 0; i < 12; i++) {
+      messages.push({ role: "toolResult", toolCallId: `ghost-${i}`, toolName: "bash", content: [{ type: "text", text: "y" }], isError: false, timestamp: 3 + i });
+    }
+    const out = pruneMessages(messages, idx, undefined, undefined, undefined, 0, sink as any);
+    expect(out.pruned).toBe(true);
+    expect(reports).toHaveLength(1);
+    // A short, bounded hash key regardless of how many ids were swept.
+    expect(reports[0].key.length).toBe(16);
+    expect(reports[0].detail).toContain("swept 12 orphan");
+    expect(reports[0].detail).toContain("... +7 more");
+  });
+});
+
+describe("occurrence-keyed coverage via mock indexer (spill / protection / grace)", () => {
+  it("stub-replaces via a direct occurrence-key hit (not the legacy branch)", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1@1500"]),
+      shortRefs: new Map([["tc1@1500", "t1"]]),
+    });
+    const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }], timestamp: 1400 },
+      { role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "big output" }], isError: false, timestamp: 1500 },
+    ];
+    const { messages: out, pruned } = pruneMessages(messages, indexer);
+    expect(pruned).toBe(true);
+    expect(out[1].content[0].text).toContain("`t1`");
+  });
+
+  it("emits the mechanical spill stub via a direct occurrence-key hit", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1@1500"]),
+      records: new Map([["tc1@1500", {
+        toolCallId: "tc1", toolName: "fetch", args: { url: "https://x" },
+        resultText: "", resultPreview: "PREVIEW-HEAD", spillPath: "/blobs/tc1.txt",
+        spillBytes: 1048576, isError: false, turnIndex: 0, resultTimestamp: 1500, timestamp: 1400,
+      }]]),
+    });
+    const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "fetch", input: {} }], timestamp: 1400 },
+      { role: "toolResult", toolCallId: "tc1", toolName: "fetch", content: [{ type: "text", text: "huge" }], isError: false, timestamp: 1500 },
+    ];
+    const { messages: out, pruned } = pruneMessages(messages, indexer);
+    expect(pruned).toBe(true);
+    const text = out[1].content[0].text as string;
+    expect(text).toContain("/blobs/tc1.txt");
+    expect(text).toContain("PREVIEW-HEAD");
+    expect(text).not.toContain("Summarized in pruner summary");
+  });
+
+  it("render-time protection re-check applies to a direct occurrence-key hit", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-skill@1500"]),
+      shortRefs: new Map([["tc-skill@1500", "t1"]]),
+      records: new Map([["tc-skill@1500", {
+        toolCallId: "tc-skill", toolName: "read", args: { path: "/h/skills/x/SKILL.md" },
+        resultText: "", isError: false, turnIndex: 0, resultTimestamp: 1500, timestamp: 1400,
+      }]]),
+    });
+    const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc-skill", name: "read", input: {} }], timestamp: 1400 },
+      { role: "toolResult", toolCallId: "tc-skill", toolName: "read", content: [{ type: "text", text: "FULL SKILL BODY" }], isError: false, timestamp: 1500 },
+    ];
+    const { messages: out, pruned } = pruneMessages(
+      messages, indexer, undefined, undefined,
+      { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] },
+    );
+    expect(pruned).toBe(false);
+    expect(out[1].content[0].text).toBe("FULL SKILL BODY");
+  });
+
+  it("recovery grace protects a direct occurrence-key hit at age 0", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc-recover@1500"]),
+      shortRefs: new Map([["tc-recover@1500", "t1"]]),
+    });
+    const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc-recover", name: "context_tree_query", input: {} }], timestamp: 1400 },
+      { role: "toolResult", toolCallId: "tc-recover", toolName: "context_tree_query", content: [{ type: "text", text: "VERBATIM RECOVERY OUTPUT" }], isError: false, timestamp: 1500 },
+    ];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
+    expect(out[1].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+  });
+
+  it("a graced occurrence does not protect a different occurrence of the same reused bare id", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["reused@1500", "reused@9500"]),
+      shortRefs: new Map([["reused@1500", "t1"], ["reused@9500", "t2"]]),
+    });
+    const messages = [
+      // Graced context_tree_query recovery at occurrence reused@1500 (age 0).
+      { role: "assistant", content: [{ type: "toolCall", id: "reused", name: "context_tree_query", input: {} }], timestamp: 1400 },
+      { role: "toolResult", toolCallId: "reused", toolName: "context_tree_query", content: [{ type: "text", text: "VERBATIM RECOVERY OUTPUT" }], isError: false, timestamp: 1500 },
+      // A LATER, unrelated summarized occurrence of the same reused provider id.
+      { role: "assistant", content: [{ type: "toolCall", id: "reused", name: "bash", input: {} }], timestamp: 9400 },
+      { role: "toolResult", toolCallId: "reused", toolName: "bash", content: [{ type: "text", text: "different output" }], isError: false, timestamp: 9500 },
+    ];
+    const { messages: out } = pruneMessages(messages, indexer, undefined, undefined, undefined, 3);
+    // The grace-protected recovery output stays verbatim...
+    expect(out[1].content[0].text).toBe("VERBATIM RECOVERY OUTPUT");
+    // ...but the later, different occurrence of the same bare id is NOT
+    // shielded by that grace entry - it gets stubbed on its own merits.
+    expect(out[3].content[0].text).toContain("`t2`");
+    expect(out[3].content[0].text).not.toBe("different output");
   });
 });
 
@@ -606,6 +917,7 @@ describe("pruneMessages beforeChars/afterChars", () => {
       shortRefs: new Map([["tc1", "t1"]]),
     });
     const messages = [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }], timestamp: 0 },
       {
         role: "toolResult",
         toolCallId: "tc1",
@@ -620,5 +932,124 @@ describe("pruneMessages beforeChars/afterChars", () => {
     expect(result.beforeChars).toBe(sizeMessages(messages));
     expect(result.afterChars).toBe(sizeMessages(result.messages));
     expect(result.afterChars).toBeLessThan(result.beforeChars);
+    expect(result.messages).toHaveLength(2);
   });
+});
+
+describe("G4/C3: orphan-sweep zero-fire proof across pruner fixtures", () => {
+  // Wraps a representative set of existing pruneMessages fixtures with a
+  // counting DiagnosticSink (pruneWithZeroSweepAssertion, src/test-support.ts)
+  // and fails if the orphan-sweep diagnostic ever fires. Deliberately excludes
+  // the two tests in "orphan sweep in pruneMessages" above that construct an
+  // orphan on purpose - those pin the OPPOSITE contract (the sweep firing when
+  // it should).
+  const fixtures: Array<[string, () => void]> = [
+    ["stub-replaces a summarized tool result", () => {
+      const indexer = makeMockIndexer({ summarized: new Set(["tc1"]), shortRefs: new Map([["tc1", "t1"]]) });
+      const messages = [
+        { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }], timestamp: 0 },
+        { role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "big output" }], isError: false, timestamp: 1 },
+      ];
+      pruneWithZeroSweepAssertion(messages, indexer);
+    }],
+    ["applies chain compression after stub-replace", () => {
+      const toolCallId = "tc-mid";
+      const chainEntry: ChainCompressionEntry = {
+        blockId: "b1", startUserTimestamp: 100, droppedToolCallIds: [toolCallId],
+        finalAssistantTimestamp: 300, toolRefs: ["t1"], compressedAt: 999,
+      };
+      const indexer = makeMockIndexer({
+        summarized: new Set([toolCallId]), shortRefs: new Map([[toolCallId, "t1"]]),
+        chainEntries: [chainEntry], summaryBodyMap: new Map([[toolCallId, "ran bash, got results"]]),
+      });
+      const messages: any[] = [
+        { role: "user", content: [{ type: "text", text: "do it" }], timestamp: 100 },
+        { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "bash", arguments: {} }], timestamp: 200, usage: {}, stopReason: "tool_use" },
+        { role: "toolResult", toolCallId, toolName: "bash", content: [{ type: "text", text: "output" }], isError: false, timestamp: 210 },
+        { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 300, usage: {}, stopReason: "end_turn" },
+      ];
+      pruneWithZeroSweepAssertion(messages, indexer, enabledCC);
+    }],
+    ["purges errored toolCall args through errorPurge wiring", () => {
+      const indexer = makeMockIndexer();
+      const largeArgs = { content: "x".repeat(200) };
+      const messages: any[] = [
+        { role: "assistant", content: [{ type: "toolCall", id: "tc-err", name: "write", arguments: largeArgs }], timestamp: 100, usage: {}, stopReason: "tool_use" },
+        { role: "toolResult", toolCallId: "tc-err", toolName: "write", content: [{ type: "text", text: "Error: permission denied" }], isError: true, timestamp: 110 },
+        { role: "assistant", content: [{ type: "toolCall", id: "tc2", name: "bash", arguments: { cmd: "ls" } }], timestamp: 200, usage: {}, stopReason: "tool_use" },
+        { role: "toolResult", toolCallId: "tc2", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 210 },
+      ];
+      pruneWithZeroSweepAssertion(
+        messages, indexer,
+        { enabled: false, rollingWindow: 3, stripFinalAssistantThinking: true, fuseRangeSummary: false },
+        { enabled: true, cooldownTurns: 2, minArgChars: 100 },
+      );
+    }],
+    ["legacy bare-id records still stub (pre-upgrade sessions)", () => {
+      const idx = new ToolCallIndexer();
+      idx.reconstructFromSession({
+        sessionManager: {
+          getBranch: () => [
+            { type: "custom", customType: CUSTOM_TYPE_INDEX, data: { toolCalls: [{ toolCallId: "bash_7", toolName: "bash", args: {}, resultText: "OLD", isError: false, turnIndex: 0, timestamp: 500 }] } },
+            { type: "message", message: { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "OLD" }], isError: false, timestamp: 550 } },
+          ],
+        },
+      } as any);
+      const messages: any[] = [
+        { role: "assistant", content: [{ type: "toolCall", id: "bash_7", name: "bash", input: {} }], timestamp: 500 },
+        { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "OLD" }], isError: false, timestamp: 550 },
+      ];
+      pruneWithZeroSweepAssertion(messages, idx);
+    }],
+    ["occurrence-keyed: stubs the summarized occurrence and leaves the live one verbatim", () => {
+      const idx = new ToolCallIndexer();
+      idx.addBatch(
+        { turnIndex: 0, timestamp: 1000, assistantText: "", toolCalls: [{ toolCallId: "bash_23", toolName: "bash", args: {}, resultText: "OLD", isError: false, resultTimestamp: 1150 }] } as any,
+        () => {},
+      );
+      const messages: any[] = [
+        { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 1100 },
+        { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "OLD" }], isError: false, timestamp: 1150 },
+        { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 3100 },
+        { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 3150 },
+      ];
+      pruneWithZeroSweepAssertion(messages, idx);
+    }],
+    ["G1 conformance fixture: the accepted pre-upgrade legacy collision case still triggers no orphan sweep", () => {
+      const idx = new ToolCallIndexer();
+      idx.reconstructFromSession({
+        sessionManager: {
+          getBranch: () => [
+            { type: "custom", customType: CUSTOM_TYPE_INDEX, data: { toolCalls: [{ toolCallId: "bash_7", toolName: "bash", args: {}, resultText: "OLD", isError: false, turnIndex: 0, timestamp: 500 }] } },
+            { type: "message", message: { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "OLD" }], isError: false, timestamp: 550 } },
+            { type: "message", message: { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 9150 } },
+          ],
+        },
+      } as any);
+      const messages: any[] = [
+        { role: "assistant", content: [{ type: "toolCall", id: "bash_7", name: "bash", input: {} }], timestamp: 9100 },
+        { role: "toolResult", toolCallId: "bash_7", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 9150 },
+      ];
+      pruneWithZeroSweepAssertion(messages, idx);
+    }],
+    ["spill mechanical stub for a spilled record", () => {
+      const indexer = makeMockIndexer({
+        summarized: new Set(["tc1"]),
+        records: new Map([["tc1", {
+          toolCallId: "tc1", toolName: "fetch", args: { url: "https://x" },
+          resultText: "", resultPreview: "PREVIEW-HEAD", spillPath: "/blobs/tc1.txt",
+          spillBytes: 1048576, isError: false, turnIndex: 0, timestamp: 1,
+        }]]),
+      });
+      const messages = [
+        { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "fetch", input: {} }], timestamp: 0 },
+        { role: "toolResult", toolCallId: "tc1", toolName: "fetch", content: [{ type: "text", text: "huge" }], isError: false, timestamp: 1 },
+      ];
+      pruneWithZeroSweepAssertion(messages, indexer);
+    }],
+  ];
+
+  for (const [name, run] of fixtures) {
+    it(`zero orphan sweeps: ${name}`, run);
+  }
 });

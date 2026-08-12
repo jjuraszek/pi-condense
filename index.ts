@@ -5,7 +5,7 @@
  *   config       — load/save <agent-dir>/settings.json `contextPrune` namespace (honors PI_CODING_AGENT_DIR)
  *   batch-capture — serialize turn_end event into CapturedBatch
  *   summarizer   — call LLM to summarize a CapturedBatch
- *   indexer      — maintain Map<toolCallId, ToolCallRecord> + session persistence
+ *   indexer      — maintain Map<occurrenceKey, ToolCallRecord> + session persistence
  *   pruner       — filter context event messages
  *   query-tool   — register context_tree_query tool
  *   commands     — register /pruner command + message renderer
@@ -39,6 +39,8 @@ import { detectChains, withClosingMessage } from "./src/chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
+import { occKey } from "./src/occurrence-key.js";
+import { DiagnosticSink } from "./src/diagnostics.js";
 
 export default function (pi: ExtensionAPI) {
   // Shared mutable config reference — updated by /pruner commands
@@ -63,6 +65,10 @@ export default function (pi: ExtensionAPI) {
   // Shared block-ref issuer — issues monotonic b<N> IDs for compressed chains;
   // rebuilt from session on session_start / session_tree
   const blockRefs = new BlockRefIssuer();
+
+  // Session-scoped diagnostic sink — tracks recovery-path anomaly counters
+  // (dedup'd across the session's lifetime, not per-render).
+  const diagnostics = new DiagnosticSink((type, data) => pi.appendEntry(type, data));
 
   // Pending batches — accumulated until the prune trigger fires
   const pendingBatches: CapturedBatch[] = [];
@@ -103,7 +109,7 @@ export default function (pi: ExtensionAPI) {
     let toolCalls = batch.toolCalls;
 
     // The indexer tells us what was successfully summarized earlier.
-    toolCalls = toolCalls.filter((tc) => !indexer.isSummarized(tc.toolCallId));
+    toolCalls = toolCalls.filter((tc) => !indexer.isSummarized(occKey(tc.toolCallId, tc.resultTimestamp)));
     if (toolCalls.length === 0) return null;
 
     // The frontier tells us the last attempted boundary even when the attempt did
@@ -233,8 +239,9 @@ export default function (pi: ExtensionAPI) {
           const remaining: typeof batch.toolCalls = [];
           for (const tc of batch.toolCalls) {
             const originalId = indexer.lookupByContent(tc.toolName, tc.resultText);
-            if (originalId && originalId !== tc.toolCallId) {
-              indexer.registerDuplicate(tc.toolCallId, originalId, persistAlias);
+            const key = occKey(tc.toolCallId, tc.resultTimestamp);
+            if (originalId && originalId !== key) {
+              indexer.registerDuplicate(key, originalId, persistAlias);
               dedupedPerBatch[i].toolCalls.push(tc);
               dedupedPerBatch[i].rawChars += tc.resultText.length;
             } else {
@@ -413,7 +420,7 @@ export default function (pi: ExtensionAPI) {
             // `display: false` keeps the summary in future LLM context (convertToLlm
             // ignores `display`) while suppressing the full markdown block from Pi's
             // main window; rebuild keys on customType, not display.
-            const batchToolCallIds = batch.toolCalls.map((tc) => tc.toolCallId);
+            const batchOccurrenceKeys = batch.toolCalls.map((tc) => occKey(tc.toolCallId, tc.resultTimestamp));
             if (delivery === "runtime") {
               pi.sendMessage(
                 { customType: CUSTOM_TYPE_SUMMARY, content: summaryText, display: false, details: batchDetails },
@@ -428,7 +435,7 @@ export default function (pi: ExtensionAPI) {
             }
             // Keep the in-memory summary-body registry current so chain compression
             // can build synthetic chain messages without rescanning session entries.
-            indexer.registerSummaryBody(batchToolCallIds, summaryText);
+            indexer.registerSummaryBody(batchOccurrenceKeys, summaryText);
           } else {
             oversizedBatches.push(batch);
           }
@@ -452,7 +459,7 @@ export default function (pi: ExtensionAPI) {
 
       if (processedBatches.length === 0) {
         // Nothing was persisted (all calls failed or first call failed)
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
         return { ok: false, reason: "summarizer-failed" };
       }
 
@@ -525,7 +532,7 @@ export default function (pi: ExtensionAPI) {
         return { ok: false, reason: isStaleContextError(err) ? "stale-context" : "failed", error: errorMessage(err) };
       }
 
-      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
+      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
       emitExternalCost(pi, statsAccum);
 
       // Chain compression — compress closed chains beyond the rolling window.
@@ -636,7 +643,7 @@ export default function (pi: ExtensionAPI) {
       // When the abort signal fired, summarizeBatch rethrows rather than
       // swallowing the error.  Don't show a UI error — the user intended this.
       if (options.signal?.aborted) {
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
         return { ok: false, reason: "aborted" };
       }
       if (isStaleContextError(err)) {
@@ -663,6 +670,7 @@ export default function (pi: ExtensionAPI) {
     // Rebuild stats accumulator from persisted session entries
     statsAccum.reconstructFromSession(ctx);
     fallbackController.reset();
+    diagnostics.reset();
 
     // Rebuild prune frontier from persisted session entries
     frontier.reconstructFromSession(ctx);
@@ -672,7 +680,7 @@ export default function (pi: ExtensionAPI) {
     previousFraction = null;
 
     // Update footer status
-    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
 
     ctx.ui.setWidget(
       "pruner-boot",
@@ -695,6 +703,7 @@ export default function (pi: ExtensionAPI) {
     indexer.reconstructFromSession(ctx);
     blockRefs.rebuildFrom(indexer.getChainEntries().map((e) => e.blockId));
     statsAccum.reconstructFromSession(ctx);
+    diagnostics.reset();
     frontier.reconstructFromSession(ctx);
     // Pending batches belong to the old branch — discard them
     pendingBatches.length = 0;
@@ -825,7 +834,7 @@ export default function (pi: ExtensionAPI) {
 
     // pruneMessages is the single source of truth for "is there work to do".
     // It returns the original array reference (pruned: false) only when none of
-    // the three phases changed anything; index/registry emptiness alone does not
+    // the four phases changed anything; index/registry emptiness alone does not
     // imply a no-op, since error-purge (phase 2) prunes independently of them.
     // Calling it unconditionally is safe and avoids a split gate here.
     const result = pruneMessages(
@@ -835,13 +844,14 @@ export default function (pi: ExtensionAPI) {
       currentConfig.value.purgeErrors,
       currentConfig.value,
       currentConfig.value.recoveryGraceTurns,
+      diagnostics,
     );
     if (result.pruned) {
       messages = result.messages;
       changed = true;
       statsAccum.setLiveReclaim(result.beforeChars, result.afterChars);
     }
-    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim());
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
 
     if (!changed) return undefined;
     return { messages };
@@ -878,5 +888,5 @@ export default function (pi: ExtensionAPI) {
     return { compressedEntries: result.compressedEntries, skipped: result.skipped.filter((s) => s.reason === "no-summary").length };
   };
 
-  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, () => statsAccum.getStats(), () => statsAccum.getLiveReclaim(), indexer, compactChains);
+  registerCommands(pi, currentConfig, flushPending, capturePendingBatches, () => statsAccum.getStats(), () => statsAccum.getLiveReclaim(), indexer, compactChains, () => diagnostics.counts());
 }

@@ -1,4 +1,5 @@
 import type { CapturedBatch, CapturedToolCall, BatchingMode } from "./types.js";
+import { occKey, resultTimestampOf } from "./occurrence-key.js";
 
 /** Joins the text blocks of a ToolResultMessage into a single string. */
 export function extractToolResultText(msg: any): string {
@@ -37,6 +38,7 @@ export function captureBatch(
 
       let resultText = "(no result)";
       let isError = false;
+      const resultTimestamp = match ? resultTimestampOf(match.timestamp) : undefined;
 
       if (match) {
         resultText = extractToolResultText(match);
@@ -49,6 +51,7 @@ export function captureBatch(
         args: block.input ?? block.args ?? block.arguments ?? {},
         resultText,
         isError,
+        ...(resultTimestamp !== undefined ? { resultTimestamp } : {}),
       } satisfies CapturedToolCall;
     });
 
@@ -70,14 +73,7 @@ export function captureUnindexedBatchesFromSession(
 ): CapturedBatch[] {
   // branch is SessionEntry[]. Each message entry has { type: "message", message: AgentMessage }.
   // We must unwrap the SessionEntry wrapper before accessing role/toolCallId.
-  const resultMap = new Map<string, any>();
-  for (const entry of branch) {
-    if (entry.type !== "message") continue;
-    const m = entry.message;
-    if (m.role === "toolResult" && m.toolCallId) {
-      resultMap.set(m.toolCallId, m);
-    }
-  }
+  const entries = branch.filter((entry: any) => entry.type === "message");
 
   const batches: CapturedBatch[] = [];
   // turnCounter increments for EVERY assistant message (not just prunable ones).
@@ -93,8 +89,8 @@ export function captureUnindexedBatchesFromSession(
   // a single user → final-agent-message span when batchingMode === "agent-message".
   let userTurnGroup = 0;
 
-  for (const entry of branch) {
-    if (entry.type !== "message") continue;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
     const msg = entry.message;
 
     // Advance userTurnGroup on every user message so all subsequent assistant
@@ -109,6 +105,17 @@ export function captureUnindexedBatchesFromSession(
     // Stable turn index: count every assistant message regardless of pruning state
     const currentTurnIndex = turnCounter++;
 
+    // Per-turn result map: only the results between this assistant message and
+    // the next one. A branch-wide map is last-wins and mis-pairs repeated ids.
+    const turnResults = new Map<string, any>();
+    for (let j = i + 1; j < entries.length; j++) {
+      const m = entries[j].message;
+      if (m.role === "assistant") break;
+      if (m.role === "toolResult" && m.toolCallId && !turnResults.has(m.toolCallId)) {
+        turnResults.set(m.toolCallId, m);
+      }
+    }
+
     const content = Array.isArray(msg.content) ? msg.content : [];
     const toolCallBlocks = content.filter((c: any) => c.type === "toolCall");
 
@@ -116,13 +123,15 @@ export function captureUnindexedBatchesFromSession(
     const readyToPrune = toolCallBlocks.filter((tc: any) => {
       const id = tc.id;
       if (!id) return false;
-      if (indexer.isSummarized(id)) return false;
+      const result = turnResults.get(id);
+      if (!result) return false;
+      if (indexer.isSummarized(occKey(id, resultTimestampOf(result.timestamp)))) return false;
       if (exclude(tc.name, tc.input ?? tc.arguments)) return false;
-      return resultMap.has(id);
+      return true;
     });
 
     if (readyToPrune.length > 0) {
-      const results = readyToPrune.map((tc: any) => resultMap.get(tc.id));
+      const results = readyToPrune.map((tc: any) => turnResults.get(tc.id));
       const readyIds = new Set(readyToPrune.map((tc: any) => tc.id));
       // We pass the full message but then trim back down to only the tool calls
       // whose results already exist in the session. This lets a flush prune

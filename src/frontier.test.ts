@@ -85,6 +85,7 @@ describe("PruneFrontierTracker.reconstructFromSession", () => {
 
     const indexer = {
       isSummarized: (id: string) => id === "tc-old" || id === "tc-stub",
+      hasLegacyBareRecord: (id: string) => id === "tc-old" || id === "tc-stub",
       getShortRefForToolCallId: (id: string) => (id === "tc-stub" ? "t1" : id === "tc-old" ? "told" : undefined),
       getRecord: () => undefined,
       getChainEntries: () => [chainEntry],

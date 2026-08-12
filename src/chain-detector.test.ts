@@ -259,6 +259,55 @@ describe("detectChains protectedToolCallIds", () => {
   });
 });
 
+describe("middleOccurrenceKeys", () => {
+  test("emits one occurrence key per middle tool result", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1000 },
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_1", name: "bash", input: {} }], timestamp: 1100 },
+      { role: "toolResult", toolCallId: "bash_1", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1150 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 1200 },
+    ];
+    const [chain] = detectChains(messages);
+    expect(chain.middleToolCallIds).toEqual(["bash_1"]);
+    expect(chain.middleOccurrenceKeys).toEqual(["bash_1@1150"]);
+  });
+
+  test("a tool call with no result contributes no occurrence key", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1000 },
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_1", name: "bash", input: {} }], timestamp: 1100 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 1200 },
+    ];
+    const [chain] = detectChains(messages);
+    expect(chain.middleToolCallIds).toEqual(["bash_1"]);
+    expect(chain.middleOccurrenceKeys).toEqual([]);
+  });
+
+  test("two chains reusing one id get distinct occurrence keys", () => {
+    const turn = (base: number) => [
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: base },
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: base + 100 },
+      { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: base + 150 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: base + 200 },
+    ];
+    const chains = detectChains([...turn(1000), ...turn(2000)]);
+    expect(chains.map((c) => c.middleOccurrenceKeys)).toEqual([["bash_23@1150"], ["bash_23@2150"]]);
+  });
+
+  test("an interrupted chain still reports the keys it collected", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "a" }], timestamp: 1000 },
+      { role: "assistant", content: [{ type: "toolCall", id: "bash_1", name: "bash", input: {} }], timestamp: 1100 },
+      { role: "toolResult", toolCallId: "bash_1", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1150 },
+      { role: "user", content: [{ type: "text", text: "b" }], timestamp: 2000 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 2200 },
+    ];
+    const [interrupted] = detectChains(messages);
+    expect(interrupted.finalAssistantTimestamp).toBeNull();
+    expect(interrupted.middleOccurrenceKeys).toEqual(["bash_1@1150"]);
+  });
+});
+
 describe("withClosingMessage", () => {
   test("undefined closing returns the same array reference", () => {
     const msgs = [userMsg(100)];

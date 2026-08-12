@@ -5,6 +5,7 @@ import {
   type CapturedBatch,
   type ChainCompressionEntry,
   type FlushOptions,
+  type DiagnosticKind,
   PRUNE_ON_MODES,
   BATCHING_MODES,
   STATUS_WIDGET_ID,
@@ -57,25 +58,38 @@ class SettingsOverlay extends Container {
 
 // ── Status widget text ──────────────────────────────────────────────────────
 
-export function pruneStatusText(config: ContextPruneConfig, reclaim?: LiveReclaim): string {
+export function pruneStatusText(
+  config: ContextPruneConfig,
+  reclaim?: LiveReclaim,
+  diagnostics?: Record<DiagnosticKind, number>,
+): string {
   if (!config.enabled) return "prune: OFF";
-  if (!reclaim || reclaim.beforeChars <= 0) return "prune: ON";
+  const diag = diagnostics
+    ? [
+        diagnostics["unresolved-range"] ? `u${diagnostics["unresolved-range"]}` : "",
+        diagnostics["range-id-mismatch"] ? `m${diagnostics["range-id-mismatch"]}` : "",
+        diagnostics["orphan-sweep"] ? `o${diagnostics["orphan-sweep"]}` : "",
+      ].filter(Boolean)
+    : [];
+  const suffix = diag.length > 0 ? ` \u00b7 diag ${diag.join("/")}` : "";
+  if (!reclaim || reclaim.beforeChars <= 0) return `prune: ON${suffix}`;
   const beforeTok = Math.round(reclaim.beforeChars / 4);
   const afterTok = Math.round(reclaim.afterChars / 4);
   const reduction = Math.max(0, Math.round((1 - afterTok / beforeTok) * 100));
-  return `prune: ON \u00b7 ${formatCompactCount(beforeTok)}->${formatCompactCount(afterTok)} (-${reduction}%)`;
+  return `prune: ON \u00b7 ${formatCompactCount(beforeTok)}->${formatCompactCount(afterTok)} (-${reduction}%)${suffix}`;
 }
 
 export function setPruneStatusWidget(
   ctx: { ui: { setStatus: (id: string, text?: string) => void } },
   config: ContextPruneConfig,
   value?: LiveReclaim | string,
+  diagnostics?: Record<DiagnosticKind, number>,
 ): void {
   if (!config.showPruneStatusLine) {
     ctx.ui.setStatus(STATUS_WIDGET_ID, undefined);
     return;
   }
-  const text = typeof value === "string" ? value : pruneStatusText(config, value);
+  const text = typeof value === "string" ? value : pruneStatusText(config, value, diagnostics);
   // Leading-only separator: the footer joins extension status segments with a
   // single space, so a trailing divider collides with the next segment's leading
   // one and renders doubled. One leading bar yields single dividers between
@@ -455,6 +469,7 @@ export function registerCommands(
   getLiveReclaim: () => LiveReclaim | undefined,
   indexer: ToolCallIndexer,
   compactChains: (ctx: ExtensionCommandContext) => Promise<{ compressedEntries: ChainCompressionEntry[]; skipped: number }>,
+  getDiagnosticCounts?: () => Record<DiagnosticKind, number>,
 ): void {
   // Register the /pruner command
   pi.registerCommand("pruner", {
@@ -801,7 +816,7 @@ export function registerCommands(
             }
             currentConfig.value = newConfig;
             saveConfig(newConfig);
-            setPruneStatusWidget(ctx, newConfig, getLiveReclaim());
+            setPruneStatusWidget(ctx, newConfig, getLiveReclaim(), getDiagnosticCounts?.());
             settingsList?.invalidate();
           };
 
@@ -836,7 +851,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: true };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning enabled.");
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;
         }
 
@@ -845,7 +860,7 @@ export function registerCommands(
           currentConfig.value = { ...currentConfig.value, enabled: false };
           saveConfig(currentConfig.value);
           ctx.ui.notify("Context pruning disabled.");
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;
         }
 
@@ -964,7 +979,7 @@ export function registerCommands(
             currentConfig.value = { ...currentConfig.value, pruneOn: modeArg as ContextPruneConfig["pruneOn"] };
           }
           saveConfig(currentConfig.value);
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;
         }
 
@@ -1011,7 +1026,7 @@ export function registerCommands(
             // tool-result savings; but assistant-message savings (thinking + toolCall args + text)
             // are not counted at all, so the two errors partly cancel. Treat as a rough proxy.
             const droppedChars = compressedEntries.reduce((total, entry) => {
-              const records = indexer.lookupToolCalls(entry.droppedToolCallIds);
+              const records = indexer.lookupToolCalls(entry.droppedOccurrenceKeys ?? entry.droppedToolCallIds);
               return total + records.reduce((s, r) => s + r.resultText.length, 0);
             }, 0);
             const reclaimedTokens = Math.ceil(droppedChars / 4);
@@ -1061,7 +1076,7 @@ export function registerCommands(
 
           // Remove the widget and restore the normal footer status.
           clearWidget();
-          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim());
+          setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
 
           if (!result.ok) {
             const suffix = "error" in result && result.error ? ` (${result.error})` : "";

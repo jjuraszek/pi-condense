@@ -3,6 +3,8 @@ import { selectEligible, compressEligible } from "./chain-compressor.js";
 import type { ChainCompressorIndexerDeps } from "./chain-compressor.js";
 import type { ChainRange, ChainCompressionEntry } from "./types.js";
 import { CUSTOM_TYPE_CHAIN } from "./types.js";
+import { detectChains } from "./chain-detector.js";
+import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 
 function closed(startUserTimestamp: number, toolCallIds: string[] = [`tc-${startUserTimestamp}`]): ChainRange {
   return { startUserTimestamp, middleToolCallIds: toolCallIds, finalAssistantTimestamp: startUserTimestamp + 100 };
@@ -311,5 +313,117 @@ describe("selectEligible - recovery grace deferral", () => {
     const chains = [chain(1, ["a"]), chain(2, ["b"]), chain(3, ["c"]), chain(4, ["d", "t1"]), chain(5, ["e"])];
     const eligible = selectEligible(chains, 2, new Set(), new Set(["t1"]));
     expect(eligible.map((c) => c.startUserTimestamp)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("occurrence keys in compression", () => {
+  const chain = {
+    startUserTimestamp: 1000,
+    middleToolCallIds: ["bash_23"],
+    middleOccurrenceKeys: ["bash_23@1150"],
+    protectedToolCallIds: [],
+    finalAssistantTimestamp: 1200,
+  };
+
+  test("summary/toolRef lookups receive occurrence keys, not bare ids", async () => {
+    const asked: string[][] = [];
+    const deps = {
+      indexer: {
+        getChainEntries: () => [],
+        hasPerBatchSummaryCoveringAny: (ids: string[]) => (asked.push(ids), true),
+        getPerBatchSummariesForToolCallIds: (ids: string[]) => (asked.push(ids), ["s1"]),
+        getToolRefsForToolCallIds: (ids: string[]) => (asked.push(ids), ["t1"]),
+        registerChain: () => {},
+      },
+      blockRefs: { issue: () => "b1" },
+      appendEntry: () => {},
+      now: () => 5000,
+    };
+    await compressEligible([chain as any], 0, deps as any);
+    expect(asked).toEqual([["bash_23@1150"], ["bash_23@1150"]]);
+  });
+
+  test("persists droppedOccurrenceKeys alongside droppedToolCallIds", async () => {
+    const appended: any[] = [];
+    const deps = {
+      indexer: {
+        getChainEntries: () => [],
+        hasPerBatchSummaryCoveringAny: () => true,
+        getPerBatchSummariesForToolCallIds: () => ["s1"],
+        getToolRefsForToolCallIds: () => ["t1"],
+        registerChain: () => {},
+      },
+      blockRefs: { issue: () => "b1" },
+      appendEntry: (_t: string, data: unknown) => appended.push(data),
+      now: () => 5000,
+    };
+    const { compressedEntries } = await compressEligible([chain as any], 0, deps as any);
+    expect(compressedEntries[0].droppedToolCallIds).toEqual(["bash_23"]);
+    expect(compressedEntries[0].droppedOccurrenceKeys).toEqual(["bash_23@1150"]);
+    expect((appended[0] as any).droppedOccurrenceKeys).toEqual(["bash_23@1150"]);
+  });
+
+  test("a chain without middleOccurrenceKeys falls back to bare ids", async () => {
+    const deps = {
+      indexer: {
+        getChainEntries: () => [],
+        hasPerBatchSummaryCoveringAny: () => true,
+        getPerBatchSummariesForToolCallIds: () => ["s1"],
+        getToolRefsForToolCallIds: () => ["t1"],
+        registerChain: () => {},
+      },
+      blockRefs: { issue: () => "b1" },
+      appendEntry: () => {},
+      now: () => 5000,
+    };
+    const { compressedEntries } = await compressEligible(
+      [{ ...chain, middleOccurrenceKeys: undefined } as any],
+      0,
+      deps as any,
+    );
+    expect(compressedEntries[0].droppedOccurrenceKeys).toBeUndefined();
+  });
+});
+
+describe("selectEligible - recovery grace wiring (production boundary)", () => {
+  // Crosses the real boundary: real detectChains() + real inGraceRecoveryToolCallIds()
+  // feed real selectEligible(). Hand-injecting bare ids (as the suite above does) hides
+  // the format mismatch this test pins down.
+  it("does not compress a chain whose recovery-query result is still in grace", () => {
+    const messages = [
+      { role: "user", timestamp: 1, content: [{ type: "text", text: "u1" }] },
+      {
+        role: "assistant",
+        timestamp: 1,
+        content: [{ type: "toolCall", id: "t1", name: "context_tree_query", input: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "t1",
+        toolName: "context_tree_query",
+        timestamp: 100,
+        content: [{ type: "text", text: "recovered" }],
+      },
+      { role: "assistant", timestamp: 2, content: [{ type: "text", text: "done" }] },
+      { role: "user", timestamp: 3, content: [{ type: "text", text: "u2" }] },
+      { role: "assistant", timestamp: 3, content: [{ type: "toolCall", id: "b", name: "bash", input: {} }] },
+      {
+        role: "toolResult",
+        toolCallId: "b",
+        toolName: "bash",
+        timestamp: 200,
+        content: [{ type: "text", text: "ok" }],
+      },
+      { role: "assistant", timestamp: 4, content: [{ type: "text", text: "done2" }] },
+    ];
+
+    const chains = detectChains(messages);
+    expect(chains.map((c) => c.startUserTimestamp)).toEqual([1, 3]);
+
+    const inGrace = inGraceRecoveryToolCallIds(messages, 3);
+    expect([...inGrace]).toEqual(["t1@100"]);
+
+    const eligible = selectEligible(chains, 0, new Set(), inGrace);
+    expect(eligible.map((c) => c.startUserTimestamp)).toEqual([3]);
   });
 });

@@ -10,7 +10,7 @@
  *   event.toolResults = ToolResultMessage[] (one per tool call in this turn)
  *
  * STATE MODEL (Ph1 step 3):
- *   - Runtime state: Map<toolCallId, ToolCallRecord> rebuilt on session_start
+ *   - Runtime state: Map<occurrenceKey, ToolCallRecord> rebuilt on session_start
  *   - Session metadata: pi.appendEntry("context-prune-index", IndexEntryData)
  *     stored once per summarized batch; NOT in LLM context
  *   - User config: .pi/settings.json → "contextPrune" key (JSON merge safe,
@@ -77,6 +77,22 @@ export const CUSTOM_TYPE_DEDUP_ALIAS = "context-prune-dedup-alias";
  * Written by `chain-compressor.compressEligible` at the tail of `flushPending` and via `/pruner compact`.
  */
 export const CUSTOM_TYPE_CHAIN = "context-prune-chain";
+
+/**
+ * Written via pi.appendEntry(CUSTOM_TYPE_DIAGNOSTIC, data) when a prune-time
+ * invariant degrades. NOT in LLM context: zero tokens, zero cache-prefix
+ * change. Deduplication is a runtime concern of the diagnostic sink
+ * (src/diagnostics.ts), which takes a caller-supplied dedup key and never
+ * persists it - the persisted entry carries only `kind` plus a freeform `detail`.
+ */
+export const CUSTOM_TYPE_DIAGNOSTIC = "context-prune-diagnostic";
+
+export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep";
+
+export interface DiagnosticEntryData {
+  kind: DiagnosticKind;
+  detail: string;
+}
 
 /** The registered name of the recovery tool (src/query-tool.ts). Shared so the
  * grace checks in pruner.ts / chain-compressor.ts cannot drift from registration. */
@@ -397,13 +413,22 @@ export interface ChainRange {
   /** Timestamp of the user message that opens the chain. */
   startUserTimestamp: number;
   /**
-   * All toolCallIds in the chain's middle (deduplicated).
-   * Collected from both AssistantMessage ToolCall blocks AND matching
-   * ToolResultMessages. Used to: (1) drop ToolResultMessages, (2) identify
-   * and drop middle AssistantMessages, (3) suppress per-batch summary
-   * CustomMessages whose toolCallRefs overlap.
+   * All toolCallIds in the chain's middle (deduplicated). Collected from both
+   * AssistantMessage ToolCall blocks AND matching ToolResultMessages.
+   * Identifies the chain's middle tool calls for detection, recovery-grace
+   * filtering and diagnostics. NOT used for the load-bearing indexer lookups
+   * (summary bodies, tool refs) - those maps are occurrence-keyed, so use
+   * the sibling `middleOccurrenceKeys` instead. Drops themselves are decided
+   * positionally by `resolveRange` in chain-range-prune.ts, not by these ids.
    */
   middleToolCallIds: string[];
+  /**
+   * Occurrence keys (`id@resultTimestamp`) for the chain's middle tool
+   * results, collected from the ToolResultMessages themselves. Used for
+   * indexer summary-body / toolRef lookups, which are occurrence-keyed.
+   * Optional so hand-built ChainRange fixtures need not set it.
+   */
+  middleOccurrenceKeys?: string[];
   /**
    * Subset of middleToolCallIds whose tool name ∈ protectedTools (detection-time
    * fact). The detector always emits it ([] when no protected tool ran); optional
@@ -425,12 +450,19 @@ export interface ChainCompressionEntry {
   /** Timestamp of the user message that opens the chain. Keep raw; synthetic inserted after. */
   startUserTimestamp: number;
   /**
-   * ToolCallIds of all dropped middle messages.
-   * Used at context-transform time to: drop matching ToolResultMessages,
-   * drop AssistantMessages that contain any of these as ToolCall blocks,
-   * and suppress per-batch summary messages whose toolCallRefs overlap.
+   * All toolCallIds in the chain's middle. **Diagnostic only** since the
+   * positional-range change: drops are decided by index range (see
+   * resolveRange in chain-range-prune.ts). Retained as a cross-check - a
+   * mismatch against the ids actually dropped emits `range-id-mismatch`.
    */
   droppedToolCallIds: string[];
+  /**
+   * Occurrence keys for the same calls as droppedToolCallIds. Load-bearing at
+   * render time: summaryBodies are occurrence-keyed, so the synthetic chain
+   * body is looked up by these. Absent on pre-upgrade entries, which fall back
+   * to droppedToolCallIds against their own bare-keyed summaryBodies.
+   */
+  droppedOccurrenceKeys?: string[];
   /**
    * Subset of droppedToolCallIds whose tool was user-protected. Membership is decided
    * per call by tool name (every call whose name ∈ protectedTools), not a per-id allowlist.
@@ -523,6 +555,13 @@ export interface CapturedToolCall {
   args: Record<string, unknown>;
   resultText: string;
   isError: boolean;
+  /**
+   * Timestamp of the ToolResultMessage this call was paired with. The
+   * occurrence discriminant (see src/occurrence-key.ts): provider ids repeat
+   * within a session, this does not. Optional so pre-upgrade persisted
+   * entries stay readable; absent => the record is legacy bare-id keyed.
+   */
+  resultTimestamp?: number;
   spillPath?: string;
   spillBytes?: number;
   resultPreview?: string;
@@ -565,6 +604,8 @@ export interface ToolCallRecord {
   isError: boolean;
   turnIndex: number;
   timestamp: number;
+  /** See CapturedToolCall.resultTimestamp. */
+  resultTimestamp?: number;
   /** Absolute path to the sidecar blob holding the full body (set only when the result was spilled). */
   spillPath?: string;
   /** Full byte length of the spilled body. */
@@ -603,6 +644,9 @@ export interface IndexEntryData {
 export interface DedupAliasEntryData {
   newToolCallId: string;
   originalToolCallId: string;
+  /** Occurrence timestamps for each side; absent on pre-upgrade entries. */
+  newResultTimestamp?: number;
+  originalResultTimestamp?: number;
   hash?: string;
 }
 
@@ -613,6 +657,8 @@ export interface DedupAliasEntryData {
 export interface SummaryToolCallRef {
   shortId: string;
   toolCallId: string;
+  /** ToolResultMessage timestamp; with toolCallId this forms the occurrence key. */
+  resultTimestamp?: number;
 }
 
 /**

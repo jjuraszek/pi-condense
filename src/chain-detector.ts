@@ -1,3 +1,4 @@
+import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { ChainRange } from "./types.js";
 
 /** Prefix that identifies a synthetic chain-compression user message. */
@@ -45,6 +46,7 @@ export function detectChains(
   let state: State = "idle";
   let chainStart: { timestamp: number } | null = null;
   let middleIds = new Set<string>();
+  let middleKeys = new Set<string>();
   let protectedIds = new Set<string>();
 
   const emitInterrupted = () => {
@@ -52,6 +54,7 @@ export function detectChains(
       ranges.push({
         startUserTimestamp: chainStart.timestamp,
         middleToolCallIds: [...middleIds],
+        middleOccurrenceKeys: [...middleKeys],
         protectedToolCallIds: [...protectedIds],
         finalAssistantTimestamp: null,
       });
@@ -64,6 +67,7 @@ export function detectChains(
       emitInterrupted();
       chainStart = { timestamp: msg.timestamp };
       middleIds = new Set();
+      middleKeys = new Set();
       protectedIds = new Set();
       state = "inChain";
       continue;
@@ -82,6 +86,7 @@ export function detectChains(
     if (msg.role === "toolResult") {
       if (msg.toolCallId) {
         middleIds.add(msg.toolCallId);
+        middleKeys.add(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)));
         // toolResult fallback — results carry no args; name-only by design,
         // the assistant block always precedes its result so no protection is lost
         if (isProtected(msg.toolName, undefined)) protectedIds.add(msg.toolCallId);
@@ -93,11 +98,13 @@ export function detectChains(
       ranges.push({
         startUserTimestamp: chainStart!.timestamp,
         middleToolCallIds: [...middleIds],
+        middleOccurrenceKeys: [...middleKeys],
         protectedToolCallIds: [...protectedIds],
         finalAssistantTimestamp: msg.timestamp,
       });
       chainStart = null;
       middleIds = new Set();
+      middleKeys = new Set();
       protectedIds = new Set();
       state = "idle";
     }

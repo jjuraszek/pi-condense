@@ -6,9 +6,13 @@ const cfg = (enabled: boolean): ContextPruneConfig => ({ enabled } as ContextPru
 const cfgVisible = (enabled: boolean): ContextPruneConfig =>
   ({ enabled, showPruneStatusLine: true } as ContextPruneConfig);
 
-function captureStatus(config: ContextPruneConfig, value?: Parameters<typeof setPruneStatusWidget>[2]): string | undefined {
+function captureStatus(
+  config: ContextPruneConfig,
+  value?: Parameters<typeof setPruneStatusWidget>[2],
+  diagnostics?: Parameters<typeof setPruneStatusWidget>[3],
+): string | undefined {
   let captured: string | undefined;
-  setPruneStatusWidget({ ui: { setStatus: (_id, text) => { captured = text; } } }, config, value);
+  setPruneStatusWidget({ ui: { setStatus: (_id, text) => { captured = text; } } }, config, value, diagnostics);
   return captured;
 }
 
@@ -63,5 +67,30 @@ describe("setPruneStatusWidget", () => {
 
   it("clears (no wrap) when the status line is hidden", () => {
     expect(captureStatus(cfg(true))).toBeUndefined();
+  });
+});
+
+describe("diagnostic counters on the status line", () => {
+  const zeroDiag = { "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0 } as const;
+  const mixedDiag = { "unresolved-range": 2, "range-id-mismatch": 0, "orphan-sweep": 1 } as const;
+
+  it("omits the diagnostic segment when all counters are zero", () => {
+    expect(pruneStatusText(cfg(true), undefined, zeroDiag)).toBe("prune: ON");
+  });
+
+  it("appends a compact segment when a counter fires, omitting zero kinds", () => {
+    const text = pruneStatusText(cfg(true), undefined, mixedDiag);
+    expect(text).toBe("prune: ON \u00b7 diag u2/o1");
+  });
+
+  it("appends the diagnostic segment to the reclaim form too", () => {
+    const text = pruneStatusText(cfg(true), { beforeChars: 368000, afterChars: 56000 }, mixedDiag);
+    expect(text).toBe("prune: ON \u00b7 92.0k->14.0k (-85%) \u00b7 diag u2/o1");
+  });
+
+  it("setPruneStatusWidget forwards the counters", () => {
+    expect(captureStatus(cfgVisible(true), undefined, { "unresolved-range": 1, "range-id-mismatch": 0, "orphan-sweep": 0 })).toBe(
+      "\u2502 prune: ON \u00b7 diag u1",
+    );
   });
 });

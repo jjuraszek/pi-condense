@@ -46,6 +46,11 @@ describe("oversized spill end-to-end", () => {
       // (c) pruneMessages emits the mechanical spill stub (no summary, no LLM)
       const msgs = [
         {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "tc1", name: "fetch", input: {} }],
+          timestamp: 0,
+        },
+        {
           role: "toolResult",
           toolCallId: "tc1",
           toolName: "fetch",
@@ -56,8 +61,8 @@ describe("oversized spill end-to-end", () => {
       ];
       const { messages: out, pruned } = pruneMessages(msgs as any, indexer);
       expect(pruned).toBe(true);
-      expect((out[0] as any).content[0].text).toContain(blobPathFor(dir, "sid", "tc1"));
-      expect((out[0] as any).content[0].text).not.toContain("Summarized in pruner summary");
+      expect((out[1] as any).content[0].text).toContain(blobPathFor(dir, "sid", "tc1"));
+      expect((out[1] as any).content[0].text).not.toContain("Summarized in pruner summary");
 
       // (d) reconstruct from the persisted entries: record still resolves, hash intact
       const indexer2 = new ToolCallIndexer();

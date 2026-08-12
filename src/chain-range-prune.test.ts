@@ -4,9 +4,12 @@ import {
   buildSyntheticChainMessage,
   isPerBatchSummaryMessage,
   perBatchSummaryOverlapsDropped,
+  resolveRange,
   withoutThinkingBlocks,
 } from "./chain-range-prune.js";
+import { CUSTOM_TYPE_SUMMARY } from "./types.js";
 import type { ChainCompressionEntry } from "./types.js";
+import { expectNoOrphanToolResults, expectZeroOrphanSweep } from "./test-support.js";
 
 
 function userMsg(timestamp: number, text = "do the thing"): any {
@@ -56,6 +59,19 @@ function summaryMsg(timestamp: number, toolCallIds: string[]): any {
   };
 }
 
+function summaryMsgOcc(timestamp: number, refs: { toolCallId: string; resultTimestamp: number }[]): any {
+  return {
+    role: "custom",
+    customType: "context-prune-summary",
+    content: "summary text",
+    display: false,
+    details: {
+      toolCallRefs: refs.map((r, i) => ({ shortId: `t${i + 1}`, toolCallId: r.toolCallId, resultTimestamp: r.resultTimestamp })),
+    },
+    timestamp,
+  };
+}
+
 function entry(
   blockId: string,
   startUserTimestamp: number,
@@ -92,19 +108,31 @@ describe("isPerBatchSummaryMessage", () => {
 });
 
 describe("perBatchSummaryOverlapsDropped", () => {
-  test("returns true when at least one toolCallRef is in the dropped set", () => {
+  test("returns true when at least one legacy (no resultTimestamp) toolCallRef is in the dropped bare set", () => {
     const msg = summaryMsg(999, ["tc1", "tc2"]);
-    expect(perBatchSummaryOverlapsDropped(msg, new Set(["tc1"]))).toBe(true);
+    expect(perBatchSummaryOverlapsDropped(msg, new Set(), new Set(["tc1"]))).toBe(true);
   });
 
-  test("returns false when no toolCallRefs are in the dropped set", () => {
+  test("returns false when no legacy toolCallRefs are in the dropped bare set", () => {
     const msg = summaryMsg(999, ["tc3"]);
-    expect(perBatchSummaryOverlapsDropped(msg, new Set(["tc1", "tc2"]))).toBe(false);
+    expect(perBatchSummaryOverlapsDropped(msg, new Set(), new Set(["tc1", "tc2"]))).toBe(false);
   });
 
   test("returns false when details is missing", () => {
     const msg = { role: "custom", customType: "context-prune-summary", content: "x", timestamp: 1 };
-    expect(perBatchSummaryOverlapsDropped(msg, new Set(["tc1"]))).toBe(false);
+    expect(perBatchSummaryOverlapsDropped(msg, new Set(), new Set(["tc1"]))).toBe(false);
+  });
+
+  test("an occurrence-keyed ref matches only its exact occurrence, not the bare id of a different one", () => {
+    const msg = summaryMsgOcc(999, [{ toolCallId: "tc1", resultTimestamp: 3150 }]);
+    // Dropped set contains a DIFFERENT occurrence of the same bare id (tc1@2000), plus the bare
+    // id in the legacy fallback set — neither should cause a match for the live tc1@3150 ref.
+    expect(perBatchSummaryOverlapsDropped(msg, new Set(["tc1@2000"]), new Set(["tc1"]))).toBe(false);
+  });
+
+  test("an occurrence-keyed ref matches its exact occurrence in droppedOccKeys", () => {
+    const msg = summaryMsgOcc(999, [{ toolCallId: "tc1", resultTimestamp: 2000 }]);
+    expect(perBatchSummaryOverlapsDropped(msg, new Set(["tc1@2000"]), new Set())).toBe(true);
   });
 });
 
@@ -245,12 +273,39 @@ describe("applyChainCompressions", () => {
   });
 
   test("does not suppress per-batch summary whose toolCallRefs do not overlap", () => {
+    // Summary placed AFTER the resolved range (agent-message batching order) -
+    // positionally-inside summaries are dropped unconditionally regardless of
+    // coverage; coverage-based suppression only applies outside the range.
     const msgs = [
       userMsg(100),
       assistantWithTools(200, ["tc1"]),
       toolResult(300, "tc1"),
-      summaryMsg(350, ["tc2"]), // different toolCallId
       assistantText(400),
+      summaryMsg(450, ["tc2"]), // different toolCallId, outside the range
+    ];
+    const e = entry("b1", 100, ["tc1"], 400);
+    const result = applyChainCompressions(msgs, [e], noopSummary, false);
+    const hasCustomSummary = result.some(
+      (m: any) => m.role === "custom" && m.customType === "context-prune-summary",
+    );
+    expect(hasCustomSummary).toBe(true);
+  });
+
+  test("a live turn's per-batch summary survives even when it reuses a compressed chain's bare id (occurrence collision)", () => {
+    // Compressed chain drops tc1@300 (dropped range: user@100..assistant@400).
+    // A later, LIVE turn reuses the bare id "tc1" with a different resultTimestamp (3150) and
+    // is never dropped (outside the resolved range). Its per-batch summary references that
+    // live occurrence and must not be suppressed by the earlier drop of the same bare id.
+    const msgs = [
+      userMsg(100),
+      assistantWithTools(200, ["tc1"]),
+      toolResult(300, "tc1"),
+      assistantText(400),
+      userMsg(3000),
+      assistantWithTools(3100, ["tc1"]),
+      toolResult(3150, "tc1"),
+      summaryMsgOcc(3200, [{ toolCallId: "tc1", resultTimestamp: 3150 }]),
+      assistantText(3300),
     ];
     const e = entry("b1", 100, ["tc1"], 400);
     const result = applyChainCompressions(msgs, [e], noopSummary, false);
@@ -496,7 +551,7 @@ describe("applyChainCompressions", () => {
     };
     const messages = [
       { role: "user", timestamp: 1, content: [{ type: "text", text: "go" }] },
-      { role: "assistant", timestamp: 2, content: [{ type: "text", text: "done" }] },
+      { role: "assistant", timestamp: 9, content: [{ type: "text", text: "done" }] },
     ];
     const out = applyChainCompressions(messages, [e] as any, () => "SUMMARY", false);
     const synthetic = out.find((m: any) => typeof m.content?.[0]?.text === "string" && m.content[0].text.startsWith("<compressed-chain"));
@@ -518,5 +573,285 @@ describe("applyChainCompressions", () => {
     const synthetic = result.find((m: any) => (m.content?.[0]?.text ?? "").includes("compressed-chain"));
     // {b99} unknown block stays as literal
     expect(synthetic?.content[0].text).toContain("{b99}");
+  });
+});
+
+describe("resolveRange", () => {
+  const base = () => [
+    { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1000 },
+    { role: "assistant", content: [{ type: "toolCall", id: "bash_1", name: "bash", input: {} }], timestamp: 1100 },
+    { role: "toolResult", toolCallId: "bash_1", toolName: "bash", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1150 },
+    { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 1200 },
+  ];
+  const entry = (over: any = {}) => ({
+    blockId: "b1",
+    startUserTimestamp: 1000,
+    droppedToolCallIds: ["bash_1"],
+    droppedOccurrenceKeys: ["bash_1@1150"],
+    finalAssistantTimestamp: 1200,
+    toolRefs: ["t1"],
+    compressedAt: 5000,
+    ...over,
+  });
+
+  test("resolves the unique role-gated boundaries", () => {
+    expect(resolveRange(entry(), base())).toEqual({ startIndex: 0, endIndex: 3 });
+  });
+
+  test("returns null when finalAssistantTimestamp is null", () => {
+    expect(resolveRange(entry({ finalAssistantTimestamp: null }), base())).toBeNull();
+  });
+
+  test("returns null when the start timestamp matches two user messages", () => {
+    const msgs = [...base(), { role: "user", content: [{ type: "text", text: "dup" }], timestamp: 1000 }];
+    expect(resolveRange(entry(), msgs)).toBeNull();
+  });
+
+  test("returns null when a boundary message is absent", () => {
+    expect(resolveRange(entry({ startUserTimestamp: 999 }), base())).toBeNull();
+  });
+
+  test("returns null when the end precedes the start", () => {
+    // Both boundaries resolve uniquely, but the assistant match sits before
+    // the user match positionally - startIndex < endIndex must still hold.
+    const msgs = [
+      { role: "assistant", content: [{ type: "text", text: "early" }], timestamp: 900 },
+      { role: "user", content: [{ type: "text", text: "go" }], timestamp: 1000 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 1200 },
+    ];
+    expect(resolveRange(entry({ finalAssistantTimestamp: 900 }), msgs)).toBeNull();
+  });
+
+  test("ignores a toolResult sharing the final assistant timestamp (role gating)", () => {
+    const msgs = base();
+    msgs[2] = { ...msgs[2], timestamp: 1200 };
+    expect(resolveRange(entry(), msgs)).toEqual({ startIndex: 0, endIndex: 3 });
+  });
+});
+
+describe("applyChainCompressions - positional", () => {
+  // Incident fixture: chains b5/b7 compressed, then a live turn reusing bash_23.
+  const incident = () => [
+    { role: "user", content: [{ type: "text", text: "1" }], timestamp: 1000 },
+    { role: "assistant", content: [{ type: "toolCall", id: "bash_18", name: "bash", input: {} }], timestamp: 1100 },
+    { role: "toolResult", toolCallId: "bash_18", toolName: "bash", content: [{ type: "text", text: "a" }], isError: false, timestamp: 1150 },
+    { role: "assistant", content: [{ type: "text", text: "done 1" }], timestamp: 1200 },
+    { role: "user", content: [{ type: "text", text: "2" }], timestamp: 2000 },
+    { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }], timestamp: 2100 },
+    { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "b" }], isError: false, timestamp: 2150 },
+    { role: "assistant", content: [{ type: "text", text: "done 2" }], timestamp: 2200 },
+    { role: "user", content: [{ type: "text", text: "3" }], timestamp: 3000 },
+    { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }, { type: "toolCall", id: "gauntlet_setting_24", name: "gauntlet_setting", input: {} }], timestamp: 3100 },
+    { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "LIVE" }], isError: false, timestamp: 3150 },
+    { role: "toolResult", toolCallId: "gauntlet_setting_24", toolName: "gauntlet_setting", content: [{ type: "text", text: "LIVE2" }], isError: false, timestamp: 3160 },
+  ];
+  const entries = [
+    // compressedAt kept below 3000 so the "live turn" ts>=3000 filter in the
+    // survives-with-both-results test below doesn't also catch the synthetics.
+    { blockId: "b5", startUserTimestamp: 1000, droppedToolCallIds: ["bash_18"], droppedOccurrenceKeys: ["bash_18@1150"], finalAssistantTimestamp: 1200, toolRefs: ["t1"], compressedAt: 1050 },
+    { blockId: "b7", startUserTimestamp: 2000, droppedToolCallIds: ["bash_23"], droppedOccurrenceKeys: ["bash_23@2150"], finalAssistantTimestamp: 2200, toolRefs: ["t2"], compressedAt: 2050 },
+  ];
+  const summaryFor = (e: any) => `summary ${e.blockId}`;
+
+  test("the live turn reusing a dropped id survives with both of its results", () => {
+    const out = applyChainCompressions(incident(), entries as any, summaryFor, false);
+    const live = out.filter((m: any) => (m.timestamp ?? 0) >= 3000);
+    expect(live).toHaveLength(4);
+    expect(live.filter((m: any) => m.role === "toolResult").map((m: any) => m.toolCallId)).toEqual([
+      "bash_23",
+      "gauntlet_setting_24",
+    ]);
+  });
+
+  test("drops exactly the two chain interiors and inserts both synthetics", () => {
+    const out = applyChainCompressions(incident(), entries as any, summaryFor, false);
+    expect(out).toHaveLength(12 - 4 + 2);
+    const synthetics = out.filter((m: any) => m.role === "user" && m.content?.[0]?.text?.startsWith("<compressed-chain"));
+    expect(synthetics).toHaveLength(2);
+    expect(out.indexOf(synthetics[0])).toBe(1);
+  });
+
+  test("no toolResult survives without its toolCall", () => {
+    const out = applyChainCompressions(incident(), entries as any, summaryFor, false);
+    expectNoOrphanToolResults(out);
+  });
+
+  test("an unresolved entry drops nothing and inserts no synthetic", () => {
+    const reports: any[] = [];
+    const sink = { report: (kind: string, dedupKey: string, detail: string) => reports.push({ kind, dedupKey, detail }), counts: () => ({}) as any };
+    const bad = [{ ...entries[0], finalAssistantTimestamp: null }];
+    const msgs = incident();
+    const out = applyChainCompressions(msgs, bad as any, summaryFor, false, undefined, sink as any);
+    expect(out).toBe(msgs);
+    expect(reports.map((r) => r.kind)).toEqual(["unresolved-range"]);
+  });
+
+  test("re-applying the same entries is a no-op (synthetic preserved)", () => {
+    const first = applyChainCompressions(incident(), entries as any, summaryFor, false);
+    const second = applyChainCompressions(first, entries as any, summaryFor, false);
+    expect(second).toEqual(first);
+  });
+
+  test("a third-party custom message inside a range survives", () => {
+    const msgs = incident();
+    msgs.splice(2, 0, { role: "custom", customType: "other-extension", content: "keepme", timestamp: 1120 } as any);
+    const out = applyChainCompressions(msgs, entries as any, summaryFor, false);
+    expect(out.some((m: any) => m.customType === "other-extension")).toBe(true);
+  });
+
+  test("a per-batch summary AFTER the range is still suppressed (agent-message mode)", () => {
+    const msgs = incident();
+    msgs.splice(4, 0, {
+      role: "custom",
+      customType: CUSTOM_TYPE_SUMMARY,
+      content: "batch summary",
+      details: { toolCallRefs: [{ shortId: "t1", toolCallId: "bash_18", resultTimestamp: 1150 }] },
+      timestamp: 1300,
+    } as any);
+    const out = applyChainCompressions(msgs, entries as any, summaryFor, false);
+    expect(out.some((m: any) => m.customType === CUSTOM_TYPE_SUMMARY)).toBe(false);
+  });
+
+  test("strips thinking at the resolved endIndex only", () => {
+    const msgs = incident();
+    msgs[3] = { ...msgs[3], content: [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "done 1" }] } as any;
+    const out = applyChainCompressions(msgs, entries as any, summaryFor, true);
+    const end = out.find((m: any) => m.timestamp === 1200);
+    expect(end.content.some((c: any) => c.type === "thinking")).toBe(false);
+  });
+
+  test("reports range-id-mismatch when the range drops a different id set", () => {
+    const reports: any[] = [];
+    const sink = { report: (kind: string, dedupKey: string, detail: string) => reports.push({ kind, dedupKey, detail }), counts: () => ({}) as any };
+    const skewed = [{ ...entries[0], droppedToolCallIds: ["bash_18", "ghost_1"] }];
+    applyChainCompressions(incident(), skewed as any, summaryFor, false, undefined, sink as any);
+    expect(reports.map((r) => r.kind)).toContain("range-id-mismatch");
+  });
+
+  test("skips an entry whose start falls strictly inside another entry's range", () => {
+    // b9 opens at the user message at index 4, which sits inside a wide b8
+    // range (index 0 -> 7). b8 wins; b9 contributes nothing and is reported.
+    const wide = { blockId: "b8", startUserTimestamp: 1000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9002 };
+    const nestedInner = { blockId: "b9", startUserTimestamp: 2000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9003 };
+    const reports: any[] = [];
+    const sink = { report: (kind: string, dedupKey: string, detail: string) => reports.push({ kind, dedupKey, detail }), counts: () => ({}) as any };
+    const out = applyChainCompressions(incident(), [wide, nestedInner] as any, summaryFor, false, undefined, sink as any);
+    const synthetics = out.filter((m: any) => m.role === "user" && m.content?.[0]?.text?.startsWith("<compressed-chain"));
+    expect(synthetics.map((m: any) => /id="([^"]+)"/.exec(m.content[0].text)![1])).toEqual(["b8"]);
+    expect(reports.filter((r) => r.kind === "unresolved-range").map((r) => r.dedupKey)).toEqual(["overlap:b9"]);
+    expectNoOrphanToolResults(out);
+  });
+
+  test("a genuinely unresolvable boundary and a benign overlap skip both report unresolved-range but with distinct dedup keys", () => {
+    const wide = { blockId: "b8", startUserTimestamp: 1000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9002 };
+    const nestedInner = { blockId: "b9", startUserTimestamp: 2000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9003 };
+    const brokenBoundary = { ...entries[0], blockId: "b11", finalAssistantTimestamp: null };
+    const reports: any[] = [];
+    const sink = { report: (kind: string, dedupKey: string, detail: string) => reports.push({ kind, dedupKey, detail }), counts: () => ({}) as any };
+    applyChainCompressions(incident(), [wide, nestedInner, brokenBoundary] as any, summaryFor, false, undefined, sink as any);
+    const kinds = reports.filter((r) => r.kind === "unresolved-range");
+    const dedupKeys = kinds.map((r) => r.dedupKey).sort();
+    expect(dedupKeys).toEqual(["b11", "overlap:b9"]);
+    expect(new Set(dedupKeys).size).toBe(dedupKeys.length);
+    const overlapReport = kinds.find((r) => r.dedupKey === "overlap:b9")!;
+    const boundaryReport = kinds.find((r) => r.dedupKey === "b11")!;
+    expect(overlapReport.detail).toContain("b8");
+    expect(boundaryReport.detail).toContain("start=");
+    expect(boundaryReport.detail).toContain("final=");
+  });
+
+  test("two entries resolving to the same startIndex insert one synthetic", () => {
+    const twin = { ...entries[0], blockId: "b10", compressedAt: 9004 };
+    const out = applyChainCompressions(incident(), [entries[0], twin] as any, summaryFor, false);
+    const synthetics = out.filter((m: any) => m.role === "user" && m.content?.[0]?.text?.startsWith("<compressed-chain"));
+    expect(synthetics).toHaveLength(1);
+  });
+
+  describe("G4/C3: orphan-sweep zero-fire proof", () => {
+    // Runs the real orphan sweep (src/orphan-sweep.ts, backing pruner.ts Phase 4)
+    // over the output of every clean applyChainCompressions fixture in this
+    // describe block. None of these are expected to leave an orphan behind -
+    // if one does, that is a real finding (chain-range-prune would be relying
+    // on the sweep as a crutch, not producing clean output on its own).
+    const fixtures: Array<[string, () => any[]]> = [
+      ["the live turn reusing a dropped id survives with both of its results", () => applyChainCompressions(incident(), entries as any, summaryFor, false)],
+      ["drops exactly the two chain interiors and inserts both synthetics", () => applyChainCompressions(incident(), entries as any, summaryFor, false)],
+      ["re-applying the same entries is a no-op", () => applyChainCompressions(applyChainCompressions(incident(), entries as any, summaryFor, false), entries as any, summaryFor, false)],
+      ["a third-party custom message inside a range survives", () => {
+        const msgs = incident();
+        msgs.splice(2, 0, { role: "custom", customType: "other-extension", content: "keepme", timestamp: 1120 } as any);
+        return applyChainCompressions(msgs, entries as any, summaryFor, false);
+      }],
+      ["strips thinking at the resolved endIndex only", () => {
+        const msgs = incident();
+        msgs[3] = { ...msgs[3], content: [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "done 1" }] } as any;
+        return applyChainCompressions(msgs, entries as any, summaryFor, true);
+      }],
+      ["skips an entry whose start falls strictly inside another entry's range", () => {
+        const wide = { blockId: "b8", startUserTimestamp: 1000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9002 };
+        const nestedInner = { blockId: "b9", startUserTimestamp: 2000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9003 };
+        return applyChainCompressions(incident(), [wide, nestedInner] as any, summaryFor, false);
+      }],
+      ["two entries resolving to the same startIndex insert one synthetic", () => {
+        const twin = { ...entries[0], blockId: "b10", compressedAt: 9004 };
+        return applyChainCompressions(incident(), [entries[0], twin] as any, summaryFor, false);
+      }],
+      ["single dropped chain, ordering invariant fixture", () => {
+        const msgs = [
+          userMsg(100),
+          assistantWithTools(200, ["tc1"]),
+          toolResult(300, "tc1"),
+          assistantText(400),
+          userMsg(500),
+          assistantText(600),
+        ];
+        return applyChainCompressions(msgs, [entry("b1", 100, ["tc1"], 400)], noopSummary, false);
+      }],
+      ["multiple chains in one pass", () => {
+        const msgs = [
+          userMsg(100),
+          assistantWithTools(200, ["tc1"]),
+          toolResult(300, "tc1"),
+          assistantText(400),
+          userMsg(500),
+          assistantWithTools(600, ["tc2"]),
+          toolResult(700, "tc2"),
+          assistantText(800),
+          userMsg(900),
+          assistantText(1000),
+        ];
+        const e1 = entry("b1", 100, ["tc1"], 400, ["t1"]);
+        const e2 = entry("b2", 500, ["tc2"], 800, ["t2"]);
+        return applyChainCompressions(msgs, [e1, e2], noopSummary, false);
+      }],
+      ["protected output relocation", () => {
+        const e = {
+          blockId: "b1",
+          startUserTimestamp: 1,
+          droppedToolCallIds: ["tc-read", "tc-todo"],
+          protectedToolCallIds: ["tc-todo"],
+          finalAssistantTimestamp: 9,
+          toolRefs: ["t1", "t2"],
+          compressedAt: 100,
+        };
+        const messages = [
+          { role: "user", timestamp: 1, content: [{ type: "text", text: "go" }] },
+          { role: "assistant", timestamp: 2, content: [
+            { type: "toolCall", id: "tc-read", name: "read" },
+            { type: "toolCall", id: "tc-todo", name: "todowrite" },
+          ] },
+          { role: "toolResult", toolCallId: "tc-read", toolName: "read", content: [{ type: "text", text: "FILE" }] },
+          { role: "toolResult", toolCallId: "tc-todo", toolName: "todowrite", content: [{ type: "text", text: "PLAN-STATE" }] },
+          { role: "assistant", timestamp: 9, content: [{ type: "text", text: "done" }] },
+        ];
+        return applyChainCompressions(messages, [e] as any, () => "SUMMARY", false);
+      }],
+    ];
+
+    for (const [name, run] of fixtures) {
+      test(`zero orphan sweeps: ${name}`, () => {
+        expectZeroOrphanSweep(run());
+      });
+    }
   });
 });

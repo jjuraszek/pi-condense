@@ -5,6 +5,7 @@ import { compressEligible } from "./chain-compressor.js";
 import { pruneMessages } from "./pruner.js";
 import { detectChains } from "./chain-detector.js";
 import { isProtected } from "./protected.js";
+import { bareToolCallId } from "./occurrence-key.js";
 import type { ChainRange, ChainCompressionConfig } from "./types.js";
 
 // End-to-end of the in-memory B path (everything except the LLM call, which is
@@ -185,8 +186,12 @@ describe("range compression integration", () => {
     expect(chains[0].protectedToolCallIds).toEqual(["tc2"]);
 
     // Only unprotected tc1 has a per-batch summary; tc2 is protected, no short ref.
+    // Keyed by the occurrence key detectChains actually produced for tc1's result
+    // (id + resultTimestamp), not the bare toolCallId, so this can't silently drift.
+    const tc1OccKey = chains[0].middleOccurrenceKeys!.find((k) => bareToolCallId(k) === "tc1")!;
+    expect(tc1OccKey).toBeDefined();
     indexer.registerSummaryRefs([{ shortId: "t1", toolCallId: "tc1" }]);
-    indexer.registerSummaryBody(["tc1"], "read app.ts summary");
+    indexer.registerSummaryBody([tc1OccKey], "read app.ts summary");
 
     const { compressedEntries } = await compressEligible(chains, 0, {
       indexer,

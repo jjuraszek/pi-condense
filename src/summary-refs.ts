@@ -1,8 +1,11 @@
 import type { CapturedBatch } from "./types.js";
+import { resultTimestampOf } from "./occurrence-key.js";
 
 export interface SummaryToolCallRef {
   shortId: string;
   toolCallId: string;
+  /** ToolResultMessage timestamp; combines with toolCallId into the occurrence key. */
+  resultTimestamp?: number;
 }
 
 export interface SummaryMessageDetailsLike {
@@ -13,12 +16,13 @@ export interface SummaryMessageDetailsLike {
 const SHORT_ID_PREFIX = "t";
 
 export function buildShortToolCallRefs(
-  toolCallIds: string[],
+  calls: { toolCallId: string; resultTimestamp?: number }[],
   startIndex: number,
 ): { refs: SummaryToolCallRef[]; nextIndex: number } {
-  const refs = toolCallIds.map((toolCallId, offset) => ({
+  const refs = calls.map((call, offset) => ({
     shortId: `${SHORT_ID_PREFIX}${startIndex + offset}`,
-    toolCallId,
+    toolCallId: call.toolCallId,
+    ...(call.resultTimestamp !== undefined ? { resultTimestamp: call.resultTimestamp } : {}),
   }));
   return { refs, nextIndex: startIndex + refs.length };
 }
@@ -33,7 +37,14 @@ export function normalizeSummaryToolCallRefs(details: unknown): SummaryToolCallR
         (ref): ref is SummaryToolCallRef =>
           !!ref && typeof ref.shortId === "string" && typeof ref.toolCallId === "string",
       )
-      .map((ref) => ({ shortId: ref.shortId, toolCallId: ref.toolCallId }));
+      .map((ref) => {
+        const resultTimestamp = resultTimestampOf((ref as any).resultTimestamp);
+        return {
+          shortId: ref.shortId,
+          toolCallId: ref.toolCallId,
+          ...(resultTimestamp !== undefined ? { resultTimestamp } : {}),
+        };
+      });
   }
 
   if (Array.isArray(raw.toolCallIds)) {

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { CapturedBatch, CapturedToolCall } from "./types.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import { hashToolResult } from "./content-hash.js";
+import { occKey } from "./occurrence-key.js";
 
 /** Replace anything outside [A-Za-z0-9_-] so the id can't escape the blob dir. */
 export function sanitizeId(toolCallId: string): string {
@@ -50,18 +51,19 @@ export async function spillOversizedBatch(args: {
   for (const tc of batch.toolCalls) {
     if (tc.resultText.length < config.spillThreshold) continue;
 
+    const key = occKey(tc.toolCallId, tc.resultTimestamp);
     const hash = hashToolResult(tc.toolName, tc.resultText);
 
     if (config.dedupByContentHash) {
       const original = indexer.lookupByContent(tc.toolName, tc.resultText);
-      if (original && original !== tc.toolCallId) {
-        indexer.registerDuplicate(tc.toolCallId, original, appendEntry);
+      if (original && original !== key) {
+        indexer.registerDuplicate(key, original, appendEntry);
         handled.add(tc.toolCallId);
         continue;
       }
     }
 
-    const path = blobPathFor(sessionDir, sessionId, tc.toolCallId);
+    const path = blobPathFor(sessionDir, sessionId, key);
     try {
       await mkdir(blobDirFor(sessionDir, sessionId), { recursive: true });
       await writeFile(path, tc.resultText, "utf-8");

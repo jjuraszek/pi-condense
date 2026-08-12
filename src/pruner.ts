@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import type { ToolCallIndexer } from "./indexer.js";
 import type { ChainCompressionConfig, ErrorPurgeConfig } from "./types.js";
 import { isProtected, type ProtectionConfig } from "./protected.js";
 import { applyChainCompressions } from "./chain-range-prune.js";
 import { purgeErroredArgs } from "./error-purge.js";
 import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
+import { occKey } from "./occurrence-key.js";
+import { sweepOrphanToolResults } from "./orphan-sweep.js";
+import type { DiagnosticSink } from "./diagnostics.js";
 
 /**
  * Estimate of a message array's context weight. Serializing the whole array
@@ -16,7 +20,7 @@ export function sizeMessages(messages: any[]): number {
 }
 
 /**
- * Transforms the `context` event message array in three phases:
+ * Transforms the `context` event message array in four phases:
  *
  * Phase 1 — stub-replace: ToolResultMessages for summarized tool calls are
  * replaced with short stubs pointing the model at `context_tree_query`.
@@ -42,6 +46,12 @@ export function sizeMessages(messages: any[]): number {
  * synthetic user message wrapping the existing per-batch summary text.
  * Only runs when `chainCompression.enabled` and chain entries exist.
  *
+ * Phase 4 — orphan sweep: structural post-condition run unconditionally over
+ * the final array. Removes any toolResult whose matching toolCall id was not
+ * opened by the immediately preceding assistant turn (per-turn open set, not
+ * cumulative — see src/orphan-sweep.ts). Reference-preserving when nothing is
+ * swept, so a clean render still returns the identical input array.
+ *
  * Return shape:
  *   - `pruned: true`  — at least one change happened; the returned
  *     `messages` is a freshly allocated array.
@@ -66,46 +76,61 @@ export function pruneMessages(
   errorPurge?: ErrorPurgeConfig,
   protection?: ProtectionConfig,
   recoveryGraceTurns: number = 0,
+  diagnostics?: DiagnosticSink,
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
   const inGrace = inGraceRecoveryToolCallIds(messages, recoveryGraceTurns);
   const next = messages.map((msg) => {
-    if (msg.role === "toolResult" && indexer.isSummarized(msg.toolCallId)) {
-      const record = indexer.getRecord(msg.toolCallId);
-      // Render-time re-check: a record summarized before protectedPaths
-      // covered it is repaired here — the raw toolResult still lives in the
-      // session JSONL, so skipping the stub restores it verbatim.
-      // Dedup aliases resolve to the original record, so an alias whose own
-      // path is protected but whose original isn't stays stubbed (edge case).
-      if (protection && record && isProtected(record.toolName, record.args, protection)) {
-        return msg;
-      }
-      if (inGrace.has(msg.toolCallId)) {
-        return msg;
-      }
-      pruned = true;
-      const ref = indexer.getShortRefForToolCallId(msg.toolCallId) ?? msg.toolCallId;
-      const text = record?.spillPath
-        ? [
-            `[Oversized output spilled to file — ${record.spillBytes ?? "?"} bytes.]`,
-            `Tool: ${record.toolName}`,
-            `Preview (head):`,
-            record.resultPreview ?? "",
-            `Full output — read this file (offset/limit supported): ${record.spillPath}`,
-            `Or use context_tree_query with ref \`${ref}\`.`,
-          ].join("\n")
-        : `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`;
-      return {
-        role: "toolResult",
-        toolCallId: msg.toolCallId,
-        toolName: msg.toolName,
-        content: [{ type: "text", text }],
-        isError: false,
-        timestamp: msg.timestamp,
-      };
+    if (msg.role !== "toolResult") return msg;
+
+    // Fail-closed: when the message carries a timestamp, the occurrence key
+    // is tried first. The bare id is consulted only as a fallback, and only
+    // when `hasLegacyBareRecord` confirms it is LEGACY-ONLY (no occurrence
+    // siblings) - a mixed bare+occurrence id fails closed there too, since a
+    // live result under a reused id is not the legacy one. A permissive
+    // bare-id fallback would stub a live result because an older occurrence
+    // (or the legacy record) of the same provider id was summarized.
+    const key = typeof msg.timestamp === "number" ? occKey(msg.toolCallId, msg.timestamp) : msg.toolCallId;
+    const lookupKey = indexer.isSummarized(key)
+      ? key
+      : indexer.hasLegacyBareRecord(msg.toolCallId)
+        ? msg.toolCallId
+        : undefined;
+    if (lookupKey === undefined) return msg;
+
+    const record = indexer.getRecord(lookupKey);
+    // Render-time re-check: a record summarized before protectedPaths
+    // covered it is repaired here — the raw toolResult still lives in the
+    // session JSONL, so skipping the stub restores it verbatim.
+    // Dedup aliases resolve to the original record, so an alias whose own
+    // path is protected but whose original isn't stays stubbed (edge case).
+    if (protection && record && isProtected(record.toolName, record.args, protection)) {
+      return msg;
     }
-    return msg;
+    if (inGrace.has(key)) {
+      return msg;
+    }
+    pruned = true;
+    const ref = indexer.getShortRefForToolCallId(lookupKey) ?? msg.toolCallId;
+    const text = record?.spillPath
+      ? [
+          `[Oversized output spilled to file — ${record.spillBytes ?? "?"} bytes.]`,
+          `Tool: ${record.toolName}`,
+          `Preview (head):`,
+          record.resultPreview ?? "",
+          `Full output — read this file (offset/limit supported): ${record.spillPath}`,
+          `Or use context_tree_query with ref \`${ref}\`.`,
+        ].join("\n")
+      : `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`;
+    return {
+      role: "toolResult",
+      toolCallId: msg.toolCallId,
+      toolName: msg.toolName,
+      content: [{ type: "text", text }],
+      isError: false,
+      timestamp: msg.timestamp,
+    };
   });
 
   let current: any[] = pruned ? next : messages;
@@ -126,7 +151,8 @@ export function pruneMessages(
       // Prefer the cohesive LLM range summary (B) when present; fall back to the
       // per-batch concatenation for spans compressed before fusion / on failure.
       const chainSummaryText = (entry: typeof chainEntries[number]): string =>
-        entry.rangeSummaryText ?? indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedToolCallIds);
+        entry.rangeSummaryText ??
+        indexer.getPerBatchSummaryTextForToolCallIds(entry.droppedOccurrenceKeys ?? entry.droppedToolCallIds);
       const blockSummaryLookup = (blockId: string): string | undefined => {
         const entry = indexer.findChainEntryByBlockId(blockId);
         if (!entry) return undefined;
@@ -138,12 +164,34 @@ export function pruneMessages(
         chainSummaryText,
         chainCompression.stripFinalAssistantThinking,
         blockSummaryLookup,
+        diagnostics,
       );
       if (compressed !== current) {
         current = compressed;
         pruned = true;
       }
     }
+  }
+
+  // Phase 4: orphan sweep — structural post-condition. Reference-preserving
+  // when clean, so a no-op render leaves the prompt-cache prefix untouched.
+  const swept = sweepOrphanToolResults(current);
+  if (swept.messages !== current) {
+    current = swept.messages;
+    pruned = true;
+    const sortedIds = [...swept.sweptIds].sort();
+    // Hash the id list into a short, stable dedup key instead of the raw
+    // sorted join: a growing orphan set would otherwise write ever-longer
+    // keys ("a", "a,b", "a,b,c", ...), and DiagnosticSink.seen retains every
+    // prefix forever - O(n^2) characters over a session's lifetime.
+    const dedupKey = createHash("sha1").update(sortedIds.join(",")).digest("hex").slice(0, 16);
+    const shown = sortedIds.slice(0, 5);
+    const more = sortedIds.length > shown.length ? ` ... +${sortedIds.length - shown.length} more` : "";
+    diagnostics?.report(
+      "orphan-sweep",
+      dedupKey,
+      `swept ${swept.sweptIds.length} orphan toolResult(s): ${shown.join(", ")}${more}`,
+    );
   }
 
   return pruned
