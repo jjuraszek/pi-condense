@@ -24,6 +24,7 @@ import {
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { saveConfig } from "./config.js";
+import { MAX_BUDGET_WINDOW } from "./budget.js";
 import { formatTokens, formatCost, formatCharProgress, formatCompactCount } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@earendil-works/pi-tui";
 import { DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
@@ -234,10 +235,12 @@ function maxTimeoutDescription(config: ContextPruneConfig): string {
 }
 
 function autoBudgetThresholdDescription(config: ContextPruneConfig): string {
+  const cap = `${MAX_BUDGET_WINDOW / 1000}k`;
   if (config.autoBudgetThreshold == null) {
-    return `Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of prune-on mode. Currently off. Pick a percentage to enable.`;
+    return `Token-budget auto-flush: force a prune when context usage reaches this share of the window (or ${cap} tokens, whichever comes first), regardless of prune-on mode. Currently off. Pick a percentage to enable.`;
   }
-  return `Token-budget auto-flush: force a prune when context usage reaches ${Math.round(config.autoBudgetThreshold * 100)}% of the window, regardless of prune-on mode. Set to Off to disable.`;
+  const pct = Math.round(config.autoBudgetThreshold * 100);
+  return `Token-budget auto-flush: force a prune when context usage reaches ${pct}% of the window or ${cap} tokens, whichever comes first, regardless of prune-on mode. The ${cap} ceiling keeps this reachable on huge-window models. Set to Off to disable.`;
 }
 
 function protectedToolsDisplay(list: string[]): string {

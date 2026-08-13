@@ -816,15 +816,17 @@ ACON demonstrates that **compression not only saves tokens but can improve agent
 
 ### Token-budget auto-flush trigger
 
-`autoBudgetThreshold` (default `null`) is an ADDITIONAL flush trigger orthogonal to `pruneOn`. When set to a fraction in `(0, 1]`, the extension evaluates `tokens / contextWindow` at the end of every tool-using turn; when the ratio meets the threshold, all pending batches are flushed immediately regardless of the configured `pruneOn` mode.
+`autoBudgetThreshold` (default `null`) is an ADDITIONAL flush trigger orthogonal to `pruneOn`. When set to a fraction in `(0, 1]`, the extension evaluates context usage at the end of every tool-using turn; when `tokens` reaches `min(MAX_BUDGET_WINDOW, threshold * contextWindow)` - i.e. the configured share of the model's window, or 300,000 tokens, whichever comes first - all pending batches are flushed immediately regardless of the configured `pruneOn` mode.
 
-Why we compute the ratio ourselves rather than using `ContextUsage.percent`: the provider's `percent` field is a 0–100 value, and both it and `tokens` are `null` immediately after a provider-side compaction. Using `tokens / contextWindow` directly gives a 0–1 fraction that matches the config unit and is independently null-safe — a `null` tokens value makes the trigger a no-op until usage is reported again.
+**Why we compute this ourselves rather than using `ContextUsage.percent`:** the provider's `percent` field is a 0-100 value, and both it and `tokens` are `null` immediately after a provider-side compaction. Comparing `tokens` against a token level we derive ourselves keeps the unit unambiguous and is independently null-safe - a `null` tokens value makes the trigger a no-op until usage is reported again. Note this trigger never divides: the fraction form (`tokens / min(contextWindow, MAX_BUDGET_WINDOW)`) belongs to `usageFraction` and the delta trigger below, and reading the threshold as a share of a capped window would be wrong - on a 1M-window model, `0.4` fires at 300,000 tokens, not at 120,000.
+
+**Why the 300k ceiling (`MAX_BUDGET_WINDOW`, `src/budget.ts`):** the trigger was originally a pure fraction of the advertised window, which made it unreachable as windows grew. On a 1M-window model, `0.9` means 900k tokens - a session ends long before that, so users observed "pruning never happens" (issue #7), while the same setting worked on a 200k model. The ceiling is deliberately chosen so it never binds at or below a 300k advertised window (a 256k model at `0.9` still fires at 230.4k), so it changes behavior only where the fraction was already unusable. Users keep full downward control: `0.1` on a 1M model still means 100k tokens.
 
 Lineage: simplified take on DCP's `maxContextLimit` nudging — a single threshold that forces a flush rather than separate nudge/force thresholds.
 
 ### Budget-delta flush
 
-`budgetTurnDelta: number | null` (default `null`) is a per-turn usage-jump trigger ORed with `autoBudgetThreshold`. When set to a fraction in `(0, 1]`, the extension compares the current turn's usage fraction (`tokens / contextWindow`) to the previous turn's and forces a flush if the jump meets or exceeds the delta.
+`budgetTurnDelta: number | null` (default `null`) is a per-turn usage-jump trigger ORed with `autoBudgetThreshold`. When set to a fraction in `(0, 1]`, the extension compares the current turn's usage fraction (`tokens / min(contextWindow, MAX_BUDGET_WINDOW)`) to the previous turn's and forces a flush if the jump meets or exceeds the delta. Because the denominator carries the same 300k ceiling, the required growth is `delta * min(contextWindow, MAX_BUDGET_WINDOW)` tokens: `0.1` = +30k on any model at or above 300k, +20k on a 200k model. The ceiling enters through the denominator here rather than bounding a level, because a 300k ceiling on one turn's growth could never bind. Note the fraction is therefore not bounded by 1 above the ceiling (600k tokens on a 1M window = 2.0) and is deliberately not clamped - clamping would saturate this trigger and stop it re-arming.
 
 Use case: a single enormous tool result can jump context usage by 20–30 percentage points in one turn; `autoBudgetThreshold` misses this until the next turn. `budgetTurnDelta` catches the spike immediately.
 
@@ -971,7 +973,7 @@ Phase 3 (chain compression) only ever acts on **closed** chains - a chain closes
 
 Phase 1 (per-batch summarization) is unaffected by chain closure and remains the only lever for this shape of session. For long autonomous runs where no chain is expected to close:
 
-- Lower `autoBudgetThreshold` (e.g. `0.5`-`0.6` instead of the default `0.8`) so the budget trigger fires well before the open segment dominates the window.
+- Lower `autoBudgetThreshold` (e.g. `0.5`-`0.6` instead of `0.8`) so the budget trigger fires well before the open segment dominates the window. On a window larger than 300k the ceiling already caps the trigger point at 300,000 tokens once `threshold * contextWindow` exceeds it - that is any setting at or above `300k / contextWindow` (`0.3` on a 1M window, `0.75` on a 400k one) - so lowering the setting only matters below that point.
 - Set `budgetTurnDelta` so a single turn's sudden context jump force-flushes even between budget-threshold crossings - this catches spikes a static threshold misses until the next turn.
 
 Neither knob makes a chain close; they just keep Phase 1 flushing on schedule so raw toolResults do not pile up unsummarized for the whole run.

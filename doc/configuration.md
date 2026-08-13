@@ -58,10 +58,10 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` - protected outputs are never lost. |
 | `protectedPaths` | `string[]` | `["**/skills/**/*.md"]` | Globs matched against a tool call's `args.path`; matching outputs are never pruned (same semantics as `protectedTools`, including `<protected-output>` relocation in compressed chains). Already-summarized matching reads are repaired on the next turn; chain-compressed ones are not. Set `[]` to disable. |
 | `dedupByContentHash` | `true` / `false` | `true` | Re-reads of identical (toolName, content) skip the LLM and alias the original |
-| `autoBudgetThreshold` | fraction `0`-`1`, or `null` | `null` | Token-budget auto-flush: force a prune when context usage reaches this share of the window, regardless of `pruneOn`. `0.8` = 80%, not `80`. `null` = off. See [Token-budget auto-flush](#token-budget-auto-flush) |
+| `autoBudgetThreshold` | fraction `0`-`1`, or `null` | `null` | Token-budget auto-flush: force a prune when context usage reaches this share of the window, or 300k tokens, whichever comes first - regardless of `pruneOn`. `0.8` = 80%, not `80`. The 300k ceiling only binds on models advertising more than 300k. `null` = off. See [Token-budget auto-flush](#token-budget-auto-flush) |
 | `spillThreshold` | positive integer | `65536` | Minimum chars (`resultText.length`) for a single tool result to be spilled eagerly to a sidecar file at capture time rather than waiting for normal summarization. Non-positive / invalid values fall back to the default; to effectively disable spilling, set it above any result you expect. See [Spilled outputs](#spilled-outputs) |
 | `spillPreviewBytes` | non-negative integer | `2048` | Head preview (bytes) kept inline in the stub and index record for a spilled result. Full body is on disk. |
-| `budgetTurnDelta` | fraction `0`-`1`, or `null` | `null` | Force a flush when a single turn's context-usage fraction jumps by at least this amount, ORed with `autoBudgetThreshold`. Catches sudden spikes a static threshold would miss until the next turn. `null` = off. |
+| `budgetTurnDelta` | fraction `0`-`1`, or `null` | `null` | Force a flush when a single turn's context-usage fraction jumps by at least this amount, ORed with `autoBudgetThreshold`. The fraction is measured against `min(context window, 300k)`, so `0.1` = +30k tokens in one turn on any model at or above 300k (+20k on a 200k model). Catches sudden spikes a static threshold would miss until the next turn. `null` = off. |
 | `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
@@ -76,9 +76,11 @@ The three pre-flush features (`minBatchChars`, `protectedTools`, `dedupByContent
 
 ### Token-budget auto-flush
 
-When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks context usage at the end of every tool-using turn. If `tokens / contextWindow` reaches the threshold, ALL pending batches are flushed immediately - regardless of `pruneOn` mode. This is an **additional** trigger layered on top of `pruneOn`, not a replacement.
+When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks context usage at the end of every tool-using turn. If `tokens` reaches `min(300_000, threshold * contextWindow)`, ALL pending batches are flushed immediately - regardless of `pruneOn` mode. This is an **additional** trigger layered on top of `pruneOn`, not a replacement.
 
 - `0.8` means 80% of the context window - it is a **fraction**, not a percentage. `0.8 != 80`.
+- **The trigger point is capped at 300,000 tokens** (`MAX_BUDGET_WINDOW` in `src/budget.ts`). Without it, an advertised 1M window makes every setting unreachable: `0.9` would mean 900k tokens, so a session ends before pruning ever fires. The ceiling never binds on a model advertising 300k or less - a 256k window at `0.9` still fires at 230.4k - so only huge-window models change behavior, and they flush earlier.
+- `budgetTurnDelta` applies the same ceiling in the other shape: growth is measured against `min(context window, 300k)`, because a 300k ceiling on a single turn's *growth* could never bind.
 - The trigger is a no-op when `tokens` is `null` (right after a provider-side compaction); it resumes once usage is known again.
 - Editable live via `/pruner settings` (row "Auto-flush at context %", presets Off / 60 / 70 / 80 / 90%).
 - Default `null` = off.

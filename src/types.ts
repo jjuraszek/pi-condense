@@ -239,7 +239,8 @@ export const SUMMARIZER_MAX_TIMEOUT_PRESETS: { value: string; label: string }[] 
 /**
  * Cycling presets for the `autoBudgetThreshold` setting (stored as strings;
  * the settings UI cycles string values). "0" is the disabled sentinel → null.
- * Other values are 0–1 fractions of the context window (e.g. "0.8" = flush at 80%).
+ * Other values are 0–1 fractions of the context window (e.g. "0.8" = flush at
+ * 80% of the window, or at MAX_BUDGET_WINDOW tokens, whichever comes first).
  */
 export const AUTO_BUDGET_PRESETS: { value: string; label: string }[] = [
   { value: "0", label: "Off (default)" },
@@ -387,10 +388,14 @@ export interface ContextPruneConfig {
   /**
    * Token-budget auto-flush trigger. A fraction in (0, 1] (a 0–1 share of the
    * context window, NOT a 0–100 percentage; e.g. 0.8 = flush at 80% of the
-   * window). When set, a flush of all pending batches is forced at the end of
-   * any tool-using turn once context usage (tokens / contextWindow) reaches the
-   * threshold — regardless of `pruneOn`. An ADDITIONAL trigger on top of
-   * `pruneOn`, not a replacement.
+   * window, capped at 300k tokens - see below). When set, a flush of all
+   * pending batches is forced at the end of
+   * any tool-using turn once context usage reaches `threshold * contextWindow`
+   * tokens OR 300,000 tokens (MAX_BUDGET_WINDOW in src/budget.ts), whichever
+   * comes first — regardless of `pruneOn`. The ceiling keeps the setting
+   * reachable on huge-window models, where 0.9 of 1M would mean 900k tokens; it
+   * never binds on a model advertising 300k or less. An ADDITIONAL trigger on
+   * top of `pruneOn`, not a replacement.
    *
    * null (default) = disabled, preserving pre-feature behavior. Out-of-range
    * values (<= 0 or > 1) normalize to null.
@@ -402,7 +407,11 @@ export interface ContextPruneConfig {
   spillPreviewBytes: number;
   /**
    * Per-turn usage-fraction increase (0–1) that forces a flush, independent of
-   * autoBudgetThreshold. null (default) = disabled. Out-of-range (<= 0 or > 1) normalizes to null.
+   * autoBudgetThreshold. The fraction is measured against the effective window
+   * `min(contextWindow, MAX_BUDGET_WINDOW)` (300_000), so the required growth is
+   * `delta * min(contextWindow, MAX_BUDGET_WINDOW)` tokens - e.g. 0.1 means +30k
+   * tokens in one turn on any model at or above 300k, and +20k on a 200k model.
+   * null (default) = disabled. Out-of-range (<= 0 or > 1) normalizes to null.
    */
   budgetTurnDelta: number | null;
 }
