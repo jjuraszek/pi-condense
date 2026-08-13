@@ -7,6 +7,15 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [2.8.0] - 2026-08-13
+
+- **Both token-budget flush triggers now cap the context window they reason about at 300,000 tokens** (`MAX_BUDGET_WINDOW`, `src/budget.ts`) ([#7](https://github.com/jjuraszek/pi-condense/issues/7)). Previously both scaled purely off the model's advertised window, which made them unreachable as windows grew: on a 1M-window model `autoBudgetThreshold: 0.9` meant 900k tokens - a session ends long before that, so pruning never fired - while the same setting worked on a 200k model. `budgetTurnDelta: 0.1` was worse than late: it meant +100k context growth inside a single turn, which effectively never happens, so the re-arm trigger was dead.
+  - `autoBudgetThreshold` now fires at `min(300_000, threshold * contextWindow)` tokens - your percentage of the model's window, or 300k tokens, whichever comes first. The threshold keeps its literal meaning; the cap is only a ceiling.
+  - `budgetTurnDelta` applies the same ceiling in the other shape - a 300k ceiling on a single turn's *growth* could never bind - so the fraction is measured against `min(contextWindow, 300_000)`: `0.1` means +30k tokens in one turn on any model at or above 300k (+20k on a 200k model, unchanged).
+  - **No new setting, and no behavior change for any model advertising 300k or less, at any setting** - a 256k window at `0.9` still fires at 230.4k. Above 300k flushes happen earlier; nothing ever flushes later than before. Downward control is unaffected: `0.1` on a 1M model still means 100k tokens.
+  - `usageFraction` may now exceed `1.0` above the ceiling (600k tokens on a 1M window returns `2.0`) and is deliberately **not** clamped - clamping would saturate the delta trigger and stop it re-arming.
+  - Docs updated in step: `README.md`, `doc/configuration.md`, `PRUNING.md`. Spec: `doc/specs/2026-08-13-budget-window-cap.md`.
+
 ## [2.7.0] - 2026-08-12
 
 - **Single-chain observability + reload trigger repair ([#6](https://github.com/jjuraszek/pi-condense/issues/6)).** A 5-hour, 256-turn session running one uninterrupted tool chain (no text-only assistant reply ever closed it) accumulated ~195k tokens of raw toolResults while `/pruner status` showed near-zero activity: chain compression (Phase 3) requires *closed* chains by design, and a session reload cleared the in-memory pending queue, leaving the automatic flush trigger stranded even though the branch rescan could recover the work.
