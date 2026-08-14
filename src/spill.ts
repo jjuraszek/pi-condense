@@ -36,6 +36,24 @@ interface SpillConfig {
   dedupByContentHash: boolean;
 }
 
+interface SpillableRecord {
+  toolName: string;
+  resultText: string;
+  spillBytes?: number;
+  resultPreview?: string;
+  spillPath?: string;
+  contentHash?: string;
+}
+
+/** Mutates `record` in place: spillBytes/resultPreview/spillPath/contentHash set, resultText emptied. */
+export function applySpill(record: SpillableRecord, spillPath: string, previewBytes: number): void {
+  record.spillBytes = Buffer.byteLength(record.resultText, "utf8");
+  record.resultPreview = headPreview(record.resultText, previewBytes);
+  record.spillPath = spillPath;
+  record.contentHash = hashToolResult(record.toolName, record.resultText);
+  record.resultText = "";
+}
+
 export async function spillOversizedBatch(args: {
   batch: CapturedBatch;
   indexer: ToolCallIndexer;
@@ -52,7 +70,6 @@ export async function spillOversizedBatch(args: {
     if (tc.resultText.length < config.spillThreshold) continue;
 
     const key = occKey(tc.toolCallId, tc.resultTimestamp);
-    const hash = hashToolResult(tc.toolName, tc.resultText);
 
     if (config.dedupByContentHash) {
       const original = indexer.lookupByContent(tc.toolName, tc.resultText);
@@ -72,11 +89,7 @@ export async function spillOversizedBatch(args: {
       continue;
     }
 
-    tc.spillBytes = Buffer.byteLength(tc.resultText, "utf8");
-    tc.resultPreview = headPreview(tc.resultText, config.spillPreviewBytes);
-    tc.spillPath = path;
-    tc.contentHash = hash;
-    tc.resultText = "";
+    applySpill(tc, path, config.spillPreviewBytes);
     toIndex.push(tc);
     handled.add(tc.toolCallId);
   }

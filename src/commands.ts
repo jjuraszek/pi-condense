@@ -72,6 +72,7 @@ export function pruneStatusText(
         diagnostics["unresolved-range"] ? `u${diagnostics["unresolved-range"]}` : "",
         diagnostics["range-id-mismatch"] ? `m${diagnostics["range-id-mismatch"]}` : "",
         diagnostics["orphan-sweep"] ? `o${diagnostics["orphan-sweep"]}` : "",
+        diagnostics["backfill-empty"] ? `b${diagnostics["backfill-empty"]}` : "",
       ].filter(Boolean)
     : [];
   const suffix = diag.length > 0 ? ` \u00b7 diag ${diag.join("/")}` : "";

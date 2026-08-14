@@ -962,6 +962,23 @@ The `context-prune-chain` session entry carries the matching `protectedToolCallI
 
 **Rejected alternative:** skip compression for any chain that contains a protected tool. Rejected because `todowrite`/`todoread` recur in most chains for opted-in users, so this strategy would forfeit most chain compression for the people who most need `protectedTools`.
 
+### Deterministic fallback (uncovered chains)
+
+A chain becomes eligible for compression (closed, older than the rolling window) independently of whether its middle tool calls were ever summarized. Per-batch coverage can be zero - a trivial batch, an oversized-skip, a fully-deduped batch, or a plain capture miss - and historically that meant `compressEligible` skipped the chain forever with `reason: "no-summary"`: the prune frontier had already advanced past the span, so no future flush would recapture it. A 639-call, ~935k-char chain stranded live this way (`doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md`).
+
+When `hasPerBatchSummaryCoveringAny` is false for a chain's middle ids, `compressEligible` takes a second, zero-LLM branch instead of skipping:
+
+1. **Resolve + extract.** `extractChainRecords` resolves the chain's span with the same `resolveRange` used by the drop path, then walks it positionally. Middles are excluded when protected (relocated verbatim at render, never phase-1 stubbed) or already indexed (occurrence-key membership in the indexer's record map - not `isSummarized`, which also covers dedup aliases and would wrongly re-strand a fully-deduped chain). Each surviving call becomes a `ToolCallRecord` with `turnIndex: -1` (no batch turn; `context_tree_query` renders `Turn: -1`, a pinned cosmetic).
+2. **Backfill, atomically.** `indexer.backfillChainRecords` spills oversized results via the shared spill helpers (`blobPathFor`/`applySpill`), a fail-closed variant of the eager `spillOversizedBatch` path, allocates `t<N>` refs, and appends **one** `context-prune-index` entry carrying the records plus `backfilled: true` and the allocated refs - append-before-commit, so refs are durable the instant the records are. Only after the append succeeds does it commit to the in-memory index and alias maps. Backfilled records never seed `contentHashToOriginal`: a poisoned dedup canonical could point future identical outputs at a record whose durability was never actually verified end-to-end for that purpose, so backfilled entries are excluded from canonical-seeding on both the live path and `reconstructFromSession`.
+3. **Compose a deterministic body.** `buildDeterministicBody` builds a zero-LLM stub - call count, a tool-name histogram, span duration, and a `First:`/`Last:` line with args JSON capped at 200 chars, plus the `t<N>` refs - and stores it as `rangeSummaryText` on the `context-prune-chain` entry with `bodySource: "deterministic"`. The renderer already prefers `entry.rangeSummaryText` (`src/pruner.ts`), so no renderer change was needed; entries without `bodySource` keep today's semantics unchanged.
+4. **Fail closed.** Any throw during backfill (spill I/O, append failure, malformed span) preserves the historical `no-summary` skip - nothing partial is committed. A chain with zero freshly-extracted records is only treated as a genuine span mismatch (fail-closed skip + `backfill-empty` diagnostic) when it ALSO has zero members already present in the index; if a prior attempt's index append succeeded but the chain-entry append then failed, the retry composes and persists straight from the durable index records instead of re-extracting, so recovery never produces a second `context-prune-index` entry for the same span.
+
+**Fully-protected exception.** If every middle id in a zero-extractable, zero-indexed chain is protected (`chain.protectedToolCallIds` covers all of `chain.middleToolCallIds`), the chain stays on the plain `no-summary` skip with no `backfill-empty` diagnostic. Compressing would relocate every output verbatim into the synthetic body anyway (zero tokens saved), and the diagnostic would misreport a healthy span - firing on every restart for protected-heavy configs.
+
+**Known limitation.** `flushPending` returns early when there are no pending batches, before chain detection runs at all. A chain stranded in an otherwise-idle session is not healed by `/pruner now` on an empty queue - it heals on the next flush that has any work, or immediately via `/pruner compact`.
+
+**Cache-prefix impact.** Same as any chain compression: rewriting the span busts the prefix cache from that chain's start-user-message onward, once. The deterministic body has no `now()` or LLM nondeterminism, so it renders byte-identical on every subsequent pass - no repeated invalidation from retries or reloads.
+
 ### Deferred
 
 - **Model-driven trigger.** The compressor is autonomous (rolling window). A model-callable compress tool (DCP-style: the model compresses a sub-task as it closes) is not implemented; the earlier scaffolded `agentic-auto` mode + `context_prune` tool were removed in v1.0.0.
@@ -1093,13 +1110,14 @@ Every swept id is reported once (hashed batch, not per-id) as an `orphan-sweep` 
 
 ## Diagnostics
 
-Prune-time degradations - an unresolvable chain range, a detection/render id mismatch, a swept orphan - are recorded on an out-of-band channel instead of surfacing in the model's context. `DiagnosticSink` (`src/diagnostics.ts`) writes a `context-prune-diagnostic` session entry (`{ kind, detail }`) for each of three kinds:
+Prune-time degradations - an unresolvable chain range, a detection/render id mismatch, a swept orphan, a chain with nothing left to backfill - are recorded on an out-of-band channel instead of surfacing in the model's context. `DiagnosticSink` (`src/diagnostics.ts`) writes a `context-prune-diagnostic` session entry (`{ kind, detail }`) for each of four kinds:
 
 | Kind | Emitted from | Meaning |
 |---|---|---|
 | `unresolved-range` | `applyChainCompressions` | A persisted chain entry's boundaries didn't resolve to a unique range (or the range was rejected as nested/duplicate) - the entry compressed nothing |
 | `range-id-mismatch` | `applyChainCompressions` | The ids actually inside a resolved range don't match the entry's recorded `droppedToolCallIds` - informational only, the range still wins |
 | `orphan-sweep` | `pruneMessages` (Phase 4) | One or more `toolResult` messages were removed for having no open matching `toolCall` |
+| `backfill-empty` | `chain-compressor.compressEligible` | A zero-coverage chain's deterministic-backfill span yielded zero extractable records AND zero members already in the index AND the chain is not fully-protected - a genuine span mismatch, not a partial-failure retry state. Fully-protected zero-coverage chains skip silently instead (see [Deterministic fallback § Fully-protected exception](#deterministic-fallback-uncovered-chains)). Deduped per chain start timestamp (`chain.startUserTimestamp`). Widget letter `b` |
 
 **Never in LLM context.** These are session entries only - zero tokens added, zero cache-prefix change, never read back into the message array the model sees.
 
@@ -1107,7 +1125,7 @@ Prune-time degradations - an unresolvable chain range, a detection/render id mis
 
 **Reset on `session_start` and `session_tree`**, matching every other in-memory, non-persisted piece of prune state.
 
-**Surfaced on the status line.** The footer status widget (`setPruneStatusWidget`, gated by `showPruneStatusLine`) appends a self-hiding ` · diag u<N>/m<N>/o<N>` segment (u = `unresolved-range`, m = `range-id-mismatch`, o = `orphan-sweep`) built from the sink's live counters via `pruneStatusText`. Each letter is omitted when its counter is zero, and the whole segment is absent when all three are zero. `/pruner status` (the slash command) prints a separate settings/stats block and does not include this segment.
+**Surfaced on the status line.** The footer status widget (`setPruneStatusWidget`, gated by `showPruneStatusLine`) appends a self-hiding ` · diag u<N>/m<N>/o<N>/b<N>` segment (u = `unresolved-range`, m = `range-id-mismatch`, o = `orphan-sweep`, b = `backfill-empty`) built from the sink's live counters via `pruneStatusText`. Each letter is omitted when its counter is zero, and the whole segment is absent when all four are zero. `/pruner status` (the slash command) prints a separate settings/stats block and does not include this segment.
 
 ---
 

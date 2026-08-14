@@ -627,6 +627,15 @@ describe("resolveRange", () => {
     msgs[2] = { ...msgs[2], timestamp: 1200 };
     expect(resolveRange(entry(), msgs)).toEqual({ startIndex: 0, endIndex: 3 });
   });
+
+  test("resolveRange accepts a minimal timestamp pair (backfill span walk)", () => {
+    const messages = [
+      { role: "user", timestamp: 100 },
+      { role: "assistant", timestamp: 200 },
+    ];
+    const range = resolveRange({ startUserTimestamp: 100, finalAssistantTimestamp: 200 }, messages);
+    expect(range).toEqual({ startIndex: 0, endIndex: 1 });
+  });
 });
 
 describe("applyChainCompressions - positional", () => {

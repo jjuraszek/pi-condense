@@ -1,8 +1,11 @@
 import { CUSTOM_TYPE_CHAIN } from "./types.js";
-import type { ChainRange, ChainCompressionEntry } from "./types.js";
+import type { ChainRange, ChainCompressionEntry, ToolCallRecord } from "./types.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import type { BlockRefIssuer } from "./block-refs.js";
-import { bareToolCallId, parseOccKey } from "./occurrence-key.js";
+import type { DiagnosticSink } from "./diagnostics.js";
+import { bareToolCallId, occKey, parseOccKey, resultTimestampOf } from "./occurrence-key.js";
+import { resolveRange } from "./chain-range-prune.js";
+import { extractToolResultText } from "./batch-capture.js";
 
 /**
  * Grace ids are keyed the same way `recovery-grace.ts` keys them: occurrence
@@ -65,6 +68,17 @@ export interface ChainCompressorIndexerDeps {
   getPerBatchSummariesForToolCallIds(toolCallIds: string[]): string[];
   getToolRefsForToolCallIds(toolCallIds: string[]): string[];
   registerChain(entry: import("./types.js").ChainCompressionEntry): void;
+  getIndex(): Map<string, ToolCallRecord>;
+  backfillChainRecords(
+    records: ToolCallRecord[],
+    opts: {
+      spillThreshold: number;
+      spillPreviewBytes: number;
+      sessionDir: string;
+      sessionId: string;
+      appendEntry: (customType: string, data?: unknown) => void;
+    },
+  ): Promise<import("./types.js").SummaryToolCallRef[]>;
 }
 
 export interface CompressEligibleDeps {
@@ -81,6 +95,85 @@ export interface CompressEligibleDeps {
    * the renderer falls back to the per-batch concatenation.
    */
   fuseRange?: (perBatchSummaryText: string) => Promise<string | null>;
+  /** MUST be the same withClosingMessage(...) array chain detection ran on - raw branch messages spuriously fail span resolution on the message_end path (see doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md). */
+  messages: any[];
+  diagnostics: Pick<DiagnosticSink, "report">;
+  backfill: { spillThreshold: number; spillPreviewBytes: number; sessionDir: string; sessionId: string };
+}
+
+/**
+ * Pure span walk backing the deterministic zero-LLM branch. Excludes
+ * protected middles (relocated verbatim at render, never phase-1 stubbed)
+ * and already-indexed occurrence keys (retry idempotence).
+ */
+export function extractChainRecords(
+  messages: any[],
+  chain: Pick<ChainRange, "startUserTimestamp" | "finalAssistantTimestamp" | "protectedToolCallIds">,
+  isIndexed: (occurrenceKey: string) => boolean,
+): ToolCallRecord[] {
+  const range = resolveRange(chain, messages);
+  if (!range) return [];
+  const protectedIds = new Set(chain.protectedToolCallIds ?? []);
+  const open = new Map<string, { toolName: string; args: unknown }>();
+  const records: ToolCallRecord[] = [];
+  for (let i = range.startIndex + 1; i < range.endIndex; i++) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === "toolCall") open.set(block.id, { toolName: block.name, args: block.input ?? block.args ?? block.arguments ?? {} });
+      }
+    } else if (msg.role === "toolResult") {
+      const call = open.get(msg.toolCallId);
+      if (!call) continue;
+      if (protectedIds.has(msg.toolCallId)) continue;
+      const resultTimestamp = resultTimestampOf(msg.timestamp);
+      if (resultTimestamp === undefined) continue;
+      const key = occKey(msg.toolCallId, resultTimestamp);
+      if (isIndexed(key)) continue;
+      records.push({
+        toolCallId: msg.toolCallId,
+        toolName: call.toolName,
+        args: call.args as Record<string, unknown>,
+        resultText: extractToolResultText(msg),
+        isError: msg.isError === true,
+        turnIndex: -1, // backfilled records have no batch turn; query tool renders "Turn: -1" (pinned)
+        timestamp: resultTimestamp,
+        resultTimestamp,
+      });
+    }
+  }
+  return records;
+}
+
+const EXCERPT_CAP = 200;
+function excerpt(args: unknown): string {
+  const s = JSON.stringify(args) ?? "";
+  return s.length <= EXCERPT_CAP ? s : s.slice(0, EXCERPT_CAP) + "...";
+}
+
+/** Deterministic zero-LLM body. Grammar pinned by tests - change both together. */
+export function buildDeterministicBody(records: ToolCallRecord[], refs: string[]): string {
+  const counts = new Map<string, number>();
+  for (const r of records) counts.set(r.toolName, (counts.get(r.toolName) ?? 0) + 1);
+  const histogram = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, n]) => `${name} x${n}`)
+    .join(", ");
+  const at = (r: ToolCallRecord) => r.resultTimestamp ?? r.timestamp;
+  const sorted = [...records].sort((a, b) => at(a) - at(b));
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const seconds = Math.round((at(last) - at(first)) / 1000);
+  const refsLine = refs.length > 0 ? refs.join(", ") : records.map((r) => r.toolCallId).join(", ");
+  return [
+    "Deterministic chain compression (no per-batch summary existed for this span; raw outputs recoverable via context_tree_query).",
+    `Calls: ${records.length}`,
+    `Tools: ${histogram}`,
+    `Span: ${new Date(at(first)).toISOString()} -> ${new Date(at(last)).toISOString()} (${seconds}s)`,
+    `First: ${first.toolName} ${excerpt(first.args)}`,
+    `Last: ${last.toolName} ${excerpt(last.args)}`,
+    `Refs: ${refsLine}`,
+  ].join("\n");
 }
 
 export interface CompressEligibleResult {
@@ -121,7 +214,55 @@ export async function compressEligible(
     const lookupKeys = chain.middleOccurrenceKeys?.length ? chain.middleOccurrenceKeys : chain.middleToolCallIds;
 
     if (!deps.indexer.hasPerBatchSummaryCoveringAny(lookupKeys)) {
-      skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
+      // Deterministic zero-LLM fallback (spec 2026-08-14). Fail-closed: any
+      // failure below preserves the historical no-summary skip.
+      const index = deps.indexer.getIndex();
+      const indexed: ToolCallRecord[] = [];
+      for (const key of lookupKeys) {
+        const r = index.get(key);
+        if (r) indexed.push(r);
+      }
+      const fresh = extractChainRecords(deps.messages, chain, (k) => index.has(k));
+      if (fresh.length === 0 && indexed.length === 0) {
+        const protectedIds = new Set(chain.protectedToolCallIds ?? []);
+        const fullyProtected =
+          chain.middleToolCallIds.length > 0 && chain.middleToolCallIds.every((id) => protectedIds.has(id));
+        if (!fullyProtected) {
+          // Genuine span mismatch - nothing extractable, nothing durable.
+          deps.diagnostics.report(
+            "backfill-empty",
+            String(chain.startUserTimestamp),
+            `middles=${chain.middleToolCallIds.length}`,
+          );
+        }
+        skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
+        continue;
+      }
+      try {
+        if (fresh.length > 0) {
+          await deps.indexer.backfillChainRecords(fresh, { ...deps.backfill, appendEntry: deps.appendEntry });
+        }
+      } catch {
+        skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
+        continue;
+      }
+      const allRecords = [...indexed, ...fresh];
+      const toolRefs = deps.indexer.getToolRefsForToolCallIds(lookupKeys);
+      const entry: ChainCompressionEntry = {
+        blockId: deps.blockRefs.issue(),
+        startUserTimestamp: chain.startUserTimestamp,
+        droppedToolCallIds: chain.middleToolCallIds,
+        finalAssistantTimestamp: chain.finalAssistantTimestamp,
+        toolRefs,
+        compressedAt: deps.now(),
+        rangeSummaryText: buildDeterministicBody(allRecords, toolRefs),
+        bodySource: "deterministic",
+        ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
+        ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
+      };
+      deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);
+      deps.indexer.registerChain(entry);
+      compressedEntries.push(entry);
       continue;
     }
 

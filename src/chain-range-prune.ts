@@ -75,7 +75,7 @@ export function buildSyntheticChainMessage(
  * turns (doc/specs/2026-08-12-toolcall-id-collisions.md).
  */
 export function resolveRange(
-  entry: ChainCompressionEntry,
+  entry: Pick<ChainCompressionEntry, "startUserTimestamp" | "finalAssistantTimestamp">,
   messages: any[],
 ): { startIndex: number; endIndex: number } | null {
   if (entry.finalAssistantTimestamp === null) return null;

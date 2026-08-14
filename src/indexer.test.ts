@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ToolCallIndexer } from "./indexer.js";
-import { CUSTOM_TYPE_INDEX, CUSTOM_TYPE_SUMMARY, CUSTOM_TYPE_DEDUP_ALIAS } from "./types.js";
-import type { CapturedBatch } from "./types.js";
+import { CUSTOM_TYPE_INDEX, CUSTOM_TYPE_SUMMARY, CUSTOM_TYPE_DEDUP_ALIAS, CUSTOM_TYPE_CHAIN } from "./types.js";
+import type { CapturedBatch, ToolCallRecord } from "./types.js";
+import { occKey } from "./occurrence-key.js";
 
 const batch = (
   turnIndex: number,
@@ -332,5 +336,210 @@ describe("session rebuild", () => {
     expect(indexer.hasLegacyBareRecord("bash_7")).toBe(true);
     expect(indexer.hasLegacyBareRecord("bash_23")).toBe(false);
     expect(indexer.isSummarized("bash_8")).toBe(true);
+  });
+});
+
+function backfillOpts(appended: Array<{ type: string; data: any }>, tmpDir: string) {
+  return {
+    spillThreshold: 100_000,
+    spillPreviewBytes: 500,
+    sessionDir: tmpDir,
+    sessionId: "test-session",
+    appendEntry: (type: string, data?: unknown) => appended.push({ type, data }),
+  };
+}
+
+function record(id: string, ts: number, over: Partial<ToolCallRecord> = {}): ToolCallRecord {
+  return {
+    toolCallId: id,
+    toolName: "bash",
+    args: { command: "ls" },
+    resultText: "out-" + id,
+    isError: false,
+    turnIndex: -1,
+    timestamp: ts,
+    resultTimestamp: ts,
+    ...over,
+  };
+}
+
+describe("backfillChainRecords", () => {
+  test("happy path: indexes records, returns refs, persists one entry", async () => {
+    const indexer = new ToolCallIndexer();
+    const appended: Array<{ type: string; data: any }> = [];
+    const records = [record("a", 1), record("b", 2)];
+
+    const refs = await indexer.backfillChainRecords(records, backfillOpts(appended, "/tmp/unused"));
+
+    expect(refs).toHaveLength(2);
+    for (const ref of refs) expect(ref.shortId).toMatch(/^t\d+$/);
+
+    expect(indexer.getRecord("a")?.toolCallId).toBe("a");
+    expect(indexer.resolveToolCallId(refs[0].shortId)).toBe(occKey("a", 1));
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0].type).toBe(CUSTOM_TYPE_INDEX);
+    expect(appended[0].data.backfilled).toBe(true);
+    expect(appended[0].data.refs).toHaveLength(2);
+    expect(appended[0].data.toolCalls).toHaveLength(2);
+  });
+
+  test("dedup exclusion: backfilled records never seed contentHashToOriginal", async () => {
+    const indexer = new ToolCallIndexer();
+    const appended: Array<{ type: string; data: any }> = [];
+    await indexer.backfillChainRecords([record("a", 1)], backfillOpts(appended, "/tmp/unused"));
+
+    expect(indexer.lookupByContent("bash", "out-a")).toBeUndefined();
+  });
+
+  test("append failure aborts atomically: no partial index state", async () => {
+    const indexer = new ToolCallIndexer();
+    const opts = {
+      ...backfillOpts([], "/tmp/unused"),
+      appendEntry: () => {
+        throw new Error("append failed");
+      },
+    };
+
+    await expect(indexer.backfillChainRecords([record("a", 1)], opts)).rejects.toThrow();
+
+    expect(indexer.getIndex().size).toBe(0);
+    expect(indexer.getShortRefForToolCallId(occKey("a", 1))).toBeUndefined();
+  });
+
+  test("spill: large result text is written to a sidecar blob", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "pi-condense-backfill-"));
+    const indexer = new ToolCallIndexer();
+    const appended: Array<{ type: string; data: any }> = [];
+    const bigText = "x".repeat(200_001);
+    const opts = { ...backfillOpts(appended, tmpDir), spillThreshold: 200_000 };
+
+    await indexer.backfillChainRecords([record("a", 1, { resultText: bigText })], opts);
+
+    const persistedRecord = appended[0].data.toolCalls[0];
+    expect(persistedRecord.spillPath).toBeTruthy();
+    expect(persistedRecord.resultText).toBe("");
+    expect(persistedRecord.resultPreview).toBeTruthy();
+    expect(persistedRecord.contentHash).toBeTruthy();
+
+    const blobContents = await readFile(persistedRecord.spillPath, "utf-8");
+    expect(blobContents).toBe(bigText);
+  });
+
+  test("reconstruction round-trip: backfilled entry replays without seeding dedup", async () => {
+    const indexer = new ToolCallIndexer();
+    const appended: Array<{ type: string; data: any }> = [];
+    const refs = await indexer.backfillChainRecords([record("a", 1)], backfillOpts(appended, "/tmp/unused"));
+
+    const indexEntry = { type: "custom", customType: CUSTOM_TYPE_INDEX, data: appended[0].data };
+    const rebuilt = new ToolCallIndexer();
+    const ctx = { sessionManager: { getBranch: () => [indexEntry] } } as any;
+    rebuilt.reconstructFromSession(ctx);
+
+    expect(rebuilt.getRecord("a")?.toolCallId).toBe("a");
+    expect(rebuilt.resolveToolCallId(refs[0].shortId)).toBe(occKey("a", 1));
+    expect(rebuilt.lookupByContent("bash", "out-a")).toBeUndefined();
+  });
+
+  test("legacy round-trip unchanged: pre-change entries (no backfilled/refs) still seed dedup", () => {
+    const indexEntry = {
+      type: "custom",
+      customType: CUSTOM_TYPE_INDEX,
+      data: { toolCalls: [record("a", 1)] },
+    };
+    const indexer = new ToolCallIndexer();
+    const ctx = { sessionManager: { getBranch: () => [indexEntry] } } as any;
+    indexer.reconstructFromSession(ctx);
+
+    expect(indexer.lookupByContent("bash", "out-a")).toBe(occKey("a", 1));
+  });
+
+  test("full legacy session round-trip: pre-change context-prune-chain + context-prune-index entries reconstruct to identical state", () => {
+    // Mirrors a real pre-change session: a summarized batch (index entry +
+    // per-batch summary entry, both pre-existing shapes) followed by a
+    // pre-change chain-compression entry (no bodySource - that field didn't
+    // exist yet) recording the range-drop decision over that batch's calls.
+    const indexEntry = {
+      type: "custom",
+      customType: CUSTOM_TYPE_INDEX,
+      data: {
+        toolCalls: [
+          {
+            toolCallId: "tc1",
+            toolName: "bash",
+            args: { cmd: "ls" },
+            resultText: "listing",
+            isError: false,
+            turnIndex: 0,
+            timestamp: 100,
+            resultTimestamp: 110,
+          },
+          {
+            toolCallId: "tc2",
+            toolName: "read",
+            args: { path: "f" },
+            resultText: "file contents",
+            isError: false,
+            turnIndex: 0,
+            timestamp: 100,
+            resultTimestamp: 210,
+          },
+        ],
+      },
+    };
+    const summaryEntry = {
+      type: "custom_message",
+      customType: CUSTOM_TYPE_SUMMARY,
+      content: "summarized tc1 and tc2",
+      details: {
+        toolCallRefs: [
+          { shortId: "t1", toolCallId: "tc1", resultTimestamp: 110 },
+          { shortId: "t2", toolCallId: "tc2", resultTimestamp: 210 },
+        ],
+        toolNames: ["bash", "read"],
+        turnIndex: 0,
+        timestamp: 100,
+      },
+    };
+    // Pre-change shape: no `bodySource` field (introduced by the uncovered-
+    // chain backfill feature; its absence must preserve existing semantics).
+    const chainEntry = {
+      type: "custom",
+      customType: CUSTOM_TYPE_CHAIN,
+      data: {
+        blockId: "b1",
+        startUserTimestamp: 50,
+        droppedToolCallIds: ["tc1", "tc2"],
+        droppedOccurrenceKeys: [occKey("tc1", 110), occKey("tc2", 210)],
+        finalAssistantTimestamp: 300,
+        toolRefs: ["t1", "t2"],
+        compressedAt: 12345,
+        rangeSummaryText: "fused range summary of tc1+tc2",
+      },
+    };
+
+    const indexer = new ToolCallIndexer();
+    const ctx = {
+      // Deep-clone so the byte-identity assertion below compares against the
+      // original fixture, not the same object reference the registry stored.
+      sessionManager: { getBranch: () => structuredClone([indexEntry, summaryEntry, chainEntry]) },
+    } as any;
+    indexer.reconstructFromSession(ctx);
+
+    // Chain registry populated, entry reconstructs byte-identical to what was persisted.
+    const entries = indexer.getChainEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual(chainEntry.data as any);
+    expect(entries[0].bodySource).toBeUndefined();
+
+    // Refs resolve exactly as a pre-change session would have resolved them.
+    expect(indexer.getRecord("t1")?.resultText).toBe("listing");
+    expect(indexer.getRecord("t2")?.resultText).toBe("file contents");
+    expect(indexer.resolveToolCallId("t1")).toBe(occKey("tc1", 110));
+    expect(indexer.resolveToolCallId("t2")).toBe(occKey("tc2", 210));
+
+    // Dedup canonical seeded (non-backfilled legacy index entry -> normal addBatch-equivalent seeding).
+    expect(indexer.lookupByContent("bash", "listing")).toBe(occKey("tc1", 110));
+    expect(indexer.lookupByContent("read", "file contents")).toBe(occKey("tc2", 210));
   });
 });

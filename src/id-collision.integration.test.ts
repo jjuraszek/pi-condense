@@ -89,6 +89,9 @@ const primeIndexer = async (
     blockRefs: { issue: () => `b${nextBlock++}` } as any,
     appendEntry: append,
     now: () => 9000,
+    messages,
+    diagnostics: { report: () => {} },
+    backfill: { spillThreshold: 100_000, spillPreviewBytes: 500, sessionDir: "/tmp/unused", sessionId: "s" },
   });
 
   return { indexer, appended, refsByToolCallId };
@@ -151,7 +154,17 @@ describe("id collision, end to end", () => {
     expectNoOrphanToolResults(out.messages);
   });
 
-  test("live-flush bare-id keying bug: chains are skipped as no-summary, no synthetics emitted", async () => {
+  // Regression for the bare-id keying bug (ref #8): registerSummaryBody keyed
+  // with `tc.toolCallId` (no resultTimestamp) mismatches hasPerBatchSummaryCoveringAny's
+  // occurrence-key lookups, so both chains fall through to the "no per-batch
+  // summary covers this span" branch. Pre-2026-08-14 that branch was a permanent
+  // no-summary skip (the bug this test used to pin). Since the deterministic
+  // backfill fallback (doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md),
+  // that branch instead compresses deterministically from already-indexed
+  // records (both chains' tool calls were indexed via addBatch, just not
+  // summary-covered under the right key) - so the keying bug can no longer
+  // strand a chain through this path. Pin the new correct behavior instead.
+  test("live-flush bare-id keying bug: chains compress deterministically instead of stranding", async () => {
     const messages = buildSession();
     // Mirrors the production BUG exactly: `tc.toolCallId` with no resultTimestamp,
     // matching index.ts's pre-fix `batch.toolCalls.map((tc) => tc.toolCallId)`.
@@ -159,7 +172,12 @@ describe("id collision, end to end", () => {
     const out = pruneMessages(messages, indexer, chainConfig);
 
     const synthetics = syntheticsOf(out.messages);
-    expect(synthetics).toHaveLength(0);
+    expect(synthetics).toHaveLength(2);
+    for (const s of synthetics) {
+      expect(s.content[0].text).toContain("Deterministic chain compression");
+      expect(s.content[0].text).toMatch(/Refs: t\d+/);
+    }
+    expectNoOrphanToolResults(out.messages);
   });
 
   test("re-rendering the same session is deep-equal", async () => {

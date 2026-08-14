@@ -655,7 +655,8 @@ export default function (pi: ExtensionAPI) {
           // message_end fires before pi persists the closing assistant, so thread it
           // in here; otherwise the newest chain reads as open and K over-retains by 1.
           // branchMessages was unwrapped once above, gated on chainCompression.enabled.
-          const chains = detectChains(withClosingMessage(branchMessages!, options.closingMessage), protectionPredicate);
+          const detectionMessages = withClosingMessage(branchMessages!, options.closingMessage);
+          const chains = detectChains(detectionMessages, protectionPredicate);
           const inGrace = inGraceRecoveryToolCallIds(branchMessages!, currentConfig.value.recoveryGraceTurns);
           const { compressedEntries } = await compressEligible(
             chains,
@@ -666,6 +667,14 @@ export default function (pi: ExtensionAPI) {
               appendEntry: persistAlias,
               now: () => Date.now(),
               fuseRange: makeFuseRange(ctx),
+              messages: detectionMessages,
+              diagnostics,
+              backfill: {
+                spillThreshold: currentConfig.value.spillThreshold,
+                spillPreviewBytes: currentConfig.value.spillPreviewBytes,
+                sessionDir: ctx.sessionManager.getSessionDir(),
+                sessionId: ctx.sessionManager.getSessionId(),
+              },
             },
             inGrace,
           );
@@ -1043,6 +1052,14 @@ export default function (pi: ExtensionAPI) {
         appendEntry: (type: string, data: unknown) => pi.appendEntry(type, data),
         now: () => Date.now(),
         fuseRange: makeFuseRange(ctx),
+        messages: branchMessages,
+        diagnostics,
+        backfill: {
+          spillThreshold: currentConfig.value.spillThreshold,
+          spillPreviewBytes: currentConfig.value.spillPreviewBytes,
+          sessionDir: ctx.sessionManager.getSessionDir(),
+          sessionId: ctx.sessionManager.getSessionId(),
+        },
       },
       inGrace,
     );

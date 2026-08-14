@@ -19,6 +19,8 @@ import {
 } from "./summary-refs.js";
 import { hashToolResult } from "./content-hash.js";
 import { bareToolCallId, occKey, parseOccKey } from "./occurrence-key.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { applySpill, blobDirFor, blobPathFor } from "./spill.js";
 
 export class ToolCallIndexer {
   /** occurrence key (`id@resultTimestamp`, or bare id for legacy) -> record */
@@ -78,17 +80,22 @@ export class ToolCallIndexer {
     for (const entry of branch) {
       if (entry.type === "custom" && (entry as any).customType === CUSTOM_TYPE_INDEX) {
         const data = (entry as any).data as IndexEntryData;
+        const backfilled = data.backfilled === true;
         if (data && Array.isArray(data.toolCalls)) {
           for (const toolCall of data.toolCalls) {
             const key = this.indexRecord(toolCall);
             // First-seen wins so the contentHashToOriginal map matches what
-            // addBatch would have produced at append time.
-            const hash = toolCall.contentHash ?? hashToolResult(toolCall.toolName, toolCall.resultText);
-            if (!this.contentHashToOriginal.has(hash)) {
-              this.contentHashToOriginal.set(hash, key);
+            // addBatch would have produced at append time. Backfilled records
+            // never seed this map (dedup poison guard - see backfillChainRecords).
+            if (!backfilled) {
+              const hash = toolCall.contentHash ?? hashToolResult(toolCall.toolName, toolCall.resultText);
+              if (!this.contentHashToOriginal.has(hash)) {
+                this.contentHashToOriginal.set(hash, key);
+              }
             }
           }
         }
+        if (backfilled && Array.isArray(data.refs)) this.registerSummaryRefs(data.refs);
         continue;
       }
 
@@ -502,5 +509,39 @@ export class ToolCallIndexer {
     }
 
     appendEntry(CUSTOM_TYPE_INDEX, { toolCalls: records } as IndexEntryData);
+  }
+
+  /**
+   * Atomic recoverability backfill for an uncovered chain (spec
+   * 2026-08-14-uncovered-chain-deterministic-backfill). Append-before-commit:
+   * in-memory maps are touched only after the index entry persisted. Records
+   * never seed contentHashToOriginal (dedup poison guard). Refs ride the
+   * entry so they survive session restart without a summary message.
+   */
+  async backfillChainRecords(
+    records: ToolCallRecord[],
+    opts: {
+      spillThreshold: number;
+      spillPreviewBytes: number;
+      sessionDir: string;
+      sessionId: string;
+      appendEntry: (customType: string, data?: unknown) => void;
+    },
+  ): Promise<SummaryToolCallRef[]> {
+    for (const r of records) {
+      if (r.resultText.length < opts.spillThreshold) continue;
+      const key = occKey(r.toolCallId, r.resultTimestamp);
+      const path = blobPathFor(opts.sessionDir, opts.sessionId, key);
+      await mkdir(blobDirFor(opts.sessionDir, opts.sessionId), { recursive: true });
+      await writeFile(path, r.resultText, "utf-8"); // throw = abort backfill (fail-closed)
+      applySpill(r, path, opts.spillPreviewBytes);
+    }
+    const calls = records.map((r) => ({ toolCallId: r.toolCallId, resultTimestamp: r.resultTimestamp }));
+    const { refs, nextIndex } = buildShortToolCallRefs(calls, this.nextShortAliasNumber);
+    this.nextShortAliasNumber = nextIndex; // burned numbers on failure are acceptable (monotonic, opaque)
+    opts.appendEntry(CUSTOM_TYPE_INDEX, { toolCalls: records, backfilled: true, refs } satisfies IndexEntryData);
+    for (const r of records) this.indexRecord(r);
+    this.registerSummaryRefs(refs);
+    return refs;
   }
 }

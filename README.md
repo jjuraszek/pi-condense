@@ -83,14 +83,20 @@ Every summarizer cost update is emitted on the shared `pi.events` channel `cost:
 | `context_tree_query` | The tool the model calls to recover a stubbed original by ref (`tN`) or `toolCallId`. A reused id returns every matching occurrence, not just one, including any that were content-deduplicated to an earlier record - see [PRUNING.md § Occurrence Identity](PRUNING.md#occurrence-identity) |
 | Batch vs chain | A batch is one flush's worth of tool calls; a chain is a longer closed sequence eligible for range compression |
 | Prune frontier | The last attempted prune boundary - advances even on a skip, so nothing is reconsidered twice |
-| Diagnostics (`diag u/m/o`) | A self-hiding status-line segment surfacing prune-time degradations: `u` = unresolved chain range, `m` = detection/render id mismatch (informational, does not change what's dropped), `o` = orphan tool-result sweep. Each letter's count is omitted when zero; the whole segment disappears when all three are zero. Backing session entries are `context-prune-diagnostic` - see below |
+| Diagnostics (`diag u/m/o/b`) | A self-hiding status-line segment surfacing prune-time degradations: `u` = unresolved chain range, `m` = detection/render id mismatch (informational, does not change what's dropped), `o` = orphan tool-result sweep, `b` = a zero-coverage chain with nothing left to backfill (genuine span mismatch, see below). Each letter's count is omitted when zero; the whole segment disappears when all four are zero. Backing session entries are `context-prune-diagnostic` - see below |
 | Context metrics (`think`/`gap`/`chain`) | Open-cycle thinking tokens, largest-chain share, frontier gap - what the pruner cannot (yet) reclaim, notably in single-chain sessions. See below and [PRUNING.md § Single-chain sessions](PRUNING.md#single-chain-sessions) |
 | Prompt-cache interaction | Why batching (not per-turn pruning) is the default - see [PRUNING.md](PRUNING.md#how-prefix-caching-works) |
 | `cost:external` | The shared cost-reporting channel pi-condense emits on (see above) |
 
 ### Diagnostic entries (`context-prune-diagnostic`)
 
-The status-line `diag u<N>/m<N>/o<N>` segment above is backed by `context-prune-diagnostic` session entries - session-log-only, never added to what the model sees. Full mechanics: [PRUNING.md § Diagnostics](PRUNING.md#diagnostics).
+The status-line `diag u<N>/m<N>/o<N>/b<N>` segment above is backed by `context-prune-diagnostic` session entries - session-log-only, never added to what the model sees. Full mechanics: [PRUNING.md § Diagnostics](PRUNING.md#diagnostics).
+
+### Uncovered chains compress too
+
+`/pruner compact` and the automatic flush both compress eligible chains **even when no per-batch summary ever covered them** - a trivial batch, an oversized-skip, a fully-deduped batch, or a plain capture miss all used to strand the chain permanently with a `no-summary` skip. These chains now get a deterministic, zero-LLM-cost stub body (call count, tool histogram, span duration, working `t<N>` refs) instead; the raw tool outputs are archived exactly like the covered path and stay recoverable via `context_tree_query`. **Exception:** a zero-coverage chain whose middle calls are *all* protected stays uncompressed (plain `no-summary` skip, no diagnostic) - every output would relocate verbatim into the synthetic body anyway, so compressing saves nothing. Full mechanics: [PRUNING.md § Deterministic fallback (uncovered chains)](PRUNING.md#deterministic-fallback-uncovered-chains).
+
+**Limitation:** a chain stranded in an otherwise-idle session is not healed by `/pruner now` on an empty queue (the flush returns early before chain detection runs at all) - it heals on the next flush that has any work, or immediately via `/pruner compact`.
 
 ### Context metrics (`context-prune-flush-metrics`)
 

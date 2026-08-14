@@ -201,6 +201,16 @@ describe("diagnostic counters on the status line", () => {
       "\u2502 prune: ON \u00b7 diag u1",
     );
   });
+
+  it("appends b<N> for backfill-empty alongside u/m/o", () => {
+    const text = pruneStatusText(cfg(true), undefined, {
+      "unresolved-range": 2,
+      "range-id-mismatch": 0,
+      "orphan-sweep": 1,
+      "backfill-empty": 2,
+    });
+    expect(text).toBe("prune: ON \u00b7 diag u2/o1/b2");
+  });
 });
 
 describe("context metrics suffix on the status line", () => {

@@ -114,4 +114,33 @@ describe("context_tree_query occurrence handling", () => {
     expect(text).not.toContain("undefined");
     expect(text).not.toContain("@legacy");
   });
+
+  test("backfilled record (turnIndex -1) renders 'Turn: -1' (cosmetic pin, ref #10)", async () => {
+    const idx = new ToolCallIndexer();
+    const appended: Array<{ type: string; data: any }> = [];
+    await idx.backfillChainRecords(
+      [
+        {
+          toolCallId: "bash_bf",
+          toolName: "bash",
+          args: { command: "ls" },
+          resultText: "backfilled-output",
+          isError: false,
+          turnIndex: -1,
+          timestamp: 1,
+          resultTimestamp: 1,
+        },
+      ],
+      {
+        spillThreshold: 100_000,
+        spillPreviewBytes: 500,
+        sessionDir: "/tmp/unused",
+        sessionId: "test-session",
+        appendEntry: (type: string, data?: unknown) => appended.push({ type, data }),
+      },
+    );
+
+    const text = await runTool(idx, ["bash_bf@1"]);
+    expect(text).toContain("Turn: -1");
+  });
 });

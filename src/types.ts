@@ -94,7 +94,7 @@ export const CUSTOM_TYPE_DIAGNOSTIC = "context-prune-diagnostic";
  */
 export const CUSTOM_TYPE_FLUSH_METRICS = "context-prune-flush-metrics";
 
-export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep";
+export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep" | "backfill-empty";
 
 export interface DiagnosticEntryData {
   kind: DiagnosticKind;
@@ -505,6 +505,12 @@ export interface ChainCompressionEntry {
    * Absent on fusion failure / single-batch spans → renderer falls back to concat.
    */
   rangeSummaryText?: string;
+  /**
+   * "deterministic" = zero-LLM synthetic body built by the uncovered-chain
+   * backfill path (rangeSummaryText holds the stub). Absent = LLM-fused or
+   * per-batch semantics, unchanged.
+   */
+  bodySource?: "deterministic";
 }
 
 export interface ChainCompressionConfig {
@@ -640,6 +646,10 @@ export interface ToolCallRecord {
  */
 export interface IndexEntryData {
   toolCalls: ToolCallRecord[];
+  /** Entry written by backfillChainRecords: records must NOT seed contentHashToOriginal. */
+  backfilled?: true;
+  /** Refs allocated at backfill time; durable carrier for alias reconstruction. */
+  refs?: SummaryToolCallRef[];
 }
 
 /**

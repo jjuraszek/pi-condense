@@ -46,7 +46,7 @@ describe("DiagnosticSink", () => {
 
   test("counts are per kind and start at zero", () => {
     const { sink } = sinkWithLog();
-    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0 });
+    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0 });
     sink.report("orphan-sweep", "a,b", "swept 2");
     expect(sink.counts()["orphan-sweep"]).toBe(1);
   });
@@ -96,7 +96,7 @@ describe("DiagnosticSink", () => {
     sink.report("unresolved-range", "b5", "x");
     sink.report("orphan-sweep", "a", "y");
     sink.reset();
-    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0 });
+    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0 });
   });
 
   test("reset() allows a previously-seen (kind, dedupKey) to report again", () => {
@@ -111,4 +111,13 @@ describe("DiagnosticSink", () => {
     expect(appended[1].data).toEqual({ kind: "unresolved-range", detail: "second" });
     expect(sink.counts()["unresolved-range"]).toBe(1);
   });
+});
+
+test("counts backfill-empty like any other kind", () => {
+  const appended: Array<{ type: string; data: any }> = [];
+  const sink = new DiagnosticSink((type, data) => appended.push({ type, data }));
+  sink.report("backfill-empty", "b5", "middleCount=0");
+  sink.report("backfill-empty", "b5", "middleCount=0"); // deduped
+  expect(sink.counts()["backfill-empty"]).toBe(1);
+  expect(appended.length).toBe(1);
 });
