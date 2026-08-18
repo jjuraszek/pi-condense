@@ -12,7 +12,7 @@ This repo is one of four sibling pi extensions - **pi-quiver** (capabilities), *
 
 When editing docs here, if a claim belongs to a sibling's concern (e.g. how `subagent()` dispatch works, or the gauntlet gate pipeline), link the sibling's doc rather than restating it. When a change alters the `cost:external` payload shape or semantics, update pi-cohort's observability docs in the same logical change and note it in both CHANGELOGs.
 
-<!-- agents-core:begin v1 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+<!-- agents-core:begin v2 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Communication Style
 
 Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
@@ -41,13 +41,13 @@ LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, 
 
 ## Ticket convention
 
-Every GitHub issue follows **Context -> Problem -> Idea (how to address) -> Acceptance Criteria**, then the idea is **roasted by 2 subagents and the consolidated roast is posted as a comment** before the issue is ready. A roast that kills or shrinks the idea is a success - file only what survives.
+Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` (pi-gauntlet >= the release that ships it) - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments). Status transitions and comments are exempt - plain tracker CLI.
 
 ## Ground Truth Before Reasoning
 
 Never guess Pi's API, message shapes, config, or values - read the source; the source wins; if it is missing, say so and ask, don't fabricate. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner` - treat its shipped `.d.ts` as API truth. Repo-specific source pointers, if any, follow.
 
-<!-- agents-core:end v1 -->
+<!-- agents-core:end v2 -->
 
 ## Ground truth pointers
 
@@ -67,7 +67,7 @@ Repo-specific sources (the principle is in the shared core above); field names m
 | Implementation: hook a Pi event, change the indexer, touch the summarizer | open the matching `src/*.ts` file directly |
 | Run a release | `.agents/skills/release/SKILL.md` |
 | Brainstorm / plan a multi-step change | superpowers `brainstorming` then `writing-plans` skills; specs land in `doc/specs/`, plans in `doc/plans/` (ephemeral) |
-| File an issue / ticket | Ticket convention above (Context -> Problem -> Idea -> ACs + 2-subagent roast comment) |
+| File an issue / ticket | Ticket convention above (`/skill:shape-ticket`) |
 | Override a pi-gauntlet skill for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
 | Historical context for a past change | `doc/specs/*.md` (newest first) |
 | Change the shared AGENTS core (style / discipline / ticket / ground-truth) | edit [`AGENTS.core.md`](AGENTS.core.md), run `node scripts/check-agents-core.mjs --fix`, copy both files to sibling repos |

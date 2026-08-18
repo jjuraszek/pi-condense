@@ -26,7 +26,7 @@ LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, 
 
 ## Ticket convention
 
-Every GitHub issue follows **Context -> Problem -> Idea (how to address) -> Acceptance Criteria**, then the idea is **roasted by 2 subagents and the consolidated roast is posted as a comment** before the issue is ready. A roast that kills or shrinks the idea is a success - file only what survives.
+Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` (pi-gauntlet >= the release that ships it) - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments). Status transitions and comments are exempt - plain tracker CLI.
 
 ## Ground Truth Before Reasoning
 
