@@ -2,7 +2,9 @@
  * pi-ai repairs orphan tool calls only; providers reject orphan tool results.
  *
  * Open-call tracking is PER TURN: an assistant message replaces the open set
- * with its own toolCall ids. A cumulative seen-set would let an id used
+ * with its own toolCall ids, and any message that is neither assistant nor
+ * toolResult is a barrier that clears it (matching where pi-ai flushes
+ * synthetic tool results). A cumulative seen-set would let an id used
  * validly in an early turn license a later genuine orphan - exactly the
  * id-collision case this exists for.
  *
@@ -32,7 +34,15 @@ export function sweepOrphanToolResults(messages: any[]): { messages: any[]; swep
         orphanIndices.add(i);
         sweptIds.push(msg.toolCallId);
       }
+      continue;
     }
+    // Barrier: any other role converts to a user-boundary at the provider
+    // (convertToLlm maps custom/branchSummary/compactionSummary/bashExecution
+    // to role "user"; pi-ai flushes synthetic tool results there), so a
+    // still-open call can no longer be legally answered after it. Unknown
+    // roles and excludeFromContext bashExecutions are a deliberate
+    // conservative over-sweep - no allowlist.
+    open = new Set();
   }
 
   if (orphanIndices.size === 0) return { messages, sweptIds: [] };

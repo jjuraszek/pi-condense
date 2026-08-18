@@ -12,6 +12,8 @@ export function expectNoOrphanToolResults(messages: any[]): void {
     } else if (m.role === "toolResult") {
       expect(open.has(m.toolCallId)).toBe(true);
       open.delete(m.toolCallId);
+    } else {
+      open = new Set();
     }
   }
 }

@@ -1,5 +1,7 @@
 # Tool-call id collisions: positional chain drops, occurrence identity, orphan sweep
 
+> **Superseded by:** [doc/specs/2026-08-18-gh-11-orphan-sweep-barrier.md](./2026-08-18-gh-11-orphan-sweep-barrier.md) - "C. Orphan sweep" section: barrier rule and the claim that C covers the `stopReason: error|aborted` orphan path
+
 Issue: [jjuraszek/pi-condense#8](https://github.com/jjuraszek/pi-condense/issues/8) (issue #9 merged in as section B).
 
 ## Problem

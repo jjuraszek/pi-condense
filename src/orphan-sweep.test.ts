@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { sweepOrphanToolResults } from "./orphan-sweep.js";
+import { expectNoOrphanToolResults } from "./test-support.js";
 
 const asst = (ts: number, ids: string[]) => ({
   role: "assistant",
@@ -60,8 +61,47 @@ describe("sweepOrphanToolResults", () => {
     expect(sweepOrphanToolResults(msgs).messages).toBe(msgs);
   });
 
-  test("non-assistant messages between a call and its result do not close the open set", () => {
-    const msgs = [asst(1, ["a"]), { role: "custom", customType: "x", timestamp: 2 }, res(3, "a")];
-    expect(sweepOrphanToolResults(msgs).messages).toBe(msgs);
+  // AC1: any non-assistant/non-toolResult role is a barrier - including an
+  // unknown role, so a role-allowlist implementation cannot pass.
+  const barrierRoles: Array<[string, any]> = [
+    ["custom", { role: "custom", customType: "x", timestamp: 2 }],
+    ["user", user(2)],
+    ["branchSummary", { role: "branchSummary", timestamp: 2 }],
+    ["compactionSummary", { role: "compactionSummary", timestamp: 2 }],
+    ["bashExecution", { role: "bashExecution", timestamp: 2 }],
+    ["unknown future role", { role: "future-role", timestamp: 2 }],
+  ];
+  for (const [name, barrier] of barrierRoles) {
+    test(`a ${name} message between a call and its result is a barrier: the result is swept`, () => {
+      const msgs = [asst(1, ["a"]), barrier, res(3, "a")];
+      const out = sweepOrphanToolResults(msgs);
+      expect(out.sweptIds).toEqual(["a"]);
+      expect(out.messages).toHaveLength(2);
+      expect(out.messages.some((m: any) => m.role === "toolResult")).toBe(false);
+    });
+  }
+
+  // AC2: barrier clears only what is still open; results consumed before it stay.
+  test("multi-call turn: barrier sweeps only the not-yet-consumed result", () => {
+    const msgs = [asst(1, ["a", "b"]), res(2, "a"), { role: "custom", customType: "x", timestamp: 3 }, res(4, "b")];
+    const out = sweepOrphanToolResults(msgs);
+    expect(out.sweptIds).toEqual(["b"]);
+    expect(out.messages).toHaveLength(3);
+  });
+
+  // AC3: a barrier after a completed cycle is untouched - same array reference.
+  test("trailing barrier after a completed cycle is a no-op (same array reference)", () => {
+    const msgs = [asst(1, ["a"]), res(2, "a"), { role: "custom", customType: "x", timestamp: 3 }];
+    const out = sweepOrphanToolResults(msgs);
+    expect(out.messages).toBe(msgs);
+    expect(out.sweptIds).toEqual([]);
+  });
+
+  // AC5: the test helper enforces the same barrier rule (it copies the sweep's
+  // orphan definition; delegation would make sweep tests tautological).
+  test("expectNoOrphanToolResults throws on a mid-cycle barrier orphan and passes on a clean trailing barrier", () => {
+    const bad = [asst(1, ["a"]), { role: "custom", customType: "x", timestamp: 2 }, res(3, "a")];
+    expect(() => expectNoOrphanToolResults(bad)).toThrow();
+    expectNoOrphanToolResults([asst(1, ["a"]), res(2, "a"), { role: "custom", customType: "x", timestamp: 3 }]);
   });
 });

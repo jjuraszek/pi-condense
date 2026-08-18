@@ -47,10 +47,11 @@ export function sizeMessages(messages: any[]): number {
  * Only runs when `chainCompression.enabled` and chain entries exist.
  *
  * Phase 4 — orphan sweep: structural post-condition run unconditionally over
- * the final array. Removes any toolResult whose matching toolCall id was not
- * opened by the immediately preceding assistant turn (per-turn open set, not
- * cumulative — see src/orphan-sweep.ts). Reference-preserving when nothing is
- * swept, so a clean render still returns the identical input array.
+ * the final array. Removes any toolResult whose matching toolCall id is not
+ * open: opened by the most recent assistant turn and uninterrupted by a
+ * barrier (any non-assistant/non-toolResult message) — see
+ * src/orphan-sweep.ts. Reference-preserving when nothing is swept, so a
+ * clean render still returns the identical input array.
  *
  * Return shape:
  *   - `pruned: true`  — at least one change happened; the returned

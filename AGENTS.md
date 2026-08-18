@@ -94,7 +94,7 @@ src/
   nested-placeholders.ts           # pure: {bN} substitution in chain summary text
   error-purge.ts                   # pure: replace failed toolCall arg bodies with stubs after cooldown
   occurrence-key.ts                # pure: id@resultTimestamp key ↔ bare-id derivation, the session-durable tool-call discriminant
-  orphan-sweep.ts                  # pure: removes toolResults whose id was not opened by the immediately preceding assistant turn (per-turn tracking)
+  orphan-sweep.ts                  # pure: removes toolResults whose id is not open (per-turn tracking; any non-assistant/non-toolResult message is a barrier that clears the open set)
   diagnostics.ts                   # DiagnosticSink: writes context-prune-diagnostic entries, deduped per (kind, dedupKey), never in LLM context
   pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune → orphan-sweep
   commands.ts                      # /pruner subcommands, settings overlay, status widget

@@ -796,6 +796,13 @@ describe("applyChainCompressions - positional", () => {
         msgs[3] = { ...msgs[3], content: [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "done 1" }] } as any;
         return applyChainCompressions(msgs, entries as any, summaryFor, true);
       }],
+      ["a context-prune-summary after a completed cycle", () => {
+        const msgs = incident();
+        msgs.splice(8, 0, { role: "custom", customType: CUSTOM_TYPE_SUMMARY, content: "batch summary", timestamp: 2250 } as any);
+        const out = applyChainCompressions(msgs, entries as any, summaryFor, false);
+        expect(out.some((m: any) => m.customType === CUSTOM_TYPE_SUMMARY)).toBe(true);
+        return out;
+      }],
       ["skips an entry whose start falls strictly inside another entry's range", () => {
         const wide = { blockId: "b8", startUserTimestamp: 1000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9002 };
         const nestedInner = { blockId: "b9", startUserTimestamp: 2000, droppedToolCallIds: [], finalAssistantTimestamp: 2200, toolRefs: [], compressedAt: 9003 };
