@@ -7,6 +7,10 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [2.9.1] - 2026-08-18
+
+- **Orphan sweep: any foreign message is now a barrier ([#11](https://github.com/jjuraszek/pi-condense/issues/11)).** `sweepOrphanToolResults` only reset its open-call set on `assistant` messages, while pi-ai flushes synthetic tool results at both `assistant` and `user` boundaries (`convertToLlm` maps `custom`/`branchSummary`/`compactionSummary`/`bashExecution` to `user`). A foreign message spliced between a toolCall and its toolResult (observed: a pi-cohort control notice) let the real result through alongside pi-ai's synthetic - a duplicate `tool_use_id` the provider rejects permanently (Anthropic 400, branch bricked). Now any message that is neither `assistant` nor `toolResult` clears the open set, so the interleaved result is swept and pi-ai's repairable synthetic stands alone; already-broken branches un-brick on the next render. Deliberate conservative over-sweep (unknown roles, `excludeFromContext` bashExecution) - no role allowlist. Test helper `expectNoOrphanToolResults` carries the identical rule. Spec: `doc/specs/2026-08-18-gh-11-orphan-sweep-barrier.md` (partially supersedes the 2026-08-12 spec's section C).
+
 ## [2.9.0] - 2026-08-14
 
 - **Uncovered chains now compress deterministically instead of stranding forever ([#10](https://github.com/jjuraszek/pi-condense/issues/10)).** Chain compression (Phase 3) required per-batch summary coverage; a closed eligible chain whose span produced no summaries (trivial batches, `skipped-oversized`, fully-deduped spans, capture misses) hit a permanent `no-summary` skip - once the prune frontier passed it, nothing could ever reclaim it. The motivating incident left a 639-call, ~935k-char chain (~62% of a 620k window) live in context indefinitely.
