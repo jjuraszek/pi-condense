@@ -69,6 +69,8 @@ pi install npm:pi-condense
 | `agent-message` (default) | When the agent sends a final text-only reply | ~1 cache rewrite per task batch |
 | `on-demand` | Only when you run `/pruner now` | None until you ask |
 
+With the default `agent-message` trigger (and `autoBudgetThreshold`/`budgetTurnDelta` unset), a non-interactive (`pi -p`) session sees its first flush only at the final reply - set `autoBudgetThreshold` (e.g. `0.8`) so flushes also fire mid-run. This is a property of single-prompt sessions, not a defect in the default.
+
 Before any summarizer call, a pre-flush pipeline can drop or redirect a batch at zero LLM cost: protected tools/paths are never touched, content-hash duplicates are aliased to the original, batches too small to be worth summarizing are skipped outright, and oversized single results are spilled straight to a sidecar file. Closed tool-call chains older than a rolling window are additionally range-compressed. Full pipeline and each safeguard: [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards), [§ Chain Compression](PRUNING.md#chain-compression).
 
 ### External cost channel
