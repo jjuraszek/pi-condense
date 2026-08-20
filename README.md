@@ -182,6 +182,10 @@ pi-condense is the context-economy layer: it has no code dependency on the other
 
 No committed roadmap beyond what's already tracked in [CHANGELOG.md](CHANGELOG.md); proposals and in-progress work show up there and in repo issues first.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) - issues follow a Context / Problem / Idea / Acceptance Criteria template; PRs run the pi-gauntlet workflow (one-liners exempt from ceremony, never from keeping docs truthful).
+
 ## Support
 
 If this saves you tokens, [buy me a coffee](https://buymeacoffee.com/jjurasszek).
