@@ -173,6 +173,8 @@ function bootExtension(
   const piAppended: AppendedEntry[] = options.separatePiAppended ? [] : appended;
   const sessionAppended: AppendedEntry[] = appended;
   const handlers = new Map<string, (event: any, ctx: any) => any>();
+  const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+  const notifications: string[] = [];
 
   const pushPi = (type: string, data?: unknown) => {
     piAppended.push({ type, data });
@@ -187,7 +189,9 @@ function bootExtension(
     },
     appendEntry: options.piAppendEntry ? options.piAppendEntry(pushPi) : pushPi,
     sendMessage() {},
-    registerCommand() {},
+    registerCommand(name: string, spec: { handler: (args: string, ctx: any) => Promise<void> }) {
+      commands.set(name, spec.handler);
+    },
     registerTool() {},
     registerMessageRenderer() {},
     events: { emit() {} },
@@ -221,12 +225,14 @@ function bootExtension(
     ui: {
       setStatus() {},
       setWidget() {},
-      notify() {},
+      notify(message: string) {
+        notifications.push(message);
+      },
       select: async () => undefined,
     },
   };
 
-  return { handlers, ctx, pi, piAppended, sessionAppended, appended, branch };
+  return { handlers, commands, notifications, ctx, pi, piAppended, sessionAppended, appended, branch };
 }
 
 async function boot(options?: Parameters<typeof bootExtension>[0]) {
@@ -526,75 +532,6 @@ describe("reload rearm (issue #6)", () => {
     expect(piAppended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
   });
 
-  it("recomputes the cached metrics snapshot on a turn_end whose toolResults produce no pushed batch (G3)", async () => {
-    // Component 4 (spec): the snapshot cache recomputes at every enabled
-    // turn_end carrying toolResults, unconditional on whether trim yields a
-    // batch to push. Observed via the footer widget suffix (commands.ts's
-    // pruneStatusText), which is rendered from the cache, not recomputed
-    // itself — the honest seam here since the harness's pi.registerCommand
-    // is a no-op stub and the registerCommands getCachedMetrics callback is
-    // therefore unreachable from a test.
-    const { handlers, ctx, branch } = await boot({ protectedTools: ["secret_tool"] });
-
-    // Neutralize the budget/delta gate so this test only observes the
-    // recompute, not a side-effect flush (harness default usage is 0.6,
-    // above the fixture's 0.5 autoBudgetThreshold).
-    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
-
-    await handlers.get("session_start")!({}, ctx);
-
-    const statusCalls: unknown[] = [];
-    ctx.ui.setStatus = (_id: string, text?: string) => statusCalls.push(text);
-
-    // Force a render of the current (session_start-computed) cache.
-    const rawBefore = ctx.sessionManager.getBranch().filter((e: any) => e.type === "message").map((e: any) => e.message);
-    await handlers.get("context")!({ messages: rawBefore }, ctx);
-    const textBefore = statusCalls[statusCalls.length - 1];
-
-    // Grow the branch as Pi would before firing turn_end: a new assistant
-    // turn with a large thinking block and a protected tool call, plus its
-    // toolResult. Protected content is excluded from frontierGapTokens by
-    // design, but NOT from openCycleThinkingTokens or largestChainSharePct —
-    // so this turn still moves the cache if recomputed.
-    const newAssistant = {
-      type: "message",
-      message: {
-        role: "assistant",
-        content: [
-          { type: "thinking", text: "t".repeat(4000) },
-          { type: "toolCall", id: "tc2", name: "secret_tool", arguments: {} },
-        ],
-      },
-    };
-    const newToolResult = {
-      type: "message",
-      message: {
-        role: "toolResult",
-        toolCallId: "tc2",
-        toolName: "secret_tool",
-        content: [{ type: "text", text: "s".repeat(400) }],
-        timestamp: Date.now(),
-      },
-    };
-    branch.push(newAssistant, newToolResult);
-
-    // This turn's toolResults are entirely protected, so trimBatchToPendingRange
-    // returns null and no batch is pushed — the case this fix targets.
-    await handlers.get("turn_end")!(
-      { message: newAssistant.message, toolResults: [newToolResult.message], turnIndex: 3 },
-      ctx,
-    );
-
-    const rawAfter = ctx.sessionManager.getBranch().filter((e: any) => e.type === "message").map((e: any) => e.message);
-    await handlers.get("context")!({ messages: rawAfter }, ctx);
-    const textAfter = statusCalls[statusCalls.length - 1];
-
-    // Pre-fix, the cache is stale (computed once at session_start, on the
-    // pre-growth branch) — the widget text does not move. Post-fix, the
-    // turn_end recompute picks up the larger open segment/thinking.
-    expect(textAfter).not.toBe(textBefore);
-  });
-
   it("includes a persisted summary custom_message entry in the largest-chain-share denominator (G1)", async () => {
     // Component 1 (spec): denominator = per-message chars over the entire
     // branch projection, INCLUDING retained custom_message summary entries.
@@ -620,17 +557,13 @@ describe("reload rearm (issue #6)", () => {
     };
     const branch = [...closedChain, summaryEntry, closer];
 
-    const { handlers, ctx } = await boot({ branch });
+    const { handlers, commands, notifications, ctx } = await boot({ branch });
     ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
-
-    const statusCalls: unknown[] = [];
-    ctx.ui.setStatus = (_id: string, text?: string) => statusCalls.push(text);
 
     await handlers.get("session_start")!({}, ctx);
 
-    const rawMessages = ctx.sessionManager.getBranch().filter((e: any) => e.type === "message").map((e: any) => e.message);
-    await handlers.get("context")!({ messages: rawMessages }, ctx);
-    const text = statusCalls[statusCalls.length - 1] as string;
+    await commands.get("pruner")!("status", ctx);
+    const text = notifications[notifications.length - 1] as string;
 
     const chainChars = closedChain.map((e: any) => JSON.stringify(e.message).length).reduce((a, b) => a + b, 0);
     const totalWithSummary = [...closedChain.map((e: any) => e.message), summaryEntry, closer.message]
@@ -641,7 +574,7 @@ describe("reload rearm (issue #6)", () => {
       (100 * chainChars) / closedChain.map((e: any) => JSON.stringify(e.message).length).reduce((a, b) => a + b, 0),
     );
 
-    expect(text).toContain(`chain ${expectedPct}%`);
+    expect(text).toContain(`chain share:  ${expectedPct}%`);
     expect(expectedPct).toBeLessThan(inflatedPct);
   });
 });

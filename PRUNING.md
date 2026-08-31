@@ -995,7 +995,7 @@ Phase 1 (per-batch summarization) is unaffected by chain closure and remains the
 
 Neither knob makes a chain close; they just keep Phase 1 flushing on schedule so raw toolResults do not pile up unsummarized for the whole run.
 
-**Observability metrics** (`src/context-metrics.ts`, `computeContextMetrics`) exist precisely to make this shape of session visible instead of silently reporting `calls: 1` the way the triggering incident did. All three are chars/4 token estimates (`Math.round`, same convention as the reclaim footer) and surface on `/pruner status` (a `--- context ---` block), the footer status line (a compact suffix, shown only when the frontier gap is non-zero), and a `context-prune-flush-metrics` session entry written once per flush attempt regardless of outcome:
+**Observability metrics** (`src/context-metrics.ts`, `computeContextMetrics`) exist precisely to make this shape of session visible instead of silently reporting `calls: 1` the way the triggering incident did. All three are chars/4 token estimates (`Math.round`, same convention as the reclaim footer) and surface on `/pruner status` (a `--- context ---` block) and a `context-prune-flush-metrics` session entry written once per flush attempt regardless of outcome:
 
 | Metric | Definition |
 |---|---|

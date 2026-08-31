@@ -93,10 +93,6 @@ export default function (pi: ExtensionAPI) {
   // Cleared on every non-concurrent flushPending invocation.
   let rearmedPending = false;
 
-  // Latest ContextMetricsSnapshot, recomputed at reload probes, batch capture,
-  // and flush entry. Cached (rather than recomputed on every widget refresh)
-  // because computeContextMetrics walks the full branch.
-  let metricsCache: ContextMetricsSnapshot | undefined;
   const computeMetricsSnapshot = (ctx: any): ContextMetricsSnapshot | undefined => {
     try {
       // Includes persisted custom_message entries (e.g. this extension's own
@@ -114,7 +110,7 @@ export default function (pi: ExtensionAPI) {
             ? { role: "custom", customType: e.customType, content: e.content, display: e.display, details: e.details, timestamp: new Date(e.timestamp).getTime() }
             : e.message,
         );
-      metricsCache = computeContextMetrics(
+      return computeContextMetrics(
         branch,
         frontier.get(),
         (k: string) => indexer.isSummarized(k),
@@ -122,8 +118,8 @@ export default function (pi: ExtensionAPI) {
       );
     } catch (err) {
       console.error("pi-condense: context metrics computation failed", err);
+      return undefined;
     }
-    return metricsCache;
   };
 
   type FlushResult =
@@ -566,7 +562,7 @@ export default function (pi: ExtensionAPI) {
 
       if (processedBatches.length === 0) {
         // Nothing was persisted (all calls failed or first call failed)
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts(), metricsCache);
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
         outcome = "error";
         return { ok: false, reason: "summarizer-failed" };
       }
@@ -644,7 +640,7 @@ export default function (pi: ExtensionAPI) {
         return { ok: false, reason: isStaleContextError(err) ? "stale-context" : "failed", error: errorMessage(err) };
       }
 
-      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts(), metricsCache);
+      setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
       emitExternalCost(pi, statsAccum);
 
       // Chain compression — compress closed chains beyond the rolling window.
@@ -771,7 +767,7 @@ export default function (pi: ExtensionAPI) {
       // When the abort signal fired, summarizeBatch rethrows rather than
       // swallowing the error.  Don't show a UI error — the user intended this.
       if (options.signal?.aborted) {
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts(), metricsCache);
+        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
         return { ok: false, reason: "aborted" };
       }
       if (isStaleContextError(err)) {
@@ -816,10 +812,8 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    computeMetricsSnapshot(ctx);
-
     // Update footer status
-    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts(), metricsCache);
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
 
     ctx.ui.setWidget(
       "pruner-boot",
@@ -856,8 +850,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    computeMetricsSnapshot(ctx);
-    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts(), metricsCache);
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
   });
 
   // ── turn_end: capture batch, flush immediately or queue ──────────────────
@@ -933,13 +926,6 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
-
-    // Recompute regardless of whether trim produced a batch: a turn whose
-    // toolResults are all protected/spilled/summarized/trimmed-empty still
-    // changes the branch (thinking, open-segment size), so the cache must not
-    // go stale on it. Placed before the pushedBatch/rearmedPending early
-    // return below — a cache write is not gate evaluation.
-    if (hasToolResults) computeMetricsSnapshot(ctx);
 
     // Mirrors main's `if (!batch) return;`: no freshly pushed batch this turn
     // means no gate evaluation, regardless of leftover pendingBatches from an
@@ -1026,7 +1012,7 @@ export default function (pi: ExtensionAPI) {
       changed = true;
       statsAccum.setLiveReclaim(result.beforeChars, result.afterChars);
     }
-    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts(), metricsCache);
+    setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
 
     if (!changed) return undefined;
     return { messages };
@@ -1082,7 +1068,6 @@ export default function (pi: ExtensionAPI) {
     compactChains,
     () => diagnostics.counts(),
     (ctx: any) => computeMetricsSnapshot(ctx) ?? EMPTY_METRICS_SNAPSHOT,
-    () => metricsCache,
     () => rearmedPending,
   );
 }

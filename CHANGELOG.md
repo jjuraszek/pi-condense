@@ -7,6 +7,10 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [2.9.2] - 2026-08-31
+
+- **Context metrics removed from the footer status line.** The ` · think Nk · gap Nk · chain P%` suffix rendered on nearly every non-idle session and crowded the footer for no actionable signal. The metrics stay on `/pruner status` (`--- context ---`) and in the `context-prune-flush-metrics` session entries; the footer is back to prune state, reclaim, and `diag`. The snapshot cache that existed only to feed the widget is gone - both remaining consumers compute on demand.
+
 ## [2.9.1] - 2026-08-18
 
 - **Orphan sweep: any foreign message is now a barrier ([#11](https://github.com/jjuraszek/pi-condense/issues/11)).** `sweepOrphanToolResults` only reset its open-call set on `assistant` messages, while pi-ai flushes synthetic tool results at both `assistant` and `user` boundaries (`convertToLlm` maps `custom`/`branchSummary`/`compactionSummary`/`bashExecution` to `user`). A foreign message spliced between a toolCall and its toolResult (observed: a pi-cohort control notice) let the real result through alongside pi-ai's synthetic - a duplicate `tool_use_id` the provider rejects permanently (Anthropic 400, branch bricked). Now any message that is neither `assistant` nor `toolResult` clears the open set, so the interleaved result is swept and pi-ai's repairable synthetic stands alone; already-broken branches un-brick on the next render. Deliberate conservative over-sweep (unknown roles, `excludeFromContext` bashExecution) - no role allowlist. Test helper `expectNoOrphanToolResults` carries the identical rule. Spec: `doc/specs/2026-08-18-gh-11-orphan-sweep-barrier.md` (partially supersedes the 2026-08-12 spec's section C).

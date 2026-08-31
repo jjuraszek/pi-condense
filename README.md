@@ -86,7 +86,7 @@ Every summarizer cost update is emitted on the shared `pi.events` channel `cost:
 | Batch vs chain | A batch is one flush's worth of tool calls; a chain is a longer closed sequence eligible for range compression |
 | Prune frontier | The last attempted prune boundary - advances even on a skip, so nothing is reconsidered twice |
 | Diagnostics (`diag u/m/o/b`) | A self-hiding status-line segment surfacing prune-time degradations: `u` = unresolved chain range, `m` = detection/render id mismatch (informational, does not change what's dropped), `o` = orphan tool-result sweep, `b` = a zero-coverage chain with nothing left to backfill (genuine span mismatch, see below). Each letter's count is omitted when zero; the whole segment disappears when all four are zero. Backing session entries are `context-prune-diagnostic` - see below |
-| Context metrics (`think`/`gap`/`chain`) | Open-cycle thinking tokens, largest-chain share, frontier gap - what the pruner cannot (yet) reclaim, notably in single-chain sessions. See below and [PRUNING.md § Single-chain sessions](PRUNING.md#single-chain-sessions) |
+| Context metrics (`thinking`/`chain share`/`frontier gap`) | Open-cycle thinking tokens, largest-chain share, frontier gap - what the pruner cannot (yet) reclaim, notably in single-chain sessions. Shown on `/pruner status`, never on the footer. See below and [PRUNING.md § Single-chain sessions](PRUNING.md#single-chain-sessions) |
 | Prompt-cache interaction | Why batching (not per-turn pruning) is the default - see [PRUNING.md](PRUNING.md#how-prefix-caching-works) |
 | `cost:external` | The shared cost-reporting channel pi-condense emits on (see above) |
 
@@ -102,10 +102,9 @@ The status-line `diag u<N>/m<N>/o<N>/b<N>` segment above is backed by `context-p
 
 ### Context metrics (`context-prune-flush-metrics`)
 
-Three metrics the pruner cannot yet reclaim - open-cycle thinking tokens, largest-chain share (%), frontier gap tokens - surface in three places, all backed by `computeContextMetrics` (`src/context-metrics.ts`):
+Three metrics the pruner cannot yet reclaim - open-cycle thinking tokens, largest-chain share (%), frontier gap tokens - surface in two places, both backed by `computeContextMetrics` (`src/context-metrics.ts`). They are deliberately kept off the footer status line, which stays limited to prune state, reclaim, and diagnostics:
 
 - `/pruner status` prints a `--- context ---` block: `thinking:`, `chain share:`, `frontier gap:`, plus a `rearmed: yes` line while a reload-rearm probe (below) has recoverable work armed.
-- The footer status line appends `· think Nk · gap Nk · chain P%` - only when the frontier gap is non-zero, so an idle session's footer is unchanged.
 - Each flush attempt (every outcome, including empty/error) writes one `context-prune-flush-metrics` session entry with the pre-flush snapshot - session-log-only, never added to what the model sees, and not reconstructed on reload.
 
 These are most informative for long single-chain sessions where Phase 3 (chain compression) never gets a closed chain to act on - see [PRUNING.md § Single-chain sessions](PRUNING.md#single-chain-sessions) for the limitation and config guidance, and [PRUNING.md § Reload rearm](PRUNING.md#reload-rearm) for how a reload with recoverable pending work re-arms the automatic flush trigger.

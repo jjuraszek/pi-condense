@@ -11,10 +11,9 @@ function captureStatus(
   config: ContextPruneConfig,
   value?: Parameters<typeof setPruneStatusWidget>[2],
   diagnostics?: Parameters<typeof setPruneStatusWidget>[3],
-  metrics?: Parameters<typeof setPruneStatusWidget>[4],
 ): string | undefined {
   let captured: string | undefined;
-  setPruneStatusWidget({ ui: { setStatus: (_id, text) => { captured = text; } } }, config, value, diagnostics, metrics);
+  setPruneStatusWidget({ ui: { setStatus: (_id, text) => { captured = text; } } }, config, value, diagnostics);
   return captured;
 }
 
@@ -59,7 +58,6 @@ function setupPrunerCommand(overrides: {
     async () => ({ compressedEntries: [], skipped: 0 }),
     undefined,
     overrides.getContextMetrics,
-    undefined,
     overrides.getRearmed,
   );
 
@@ -213,28 +211,3 @@ describe("diagnostic counters on the status line", () => {
   });
 });
 
-describe("context metrics suffix on the status line", () => {
-  const metrics: ContextMetricsSnapshot = {
-    openCycleThinkingTokens: 12000,
-    largestChainSharePct: 62,
-    frontierGapTokens: 195000,
-  };
-
-  it("appends a compact think/gap/chain segment when frontierGapTokens > 0", () => {
-    const text = pruneStatusText(cfg(true), undefined, undefined, metrics);
-    expect(text).toContain("\u00b7 think 12.0k \u00b7 gap 195.0k \u00b7 chain 62%");
-  });
-
-  it("omits the suffix when frontierGapTokens is 0", () => {
-    const withZeroGap = { ...metrics, frontierGapTokens: 0 };
-    expect(pruneStatusText(cfg(true), undefined, undefined, withZeroGap)).toBe(
-      pruneStatusText(cfg(true)),
-    );
-  });
-
-  it("composes after the diag suffix when both are present", () => {
-    const mixedDiag = { "unresolved-range": 2, "range-id-mismatch": 0, "orphan-sweep": 1 } as const;
-    const text = pruneStatusText(cfg(true), undefined, mixedDiag, metrics);
-    expect(text).toBe("prune: ON \u00b7 diag u2/o1 \u00b7 think 12.0k \u00b7 gap 195.0k \u00b7 chain 62%");
-  });
-});
