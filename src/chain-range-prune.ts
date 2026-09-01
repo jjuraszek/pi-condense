@@ -3,6 +3,7 @@ import { CUSTOM_TYPE_SUMMARY } from "./types.js";
 import type { ChainCompressionEntry } from "./types.js";
 import { substituteBlockRefs } from "./nested-placeholders.js";
 import { extractToolResultText } from "./batch-capture.js";
+import { isChainAnchorCustom } from "./chain-detector.js";
 import { bareToolCallId, occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { DiagnosticSink } from "./diagnostics.js";
 
@@ -68,11 +69,12 @@ export function buildSyntheticChainMessage(
 /**
  * Resolves a persisted chain entry to a positional index range.
  *
- * Role-gated and unique-match-or-nothing: exactly one user message at
+ * Role-gated and unique-match-or-nothing: exactly one start anchor (user
+ * message or eligible non-pruner custom, isChainAnchorCustom) at
  * startUserTimestamp, exactly one assistant at finalAssistantTimestamp, and
- * start < end. Otherwise null - the entry drops nothing. Fail-closed is the
- * whole point: an id-set or timestamp-window fallback is what deleted live
- * turns (doc/specs/2026-08-12-toolcall-id-collisions.md).
+ * startIndex < endIndex. Otherwise null - the entry drops nothing. Fail-closed
+ * is the whole point: an id-set or timestamp-window fallback is what deleted
+ * live turns (doc/specs/2026-08-12-toolcall-id-collisions.md).
  */
 export function resolveRange(
   entry: Pick<ChainCompressionEntry, "startUserTimestamp" | "finalAssistantTimestamp">,
@@ -85,7 +87,7 @@ export function resolveRange(
   let endMatches = 0;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (msg.role === "user" && msg.timestamp === entry.startUserTimestamp) {
+    if ((msg.role === "user" || isChainAnchorCustom(msg)) && msg.timestamp === entry.startUserTimestamp) {
       startMatches++;
       if (startIndex < 0) startIndex = i;
     } else if (msg.role === "assistant" && msg.timestamp === entry.finalAssistantTimestamp) {

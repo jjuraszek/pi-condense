@@ -49,6 +49,18 @@ function okStream() {
   };
 }
 
+// Classified "transient" by runOnce (src/summarizer.ts) — with
+// summarizerModel: "default" (no distinct fallback model) this yields a
+// null SummarizeResult after exactly one stream() call, no retries.
+function errStream(message: string) {
+  return {
+    async *[Symbol.asyncIterator]() {},
+    async result() {
+      return { stopReason: "error", errorMessage: message, content: [], usage: USAGE };
+    },
+  };
+}
+
 let streamImpl: (model: any, input?: any, opts?: any) => any = () => {
   summarizerCalls++;
   return okStream();
@@ -117,6 +129,26 @@ function closedChainBranch(count: number): any[] {
   return msgs;
 }
 
+// Builds one independent pending batch: user -> assistant toolCall -> toolResult,
+// with no closing text-only assistant (chain stays open, matching defaultBranch's
+// shape). Used by the frontier-gap tests below to grow/shrink the branch's
+// un-pruned tail across turns by direct array mutation (bootExtension returns
+// the live `branch` array reference, so pushing onto it after boot is visible
+// to every later getBranch() call).
+function pendingBatchEntries(toolCallId: string, text: string, timestamp: number): any[] {
+  return [
+    { type: "message", message: { role: "user", content: [{ type: "text", text: `do ${toolCallId}` }], timestamp } },
+    {
+      type: "message",
+      message: { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: {} }], timestamp: timestamp + 500 },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolCallId, toolName: "read", content: [{ type: "text", text }], timestamp: timestamp + 1000 },
+    },
+  ];
+}
+
 // Boots a fresh index.ts extension instance against an isolated agent dir +
 // session, mirroring the fixtures shared across the three scenarios below.
 //
@@ -137,35 +169,45 @@ function closedChainBranch(count: number): any[] {
 function bootExtension(
   options: {
     chainCompressionEnabled?: boolean;
+    rollingWindow?: number;
     separatePiAppended?: boolean;
     piAppendEntry?: (push: (type: string, data?: unknown) => void) => (type: string, data?: unknown) => void;
     sessionAppendCustomEntry?: (push: (type: string, data?: unknown) => void) => (type: string, data?: unknown) => string;
     branch?: any[];
     protectedTools?: string[];
+    autoBudgetThreshold?: number | null;
+    budgetTurnDelta?: number | null;
+    frontierGapThresholdTokens?: number | null;
   } = {},
 ) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-condense-rearm-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  const contextPruneSettings: any = {
+    enabled: true,
+    pruneOn: "agent-message",
+    batchingMode: "agent-message",
+    autoBudgetThreshold: options.autoBudgetThreshold === undefined ? 0.5 : options.autoBudgetThreshold,
+    summarizerModel: "default",
+    minBatchChars: 1,
+    showPruneStatusLine: true,
+    protectedTools: options.protectedTools ?? [],
+    chainCompression: {
+      enabled: options.chainCompressionEnabled ?? false,
+      rollingWindow: options.rollingWindow ?? 3,
+      stripFinalAssistantThinking: true,
+      fuseRangeSummary: true,
+    },
+  };
+  // Omitted unless the test explicitly passes them, so the "default-null
+  // inert" scenario can assert behavior with no key present at all (not an
+  // explicit null), matching config.ts's own default.
+  if (options.budgetTurnDelta !== undefined) contextPruneSettings.budgetTurnDelta = options.budgetTurnDelta;
+  if (options.frontierGapThresholdTokens !== undefined) {
+    contextPruneSettings.frontierGapThresholdTokens = options.frontierGapThresholdTokens;
+  }
   writeFileSync(
     join(agentDir, "settings.json"),
-    JSON.stringify({
-      contextPrune: {
-        enabled: true,
-        pruneOn: "agent-message",
-        batchingMode: "agent-message",
-        autoBudgetThreshold: 0.5,
-        summarizerModel: "default",
-        minBatchChars: 1,
-        showPruneStatusLine: true,
-        protectedTools: options.protectedTools ?? [],
-        chainCompression: {
-          enabled: options.chainCompressionEnabled ?? false,
-          rollingWindow: 3,
-          stripFinalAssistantThinking: true,
-          fuseRangeSummary: true,
-        },
-      },
-    }),
+    JSON.stringify({ contextPrune: contextPruneSettings }),
   );
 
   const sessionDir = mkdtempSync(join(tmpdir(), "pi-condense-rearm-session-"));
@@ -576,5 +618,301 @@ describe("reload rearm (issue #6)", () => {
 
     expect(text).toContain(`chain share:  ${expectedPct}%`);
     expect(expectedPct).toBeLessThan(inflatedPct);
+  });
+
+  it("feeds persisted custom_message steers into chain detection via the shared projection (#13)", async () => {
+    // A production-feed regression: chain detection/compaction/metrics must
+    // all see custom_message entries projected as role "custom" (src/batch-
+    // capture.ts projectBranchMessages), not just plain "message" entries.
+    // A non-pruner customType (isChainAnchorCustom) opens a chain while idle
+    // and anchors resolveRange the same way a user message does; a pruner-
+    // namespaced customType (context-prune-*) must NOT anchor one.
+    const t0 = new Date().toISOString();
+    let t = new Date(t0).getTime();
+
+    const customAnchoredChain: any[] = [
+      {
+        type: "custom_message",
+        customType: "pi-gauntlet-transition-recovery",
+        content: [{ type: "text", text: "continue" }],
+        timestamp: t0,
+      },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc-custom", name: "read", arguments: {} }] },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "tc-custom",
+          toolName: "read",
+          content: [{ type: "text", text: "x".repeat(400) }],
+          timestamp: (t += 1000),
+        },
+      },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "done custom" }], timestamp: (t += 1000) },
+      },
+    ];
+
+    // A second closed, user-anchored chain so the custom-anchored chain above
+    // is not the newest/frontier chain (rollingWindow: 0 makes every closed
+    // chain not already compressed eligible regardless, but this mirrors a
+    // realistic multi-turn session and rules out any "only chain" special case).
+    const trailingChain: any[] = [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "do more" }], timestamp: (t += 1000) } },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc-trail", name: "read", arguments: {} }] },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "tc-trail",
+          toolName: "read",
+          content: [{ type: "text", text: "y".repeat(400) }],
+          timestamp: (t += 1000),
+        },
+      },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "done trailing" }], timestamp: (t += 1000) },
+      },
+    ];
+
+    const branch = [...customAnchoredChain, ...trailingChain];
+
+    const { handlers, ctx, appended } = await boot({ chainCompressionEnabled: true, rollingWindow: 0, branch });
+
+    await handlers.get("session_start")!({}, ctx);
+    await handlers.get("turn_end")!(
+      { toolResults: [], message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, turnIndex: 2 },
+      ctx,
+    );
+    await handlers.get("message_end")!(
+      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+      ctx,
+    );
+
+    const chainEntries = appended.filter((e) => e.type === "context-prune-chain");
+    const anchoredAtCustom = chainEntries.find(
+      (e) => (e.data as any).startUserTimestamp === new Date(t0).getTime(),
+    );
+    expect(anchoredAtCustom).toBeDefined();
+  });
+
+  it("does not let a pruner-namespaced custom_message (context-prune-*) anchor a chain (#13)", async () => {
+    const t0 = new Date().toISOString();
+    let t = new Date(t0).getTime();
+
+    const pruneSummaryEntry: any[] = [
+      {
+        type: "custom_message",
+        customType: "context-prune-summary",
+        content: [{ type: "text", text: "prior summary" }],
+        timestamp: t0,
+      },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc-p", name: "read", arguments: {} }] },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "tc-p",
+          toolName: "read",
+          content: [{ type: "text", text: "x".repeat(400) }],
+          timestamp: (t += 1000),
+        },
+      },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "done p" }], timestamp: (t += 1000) },
+      },
+    ];
+
+    const { handlers, ctx, appended } = await boot({ chainCompressionEnabled: true, rollingWindow: 0, branch: pruneSummaryEntry });
+
+    await handlers.get("session_start")!({}, ctx);
+    await handlers.get("turn_end")!(
+      { toolResults: [], message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, turnIndex: 2 },
+      ctx,
+    );
+    await handlers.get("message_end")!(
+      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+      ctx,
+    );
+
+    const chainEntries = appended.filter((e) => e.type === "context-prune-chain");
+    const anchoredAtSummary = chainEntries.find(
+      (e) => (e.data as any).startUserTimestamp === new Date(t0).getTime(),
+    );
+    expect(anchoredAtSummary).toBeUndefined();
+  });
+
+  it("frontier-gap trigger fires at turn_end when the un-pruned tail exceeds the threshold (#13)", async () => {
+    const { handlers, ctx, notifications, appended } = await boot({
+      autoBudgetThreshold: null,
+      frontierGapThresholdTokens: 10,
+    });
+
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+
+    await handlers.get("session_start")!({}, ctx);
+
+    // defaultBranch() already carries an unsummarized ~400-char toolResult
+    // (~100 tokens), well past the threshold of 10.
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc1", toolName: "read", content: [{ type: "text", text: "x".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 2,
+      },
+      ctx,
+    );
+
+    const flushMetricsEntries = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(flushMetricsEntries.length).toBe(1);
+    const fm = flushMetricsEntries[0].data as any;
+    expect(fm.trigger).toBe("frontier-gap");
+    expect(fm.metrics.frontierGapTokens).toBeGreaterThanOrEqual(10);
+
+    expect(notifications.some((n) => n.includes("un-pruned tail exceeded frontier gap threshold"))).toBe(true);
+  });
+
+  it("budget trigger takes precedence over frontier-gap when both conditions are met at turn_end (#13)", async () => {
+    const { handlers, ctx, appended } = await boot({
+      autoBudgetThreshold: 0.5,
+      frontierGapThresholdTokens: 10,
+    });
+
+    await handlers.get("session_start")!({}, ctx);
+
+    // Usage fraction 0.9 crosses the 0.5 budget threshold; defaultBranch()'s
+    // un-pruned tail also crosses the 10-token gap threshold. Budget must win.
+    ctx.getContextUsage = () => ({ tokens: 900000, contextWindow: 1000000 });
+
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc1", toolName: "read", content: [{ type: "text", text: "x".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 2,
+      },
+      ctx,
+    );
+
+    const flushMetricsEntries = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(flushMetricsEntries.length).toBe(1);
+    expect((flushMetricsEntries[0].data as any).trigger).toBe("budget");
+  });
+
+  it("frontier-gap trigger stays inert when frontierGapThresholdTokens is unset (default null), even with a huge un-pruned tail (#13)", async () => {
+    const { handlers, ctx, appended } = await boot({
+      autoBudgetThreshold: null,
+    });
+
+    await handlers.get("session_start")!({}, ctx);
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc1", toolName: "read", content: [{ type: "text", text: "x".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 2,
+      },
+      ctx,
+    );
+
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+  });
+
+  it("frontier-gap cadence: a partial-failure flush persists the surviving prefix and advances the frontier; the next gap-triggered flush advances it further (#13)", async () => {
+    const { handlers, ctx, appended } = await boot({
+      autoBudgetThreshold: null,
+      frontierGapThresholdTokens: 10,
+      branch: [],
+    });
+
+    await handlers.get("session_start")!({}, ctx);
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+
+    // Turn 1: branch still empty -> frontierGapTokens is 0 -> no flush, even
+    // though this turn's own toolResults are pushed into pendingBatches.
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc-warmup", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc-warmup", toolName: "read", content: [{ type: "text", text: "w".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 1,
+      },
+      ctx,
+    );
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+
+    // Grow the branch with two independent unindexed batches (tc-a, tc-b) —
+    // capturePendingBatches rescans the branch, not the in-memory queue, so
+    // this is what actually makes the upcoming flush see two batches.
+    let t = Date.now();
+    ctx.sessionManager.getBranch().push(...pendingBatchEntries("tc-a", "a".repeat(400), (t += 1000)));
+    ctx.sessionManager.getBranch().push(...pendingBatchEntries("tc-b", "b".repeat(400), (t += 1000)));
+
+    let callCount = 0;
+    streamImpl = () => {
+      callCount++;
+      summarizerCalls++;
+      if (callCount === 2) return errStream("simulated summarizer failure on second batch");
+      return okStream();
+    };
+
+    // Turn 2: gap now over threshold (tc-a + tc-b unsummarized) -> flush fires,
+    // processes tc-a successfully, tc-b's summarization call fails.
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc-a", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc-a", toolName: "read", content: [{ type: "text", text: "a".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 2,
+      },
+      ctx,
+    );
+
+    let frontierEntries = appended.filter((e) => e.type === "context-prune-frontier");
+    expect(frontierEntries.length).toBe(1);
+    const firstFrontier = frontierEntries[0].data as any;
+    expect(firstFrontier.lastAttemptedToolCallId).toBe("tc-a");
+
+    // Grow the branch again (tc-b is still unsummarized/pending after the
+    // restore; add tc-c as this turn's new work) — gap stays over threshold.
+    ctx.sessionManager.getBranch().push(...pendingBatchEntries("tc-c", "c".repeat(400), (t += 1000)));
+
+    // Turn 3: gap still over threshold -> flush fires again, this time both
+    // tc-b (restored) and tc-c succeed (streamImpl only fails on call #2).
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc-c", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc-c", toolName: "read", content: [{ type: "text", text: "c".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 3,
+      },
+      ctx,
+    );
+
+    frontierEntries = appended.filter((e) => e.type === "context-prune-frontier");
+    expect(frontierEntries.length).toBe(2);
+    const secondFrontier = frontierEntries[1].data as any;
+    expect(secondFrontier.lastAttemptedTimestamp).toBeGreaterThan(firstFrontier.lastAttemptedTimestamp);
   });
 });

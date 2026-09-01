@@ -1,4 +1,4 @@
-import { detectChains } from "./chain-detector.js";
+import { detectChains, isChainAnchorCustom } from "./chain-detector.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { ContextMetricsSnapshot, PruneFrontier } from "./types.js";
 
@@ -75,7 +75,9 @@ export function computeContextMetrics(
   const chains = detectChains(branch, isProtected);
   let largestClosedChainChars = 0;
   for (const range of chains) {
-    const startIdx = branch.findIndex((m) => m.role === "user" && m.timestamp === range.startUserTimestamp);
+    const startIdx = branch.findIndex(
+      (m) => (m.role === "user" || isChainAnchorCustom(m)) && m.timestamp === range.startUserTimestamp,
+    );
     if (startIdx === -1) continue;
     let endIdx: number;
     if (range.finalAssistantTimestamp !== null) {
@@ -85,6 +87,7 @@ export function computeContextMetrics(
       if (endIdx === -1) continue;
     } else {
       let nextUserIdx = -1;
+      // User-only: under idle-only semantics only a user message interrupts an open chain.
       for (let i = startIdx + 1; i < branch.length; i++) {
         if (branch[i].role === "user") {
           nextUserIdx = i;

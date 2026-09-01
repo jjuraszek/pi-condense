@@ -170,11 +170,11 @@ describe("computeContextMetrics", () => {
     expect(openSegmentChars).toBeGreaterThan(chainChars);
   });
 
-  test("largestChainSharePct: a projected custom_message entry (role \"custom\") counts toward the denominator only, never the chain numerator", () => {
+  test("largestChainSharePct: a pruner custom message (customType starting with context-prune-) counts toward the denominator only, never the chain numerator", () => {
     // Mirrors index.ts's branch projection for persisted summary custom_message
-    // entries: role "custom" never matches the user/assistant/toolResult roles
-    // detectChains and isTextOnlyAssistant key off, so it cannot join a chain
-    // or the open segment -- it only inflates totalChars (the denominator).
+    // entries: a pruner customType (context-prune-summary) is excluded from
+    // chain anchoring by isChainAnchorCustom, so it cannot join a chain or the
+    // open segment -- it only inflates totalChars (the denominator).
     // The customEntry sits between two final text-only assistant messages, so
     // it lands outside both the chain range and the open-cycle segment --
     // isolating the denominator effect from any open-segment interaction.
@@ -184,7 +184,7 @@ describe("computeContextMetrics", () => {
       toolResult(300, "tc1", "bash", "x".repeat(2000)),
       assistantText(400),
     ];
-    const customEntry = { role: "custom", customType: "pi-condense:summary", content: "s".repeat(3000), display: true, timestamp: 450 };
+    const customEntry = { role: "custom", customType: "context-prune-summary", content: "s".repeat(3000), display: true, timestamp: 450 };
     const closer = assistantText(500, "ok");
 
     const withoutCustom = computeContextMetrics(chainMsgs, null, noSummarized, noProtected);
@@ -197,6 +197,36 @@ describe("computeContextMetrics", () => {
     expect(withoutCustom.largestChainSharePct).toBe(100);
     expect(withCustom.largestChainSharePct).toBe(expectedPctWithCustom);
     expect(withCustom.largestChainSharePct).toBeLessThan(withoutCustom.largestChainSharePct);
+  });
+
+  test("largestChainSharePct: a custom-anchored chain (eligible non-pruner custom message opens a chain) is counted in the numerator", () => {
+    // Mirrors the user-anchored share test's arithmetic, but the chain start
+    // is an eligible custom message (isChainAnchorCustom) instead of a user
+    // message -- Wave 1's chain-detector already opens chains on these; this
+    // pins that computeContextMetrics' chain-start lookup finds them too.
+    const customAnchor = {
+      role: "custom",
+      customType: "pi-gauntlet-transition-recovery",
+      content: "resuming",
+      timestamp: 100,
+    };
+    const msgs = [
+      customAnchor,
+      assistantWithTools(200, ["tc1"]),
+      toolResult(300, "tc1", "bash", "x".repeat(2000)), // big closed chain
+      assistantText(400),
+      userMsg(500),
+      assistantText(600), // tiny open segment (empty, since it's the last text-only assistant)
+    ];
+    const chars = msgs.map((m) => JSON.stringify(m).length);
+    const totalChars = chars.reduce((a, b) => a + b, 0);
+    const chainChars = chars[0] + chars[1] + chars[2] + chars[3]; // customAnchor..assistantText(400)
+    const openSegmentChars = 0; // last text-only assistant is msgs[5] itself; open segment is empty
+    const expectedPct = Math.round((100 * Math.max(chainChars, openSegmentChars)) / totalChars);
+
+    const result = computeContextMetrics(msgs, null, noSummarized, noProtected);
+    expect(result.largestChainSharePct).toBe(expectedPct);
+    expect(chainChars).toBeGreaterThan(openSegmentChars);
   });
 
   test("largestChainSharePct: interrupted chain (null finalAssistantTimestamp) is counted", () => {

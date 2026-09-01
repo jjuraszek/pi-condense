@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { captureBatch, captureUnindexedBatchesFromSession, serializeBatchForSummarizer } from "./batch-capture.js";
+import {
+  captureBatch,
+  captureUnindexedBatchesFromSession,
+  projectBranchMessages,
+  serializeBatchForSummarizer,
+} from "./batch-capture.js";
 import type { CapturedBatch, CapturedToolCall } from "./types.js";
 
 function toolCall(overrides: Partial<CapturedToolCall> = {}): CapturedToolCall {
@@ -121,5 +126,115 @@ describe("occurrence capture", () => {
       entry({ role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "late" }], isError: false, timestamp: 1150 }),
     ];
     expect(captureUnindexedBatchesFromSession(branch, { isSummarized: () => false })).toEqual([]);
+  });
+});
+
+describe("captureUnindexedBatchesFromSession entry timestamp fallback", () => {
+  test("uses the entry's timestamp when the inner message lacks one", () => {
+    const branch = [
+      {
+        type: "message",
+        timestamp: "2026-08-31T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "bash_23", name: "bash", input: {} }] },
+      },
+      {
+        type: "message",
+        message: { role: "toolResult", toolCallId: "bash_23", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 1150 },
+      },
+    ];
+
+    const batches = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false });
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0].timestamp).toBe(new Date("2026-08-31T10:00:00.000Z").getTime());
+  });
+});
+
+describe("projectBranchMessages", () => {
+  test("projects custom_message entries as role custom and drops unknown entry types", () => {
+    const branch = [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+      {
+        type: "custom_message",
+        customType: "x",
+        content: "c",
+        display: true,
+        details: {},
+        timestamp: "2026-08-31T10:00:00.000Z",
+      },
+      { type: "other" },
+    ];
+
+    const msgs = projectBranchMessages(branch);
+
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0]).toBe((branch[0] as any).message);
+    expect(msgs[1]).toEqual({
+      role: "custom",
+      customType: "x",
+      content: "c",
+      display: true,
+      details: {},
+      timestamp: new Date("2026-08-31T10:00:00.000Z").getTime(),
+    });
+  });
+});
+
+describe("custom-anchor group boundary", () => {
+  function buildBranch(customType: string) {
+    const entry = (message: any) => ({ type: "message", message });
+    return [
+      entry({ role: "user", content: [{ type: "text", text: "go" }], timestamp: 1000 }),
+      entry({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }],
+        timestamp: 1100,
+      }),
+      entry({
+        role: "toolResult",
+        toolCallId: "tc1",
+        toolName: "bash",
+        content: [{ type: "text", text: "ok1" }],
+        isError: false,
+        timestamp: 1150,
+      }),
+      {
+        type: "custom_message",
+        customType,
+        content: "c",
+        display: true,
+        details: {},
+        timestamp: "2026-08-31T10:00:00.000Z",
+      },
+      entry({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc2", name: "bash", input: {} }],
+        timestamp: 2100,
+      }),
+      entry({
+        role: "toolResult",
+        toolCallId: "tc2",
+        toolName: "bash",
+        content: [{ type: "text", text: "ok2" }],
+        isError: false,
+        timestamp: 2150,
+      }),
+    ];
+  }
+
+  test("an eligible custom anchor (pi-gauntlet-transition-recovery) pins a new userTurnGroup", () => {
+    const branch = buildBranch("pi-gauntlet-transition-recovery");
+    const batches = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false });
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0].userTurnGroup).not.toBe(batches[1].userTurnGroup);
+  });
+
+  test("a pruner custom (context-prune-summary) passes through without a new group", () => {
+    const branch = buildBranch("context-prune-summary");
+    const batches = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false });
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0].userTurnGroup).toBe(batches[1].userTurnGroup);
   });
 });

@@ -1,5 +1,31 @@
 import type { CapturedBatch, CapturedToolCall, BatchingMode } from "./types.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
+import { isChainAnchorCustom } from "./chain-detector.js";
+
+/**
+ * Unwraps a SessionEntry[] branch into AgentMessage-like objects, including
+ * persisted custom_message entries (extension steers) projected as
+ * role "custom". Shared by computeMetricsSnapshot, flushPending chain detection,
+ * compactChains, and the rescan below so chain anchor timestamps are identical
+ * at every site. Projected inline (rather than importing pi-coding-agent's
+ * createCustomMessage) because that helper isn't re-exported from the
+ * package's "." export map.
+ */
+export function projectBranchMessages(branch: any[]): any[] {
+  return branch
+    .filter(isProjectableEntry)
+    .map((e: any) => (e.type === "custom_message" ? projectCustomMessageEntry(e) : e.message));
+}
+
+/** True for SessionEntry shapes that project into an AgentMessage-like object (see projectBranchMessages). */
+function isProjectableEntry(e: any): boolean {
+  return (e.type === "message" && e.message) || e.type === "custom_message";
+}
+
+/** Projects a single custom_message SessionEntry into its role "custom" message shape. */
+function projectCustomMessageEntry(e: any): any {
+  return { role: "custom", customType: e.customType, content: e.content, display: e.display, details: e.details, timestamp: new Date(e.timestamp).getTime() };
+}
 
 /** Joins the text blocks of a ToolResultMessage into a single string. */
 export function extractToolResultText(msg: any): string {
@@ -71,9 +97,13 @@ export function captureUnindexedBatchesFromSession(
   indexer: { isSummarized(id: string): boolean },
   exclude: (toolName: string, args: unknown) => boolean = () => false
 ): CapturedBatch[] {
-  // branch is SessionEntry[]. Each message entry has { type: "message", message: AgentMessage }.
-  // We must unwrap the SessionEntry wrapper before accessing role/toolCallId.
-  const entries = branch.filter((entry: any) => entry.type === "message");
+  // Keep the SessionEntry wrapper alongside each projected message so the
+  // entry's own timestamp remains available as the preferred source below
+  // (projection alone loses that wrapper for "message" entries).
+  const projected = branch
+    .filter(isProjectableEntry)
+    .map((e: any) => ({ entry: e, msg: e.type === "custom_message" ? projectCustomMessageEntry(e) : e.message }));
+  const msgs = projected.map((p) => p.msg);
 
   const batches: CapturedBatch[] = [];
   // turnCounter increments for EVERY assistant message (not just prunable ones).
@@ -83,19 +113,19 @@ export function captureUnindexedBatchesFromSession(
   // always matches Pi's own event.turnIndex numbering.
   let turnCounter = 0;
 
-  // userTurnGroup increments on every user message seen while walking the branch.
-  // All assistant tool-call batches between two consecutive user messages share the
-  // same userTurnGroup. This is used by groupBatchesByMode to merge turns within
-  // a single user → final-agent-message span when batchingMode === "agent-message".
+  // userTurnGroup increments on every user message or eligible custom anchor seen
+  // while walking the branch. All assistant tool-call batches between two
+  // consecutive boundaries share the same userTurnGroup. This is used by
+  // groupBatchesByMode to merge turns within a single user → final-agent-message
+  // span when batchingMode === "agent-message".
   let userTurnGroup = 0;
 
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    const msg = entry.message;
+  for (let i = 0; i < msgs.length; i++) {
+    const msg = msgs[i];
 
-    // Advance userTurnGroup on every user message so all subsequent assistant
-    // batches get a new group number.
-    if (msg.role === "user") {
+    // Advance userTurnGroup on every user message or eligible custom anchor so
+    // all subsequent assistant batches get a new group number.
+    if (msg.role === "user" || isChainAnchorCustom(msg)) {
       userTurnGroup++;
       continue;
     }
@@ -108,8 +138,8 @@ export function captureUnindexedBatchesFromSession(
     // Per-turn result map: only the results between this assistant message and
     // the next one. A branch-wide map is last-wins and mis-pairs repeated ids.
     const turnResults = new Map<string, any>();
-    for (let j = i + 1; j < entries.length; j++) {
-      const m = entries[j].message;
+    for (let j = i + 1; j < msgs.length; j++) {
+      const m = msgs[j];
       if (m.role === "assistant") break;
       if (m.role === "toolResult" && m.toolCallId && !turnResults.has(m.toolCallId)) {
         turnResults.set(m.toolCallId, m);
@@ -138,7 +168,8 @@ export function captureUnindexedBatchesFromSession(
       // an intermediate completed subset in the middle of a longer tool chain
       // without accidentally capturing later unresolved calls from the same
       // assistant message as "(no result)" placeholders.
-      const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : (msg.timestamp ?? Date.now());
+      const entryTimestamp = projected[i].entry.timestamp;
+      const ts = entryTimestamp ? new Date(entryTimestamp).getTime() : (msg.timestamp ?? Date.now());
       const batch = captureBatch(msg, results, currentTurnIndex, ts);
       batches.push({
         ...batch,

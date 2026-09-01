@@ -125,3 +125,25 @@ describe("loadConfig backward compatibility with removed thinkingStrip key", () 
     expect(written.contextPrune.thinkingStrip).toEqual(stale);
   });
 });
+
+describe("loadConfig frontierGapThresholdTokens normalization", () => {
+  it("defaults to null when unset", async () => {
+    await writeContextPrune({});
+    const config = await loadConfig();
+    expect(config.frontierGapThresholdTokens).toBeNull();
+  });
+
+  it("floors a fractional value", async () => {
+    await writeContextPrune({ frontierGapThresholdTokens: 80000.7 });
+    const config = await loadConfig();
+    expect(config.frontierGapThresholdTokens).toBe(80000);
+  });
+
+  it("falls back to null for 0, negative, Infinity, or a string", async () => {
+    for (const value of [0, -5, Infinity, "80000"]) {
+      await writeContextPrune({ frontierGapThresholdTokens: value });
+      const config = await loadConfig();
+      expect(config.frontierGapThresholdTokens).toBeNull();
+    }
+  });
+});

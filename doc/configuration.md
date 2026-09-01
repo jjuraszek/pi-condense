@@ -30,6 +30,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "spillThreshold": 65536,
     "spillPreviewBytes": 2048,
     "budgetTurnDelta": null,
+    "frontierGapThresholdTokens": null,
     "chainCompression": {
       "enabled": true,
       "rollingWindow": 3,
@@ -62,6 +63,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `spillThreshold` | positive integer | `65536` | Minimum chars (`resultText.length`) for a single tool result to be spilled eagerly to a sidecar file at capture time rather than waiting for normal summarization. Non-positive / invalid values fall back to the default; to effectively disable spilling, set it above any result you expect. See [Spilled outputs](#spilled-outputs) |
 | `spillPreviewBytes` | non-negative integer | `2048` | Head preview (bytes) kept inline in the stub and index record for a spilled result. Full body is on disk. |
 | `budgetTurnDelta` | fraction `0`-`1`, or `null` | `null` | Force a flush when a single turn's context-usage fraction jumps by at least this amount, ORed with `autoBudgetThreshold`. The fraction is measured against `min(context window, 300k)`, so `0.1` = +30k tokens in one turn on any model at or above 300k (+20k on a 200k model). Catches sudden spikes a static threshold would miss until the next turn. `null` = off. |
+| `frontierGapThresholdTokens` | `number \| null` | `null` | Opt-in absolute-token flush trigger: force a flush at `turn_end` when the un-pruned tail past the prune frontier (`frontierGapTokens`) reaches this many tokens. Validated finite and `> 0`, floored to an integer; any invalid value including `0` resets to `null`. Config-file-only - no `/pruner settings` row. `null` = off. See [Frontier-gap flush trigger](#frontier-gap-flush-trigger) |
 | `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
@@ -86,6 +88,14 @@ When `autoBudgetThreshold` is set to a value in `(0, 1]`, the extension checks c
 - Default `null` = off.
 
 Inspired by DCP's `maxContextLimit` nudging; simplified to a single threshold that forces a flush rather than separate nudge/force levels.
+
+### Frontier-gap flush trigger
+
+`frontierGapThresholdTokens` (default `null`) is a third, opt-in flush trigger, ORed with `autoBudgetThreshold` and `budgetTurnDelta` (precedence: budget, then delta, then frontier-gap - the first one that fires wins for that turn). Where the other two triggers measure a *fraction* of the context window, this one measures an absolute token count: the un-pruned tail past the persisted prune frontier (`frontierGapTokens`, the same metric shown in `/pruner status` and the footer suffix). It exists for windows large enough that a window-fraction trigger never fires in practice - a huge advertised window makes `autoBudgetThreshold`/`budgetTurnDelta` unreachable long before the un-pruned tail becomes a real problem; this trigger is the absolute-token complement that fires independent of window size.
+
+Set it well above normal per-flush accumulation (roughly 5k-15k tokens between flushes in a typical session) so it only fires in pathological auto-continued stretches where flushes stop happening for a long run - **`80000` is a reasonable starting value**. The trigger is self-throttling: the frontier advances on every processed flush outcome (including this one), but an attempt that finds zero capturable batches does not advance it and rewrites nothing, so it cannot churn the cache; on a mid-flush summarizer failure the frontier advances only to the persisted prefix, so the next gated turn may re-fire while consuming the remaining backlog - the bound is amortized (one extra prefix rewrite per threshold-worth of new tail growth), not per-turn-exact under failures.
+
+`null` = off (default). The default stays null because no field data supports a universal threshold value - a wrong default would regress prompt-cache write cadence and summarizer cost for every user. Promotion to a non-null default is deferred until persisted `context-prune-flush-metrics` entries (which record `frontierGapTokens` per flush) provide evidence for a good value.
 
 ### Spilled outputs
 

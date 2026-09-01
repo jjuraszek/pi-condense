@@ -710,6 +710,23 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
     expect(registerChainCalls).toHaveLength(1);
   });
 
+  test("custom-anchored uncovered chain still compresses deterministically and backfills", async () => {
+    const messages = [
+      { role: "custom", customType: "pi-gauntlet-transition-recovery", timestamp: 1000 },
+      { role: "assistant", timestamp: 1001, content: [{ type: "toolCall", id: "c1", name: "bash", input: { cmd: "a" } }] },
+      { role: "toolResult", toolCallId: "c1", toolName: "bash", timestamp: 1050, isError: false, content: [{ type: "text", text: "out1" }] },
+      { role: "assistant", timestamp: 1002, content: [{ type: "toolCall", id: "c2", name: "read", input: { path: "x" } }] },
+      { role: "toolResult", toolCallId: "c2", toolName: "read", timestamp: 1150, isError: false, content: [{ type: "text", text: "out2" }] },
+      { role: "assistant", timestamp: 1200, content: [{ type: "text", text: "done" }] },
+    ];
+    const { deps, backfillCalls } = makeDeterministicDeps({ messages });
+    const result = await compressEligible([uncoveredChain()], 0, deps as any);
+    expect(result.compressedEntries).toHaveLength(1);
+    expect(result.compressedEntries[0].bodySource).toBe("deterministic");
+    expect(result.compressedEntries[0].startUserTimestamp).toBe(1000);
+    expect(backfillCalls).toHaveLength(1);
+  });
+
   test("covered path is untouched: backfill never invoked, entry matches identity pin", async () => {
     const { deps, backfillCalls } = makeDeterministicDeps();
     // Override to simulate coverage so the covered branch (not the deterministic one) runs.

@@ -1,5 +1,11 @@
 import { describe, it, expect } from "bun:test";
-import { shouldBudgetFlush, shouldDeltaFlush, usageFraction, MAX_BUDGET_WINDOW } from "./budget.js";
+import {
+  shouldBudgetFlush,
+  shouldDeltaFlush,
+  shouldFrontierGapFlush,
+  usageFraction,
+  MAX_BUDGET_WINDOW,
+} from "./budget.js";
 
 const usage = (tokens: number | null, contextWindow: number) =>
   ({ tokens, contextWindow, percent: null }) as any;
@@ -109,5 +115,19 @@ describe("shouldDeltaFlush", () => {
     const prev = 600_000 / MAX_BUDGET_WINDOW; // 2.0 - unclamped by design
     expect(shouldDeltaFlush(usage(630_000, 1_000_000), prev, 0.1)).toBe(true);
     expect(shouldDeltaFlush(usage(620_000, 1_000_000), prev, 0.1)).toBe(false);
+  });
+});
+
+describe("shouldFrontierGapFlush", () => {
+  it("returns false when threshold is null", () => {
+    expect(shouldFrontierGapFlush({ frontierGapTokens: 999999 }, null)).toBe(false);
+  });
+  it("returns false when snapshot is undefined (fail closed)", () => {
+    // the spec's `snap === undefined` branch: metrics computation failed
+    expect(shouldFrontierGapFlush(undefined, 80000)).toBe(false);
+  });
+  it("fires at and above the threshold", () => {
+    expect(shouldFrontierGapFlush({ frontierGapTokens: 80000 }, 80000)).toBe(true);
+    expect(shouldFrontierGapFlush({ frontierGapTokens: 79999 }, 80000)).toBe(false);
   });
 });

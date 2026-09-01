@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
-import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode } from "./src/batch-capture.js";
+import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode, projectBranchMessages } from "./src/batch-capture.js";
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { FallbackController } from "./src/summarizer-fallback.js";
 import { ToolCallIndexer } from "./src/indexer.js";
@@ -47,7 +47,7 @@ import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
-import { shouldBudgetFlush, shouldDeltaFlush, usageFraction } from "./src/budget.js";
+import { shouldBudgetFlush, shouldDeltaFlush, shouldFrontierGapFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
 import { occKey } from "./src/occurrence-key.js";
 import { DiagnosticSink } from "./src/diagnostics.js";
@@ -98,18 +98,9 @@ export default function (pi: ExtensionAPI) {
       // Includes persisted custom_message entries (e.g. this extension's own
       // summary messages) alongside plain "message" entries: both are retained
       // LLM context, so both belong in the largest-chain-share denominator.
-      // Projected inline (rather than importing pi-coding-agent's
-      // createCustomMessage) because that helper isn't re-exported from the
-      // package's "." export map -- shape mirrors createCustomMessage's output
-      // (role "custom"), which never matches the user/assistant/toolResult
-      // roles computeContextMetrics keys off, so it only inflates totalChars.
-      const branch = ctx.sessionManager.getBranch()
-        .filter((e: any) => (e.type === "message" && e.message) || e.type === "custom_message")
-        .map((e: any) =>
-          e.type === "custom_message"
-            ? { role: "custom", customType: e.customType, content: e.content, display: e.display, details: e.details, timestamp: new Date(e.timestamp).getTime() }
-            : e.message,
-        );
+      // Shared projection (src/batch-capture.ts projectBranchMessages) so this
+      // matches the chain-detection feed sites exactly.
+      const branch = projectBranchMessages(ctx.sessionManager.getBranch());
       return computeContextMetrics(
         branch,
         frontier.get(),
@@ -597,13 +588,11 @@ export default function (pi: ExtensionAPI) {
               ? "skipped-deduped"
               : "skipped-trivial";
 
-      // Raw session branch, unwrapped once for the chain-compression block below.
+      // Projected session branch (message + custom_message entries) for the chain-compression block below.
       // Only materialized when chain compression is enabled.
       let branchMessages: any[] | undefined;
       if (currentConfig.value.chainCompression.enabled) {
-        branchMessages = ctx.sessionManager.getBranch()
-          .filter((e: any) => e.type === "message" && e.message)
-          .map((e: any) => e.message);
+        branchMessages = projectBranchMessages(ctx.sessionManager.getBranch());
       }
 
       const frontierSnapshot: PruneFrontier = {
@@ -940,24 +929,34 @@ export default function (pi: ExtensionAPI) {
     const usage = ctx.getContextUsage?.();
     const budgetHit = shouldBudgetFlush(usage, currentConfig.value.autoBudgetThreshold);
     const deltaHit = shouldDeltaFlush(usage, previousFraction, currentConfig.value.budgetTurnDelta);
+    // Frontier-gap auto-flush (opt-in): absolute un-pruned tail size, for huge
+    // windows where fractional thresholds never trip. Threshold null (default)
+    // skips the metrics snapshot entirely; a failed snapshot fails closed.
+    const gapThreshold = currentConfig.value.frontierGapThresholdTokens;
+    const gapHit = gapThreshold != null && shouldFrontierGapFlush(computeMetricsSnapshot(ctx), gapThreshold);
     // Update the per-turn baseline; leave it unchanged when tokens is null (e.g.
     // right after a compaction) so the next real reading compares to the last known.
     const f = usageFraction(usage);
     if (f != null) previousFraction = f;
 
     const n = pendingBatches.length;
-    if ((n > 0 || rearmedPending) && !isFlushing && (budgetHit || deltaHit)) {
+    if ((n > 0 || rearmedPending) && !isFlushing && (budgetHit || deltaHit || gapHit)) {
+      const reason = budgetHit ? "context budget reached" : deltaHit ? "context jumped this turn" : "un-pruned tail exceeded frontier gap threshold";
       // Always surface this flush (even when the routine status line is off): it's a
-      // significant, infrequent event — context crossed a threshold or jumped sharply
-      // this turn — and it self-throttles because pendingBatches is drained right after.
+      // significant, infrequent event — context crossed a threshold, jumped sharply
+      // this turn, or the un-pruned tail grew past the gap threshold — and it
+      // self-throttles because pendingBatches is drained right after.
       safeNotify(
         ctx,
         n > 0
-          ? `pruner: ${budgetHit ? "context budget reached" : "context jumped this turn"} — compacting ${n} pending turn${n === 1 ? "" : "s"}`
-          : `pruner: ${budgetHit ? "context budget reached" : "context jumped this turn"} — compacting work recovered after reload`,
+          ? `pruner: ${reason} — compacting ${n} pending turn${n === 1 ? "" : "s"}`
+          : `pruner: ${reason} — compacting work recovered after reload`,
         "info",
       );
-      await flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : budgetHit ? "budget" : "delta" });
+      await flushPending(ctx, {
+        delivery: "session",
+        trigger: n === 0 ? "rearmed" : budgetHit ? "budget" : deltaHit ? "delta" : "frontier-gap",
+      });
     }
   });
 
@@ -1023,10 +1022,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── Register /pruner command + summary message renderer ────────────
   const compactChains = async (ctx: any) => {
-    const branch = ctx.sessionManager.getBranch();
-    const branchMessages = branch
-      .filter((e: any) => e.type === "message" && e.message)
-      .map((e: any) => e.message);
+    const branchMessages = projectBranchMessages(ctx.sessionManager.getBranch());
     const chains = detectChains(branchMessages, protectionPredicate);
     const inGrace = inGraceRecoveryToolCallIds(branchMessages, currentConfig.value.recoveryGraceTurns);
     const result = await compressEligible(

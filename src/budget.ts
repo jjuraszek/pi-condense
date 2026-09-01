@@ -1,4 +1,5 @@
 import type { ContextUsage } from "@earendil-works/pi-coding-agent";
+import type { ContextMetricsSnapshot } from "./types.js";
 
 // Ceiling on what the budget triggers treat as the context window. Advertised
 // windows reach 1M, which makes any (0,1] fraction unreachable in a real session.
@@ -50,4 +51,13 @@ export function shouldDeltaFlush(
   const current = usageFraction(usage);
   if (current == null) return false;
   return current - previousFraction >= delta;
+}
+
+/** Fail-closed: an undefined snapshot (metrics computation failed) never fires. */
+export function shouldFrontierGapFlush(
+  snapshot: ContextMetricsSnapshot | undefined,
+  threshold: number | null,
+): boolean {
+  if (threshold == null) return false;
+  return snapshot != null && snapshot.frontierGapTokens >= threshold;
 }

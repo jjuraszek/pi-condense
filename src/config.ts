@@ -106,6 +106,12 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       merged.budgetTurnDelta <= 1
         ? merged.budgetTurnDelta
         : DEFAULT_CONFIG.budgetTurnDelta,
+    frontierGapThresholdTokens:
+      typeof merged.frontierGapThresholdTokens === "number" &&
+      Number.isFinite(merged.frontierGapThresholdTokens) &&
+      merged.frontierGapThresholdTokens > 0
+        ? Math.floor(merged.frontierGapThresholdTokens)
+        : DEFAULT_CONFIG.frontierGapThresholdTokens,
   };
 }
 

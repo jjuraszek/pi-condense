@@ -23,12 +23,22 @@ function collectToolCalls(msg: any): { id: string; name: string; args: unknown }
     .map((b: any) => ({ id: b.id as string, name: b.name as string, args: b.input ?? b.arguments }));
 }
 
+/**
+ * A non-pruner custom message: eligible to open a chain (while the detector is
+ * idle) and to act as a resolveRange start anchor. The `context-prune-`
+ * namespace prefix excludes every pruner-emitted custom message — today
+ * context-prune-summary; by construction any future pruner customType.
+ */
+export function isChainAnchorCustom(msg: any): boolean {
+  return msg?.role === "custom" && !String(msg.customType ?? "").startsWith("context-prune-");
+}
+
 type State = "idle" | "inChain";
 
 /**
  * Walks an AgentMessage array and emits ChainRange records for each detectable chain.
  *
- * A chain is: [user message] → [assistant+toolResult turns...] → [text-only assistant].
+ * A chain is: [user message or eligible custom message] → [assistant+toolResult turns...] → [text-only assistant].
  * Synthetic chain messages (injected by chain-range-prune) are treated as passthroughs —
  * not chain starts. This is defensive; the detector normally runs pre-compression.
  *
@@ -49,6 +59,12 @@ export function detectChains(
   let middleKeys = new Set<string>();
   let protectedIds = new Set<string>();
 
+  const resetChain = () => {
+    middleIds = new Set();
+    middleKeys = new Set();
+    protectedIds = new Set();
+  };
+
   const emitInterrupted = () => {
     if (state === "inChain" && chainStart) {
       ranges.push({
@@ -66,9 +82,14 @@ export function detectChains(
       if (isSyntheticChainMessage(msg)) continue; // passthrough — not a chain start
       emitInterrupted();
       chainStart = { timestamp: msg.timestamp };
-      middleIds = new Set();
-      middleKeys = new Set();
-      protectedIds = new Set();
+      resetChain();
+      state = "inChain";
+      continue;
+    }
+
+    if (state === "idle" && isChainAnchorCustom(msg)) {
+      chainStart = { timestamp: msg.timestamp };
+      resetChain();
       state = "inChain";
       continue;
     }
@@ -103,9 +124,7 @@ export function detectChains(
         finalAssistantTimestamp: msg.timestamp,
       });
       chainStart = null;
-      middleIds = new Set();
-      middleKeys = new Set();
-      protectedIds = new Set();
+      resetChain();
       state = "idle";
     }
   }

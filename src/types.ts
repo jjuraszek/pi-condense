@@ -414,6 +414,12 @@ export interface ContextPruneConfig {
    * null (default) = disabled. Out-of-range (<= 0 or > 1) normalizes to null.
    */
   budgetTurnDelta: number | null;
+  /**
+   * Opt-in flush trigger: when the un-pruned tail past the frontier
+   * (frontierGapTokens) reaches this many tokens, flush at turn_end.
+   * null (default) disables. Config-file-only — no settings overlay row.
+   */
+  frontierGapThresholdTokens: number | null;
 }
 
 /**
@@ -426,7 +432,10 @@ export interface ContextPruneConfig {
  * into a ChainCompressionEntry by adding blockId, toolRefs, and compressedAt.
  */
 export interface ChainRange {
-  /** Timestamp of the user message that opens the chain. */
+  /**
+   * Start anchor timestamp — a user message or an eligible (non-pruner)
+   * custom message. Field name kept for persisted-entry compatibility.
+   */
   startUserTimestamp: number;
   /**
    * All toolCallIds in the chain's middle (deduplicated). Collected from both
@@ -463,7 +472,11 @@ export interface ChainRange {
 export interface ChainCompressionEntry {
   /** Stable block ID, monotonic per session: "b1", "b2", ... */
   blockId: string;
-  /** Timestamp of the user message that opens the chain. Keep raw; synthetic inserted after. */
+  /**
+   * Start anchor timestamp — a user message or an eligible (non-pruner)
+   * custom message. Field name kept for persisted-entry compatibility.
+   * Keep raw; synthetic inserted after.
+   */
   startUserTimestamp: number;
   /**
    * All toolCallIds in the chain's middle. **Diagnostic only** since the
@@ -566,6 +579,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   spillThreshold: 65536,
   spillPreviewBytes: 2048,
   budgetTurnDelta: null,
+  frontierGapThresholdTokens: null,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────
@@ -708,7 +722,7 @@ export interface ContextMetricsSnapshot {
   frontierGapTokens: number;
 }
 
-export type FlushTrigger = "budget" | "delta" | "message-end" | "manual" | "rearmed";
+export type FlushTrigger = "budget" | "delta" | "frontier-gap" | "message-end" | "manual" | "rearmed";
 
 /** Payload of CUSTOM_TYPE_FLUSH_METRICS. */
 export interface FlushMetricsEntry {

@@ -838,6 +838,14 @@ Use case: a single enormous tool result can jump context usage by 20–30 percen
 
 `null` = off (default).
 
+### Frontier-gap flush trigger
+
+`frontierGapThresholdTokens: number | null` (default `null`) is a third flush trigger, ORed with `autoBudgetThreshold` and `budgetTurnDelta` at `turn_end` (precedence within that handler: budget, then delta, then frontier-gap - only the first that fires flushes that turn). Unlike the other two, which measure a *fraction* of the context window, this one is an absolute token count against `frontierGapTokens` (the un-pruned tail past the persisted prune frontier, same metric as `/pruner status` and `computeContextMetrics`). Rationale: a window-fraction trigger becomes unreachable on a large enough advertised window (the same problem `MAX_BUDGET_WINDOW` addresses for the level form) long before the un-pruned tail is actually a problem in tokens - this trigger is the absolute-token complement, independent of window size.
+
+It only evaluates at `turn_end`, same call site as the other two triggers, and is self-throttling: `frontierGapTokens` is measured against the persisted prune frontier, which advances on every processed flush outcome (summarized and skipped-* alike, including one this trigger itself causes) - an attempt that finds zero capturable batches does not advance it, and rewrites nothing, so it cannot churn the cache - so under normal operation it cannot fire again until the un-pruned tail regrows by another threshold-worth of tokens; on a mid-flush summarizer failure the frontier advances only to the persisted prefix, so the next gated turn may re-fire while consuming the remaining backlog, making the bound amortized (one extra prefix rewrite per threshold-worth of new tail growth) rather than per-turn-exact under failures. Recommended starting value `80000` - well above the ~5k-15k tokens a session typically accumulates per flush, so it only fires when flushes stop happening for an unusually long stretch (e.g. a long auto-continued run). Config-file-only - no `/pruner settings` row.
+
+`null` = off (default).
+
 ---
 
 ## Chain Compression
@@ -846,7 +854,7 @@ Chain compression is a second layer on top of the per-batch tool-result stub pru
 
 ### What a closed chain is
 
-A **closed chain** is a span of messages from one user message through any number of tool-using assistant turns and their results, ending in a final text-only assistant reply:
+A **closed chain** is a span of messages from one user message - or a non-pruner custom message (`role: "custom"` with a `customType` not prefixed `context-prune-`), the latter only accepted as a chain start while the chain detector is idle (mid-chain, a non-pruner custom is passthrough, not a new anchor) - through any number of tool-using assistant turns and their results, ending in a final text-only assistant reply:
 
 ```
 [user msg]                         ← chain start (kept raw)
@@ -861,7 +869,7 @@ A **closed chain** is a span of messages from one user message through any numbe
 
 | Part | After chain compression |
 |---|---|
-| Start user message | **Kept raw** |
+| Start user message (or idle-anchored custom message) | **Kept raw** |
 | Middle assistant turns (all) | **Dropped** — assistant thinking + signatures + toolCall argument blocks |
 | Middle tool results (all) | **Dropped** — already stub-replaced by the per-batch pruner; now fully removed |
 | Per-batch summary message(s) for this chain | **Suppressed** — replaced by the chain-level synthetic |

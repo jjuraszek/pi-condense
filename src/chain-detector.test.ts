@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { detectChains, withClosingMessage } from "./chain-detector.js";
+import { detectChains, isChainAnchorCustom, withClosingMessage } from "./chain-detector.js";
+
+const custom = (customType: string, timestamp: number) => ({ role: "custom", customType, timestamp });
 
 // ── Minimal message factories ──────────────────────────────────────────────
 
@@ -347,5 +349,79 @@ describe("withClosingMessage", () => {
     expect(ranges).toHaveLength(2);
     expect(ranges[1].startUserTimestamp).toBe(500);
     expect(ranges[1].finalAssistantTimestamp).toBe(800);
+  });
+});
+
+describe("chain-anchor custom messages", () => {
+  test("custom message while idle opens a chain", () => {
+    const messages = [
+      custom("pi-gauntlet-transition-recovery", 100),
+      { role: "assistant", timestamp: 200, content: [{ type: "toolCall", id: "tc1", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc1", toolName: "read", timestamp: 250, content: [] },
+      { role: "assistant", timestamp: 300, content: [{ type: "text", text: "done" }] },
+    ];
+    const ranges = detectChains(messages);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].startUserTimestamp).toBe(100);
+    expect(ranges[0].finalAssistantTimestamp).toBe(300);
+    expect(ranges[0].middleToolCallIds).toEqual(["tc1"]);
+  });
+
+  test("custom message mid-chain is passthrough; enclosing chain closes as one range", () => {
+    const messages = [
+      { role: "user", timestamp: 100, content: [{ type: "text", text: "go" }] },
+      { role: "assistant", timestamp: 200, content: [{ type: "toolCall", id: "tc1", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc1", toolName: "read", timestamp: 250, content: [] },
+      custom("pi-gauntlet-transition-recovery", 260),
+      { role: "assistant", timestamp: 300, content: [{ type: "toolCall", id: "tc2", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc2", toolName: "read", timestamp: 350, content: [] },
+      { role: "assistant", timestamp: 400, content: [{ type: "text", text: "done" }] },
+    ];
+    const ranges = detectChains(messages);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].startUserTimestamp).toBe(100);
+    expect(ranges[0].middleToolCallIds).toEqual(["tc1", "tc2"]);
+  });
+
+  test("context-prune-summary custom is passthrough in both states", () => {
+    // idle state: a summary custom must not anchor anything
+    const idleMessages = [
+      custom("context-prune-summary", 50),
+      { role: "assistant", timestamp: 200, content: [{ type: "toolCall", id: "tc1", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc1", toolName: "read", timestamp: 250, content: [] },
+      { role: "assistant", timestamp: 300, content: [{ type: "text", text: "done" }] },
+    ];
+    expect(detectChains(idleMessages)).toHaveLength(0);
+    // in-chain: a summary custom between turns leaves the chain unbroken
+    const midMessages = [
+      { role: "user", timestamp: 100, content: [{ type: "text", text: "go" }] },
+      { role: "assistant", timestamp: 200, content: [{ type: "toolCall", id: "tc1", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc1", toolName: "read", timestamp: 250, content: [] },
+      custom("context-prune-summary", 260),
+      { role: "assistant", timestamp: 300, content: [{ type: "toolCall", id: "tc2", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc2", toolName: "read", timestamp: 350, content: [] },
+      { role: "assistant", timestamp: 400, content: [{ type: "text", text: "done" }] },
+    ];
+    const ranges = detectChains(midMessages);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].middleToolCallIds).toEqual(["tc1", "tc2"]);
+  });
+
+  test("future context-prune-* customType is excluded", () => {
+    const messages = [
+      custom("context-prune-whatever", 100),
+      { role: "assistant", timestamp: 200, content: [{ type: "toolCall", id: "tc1", name: "read", input: {} }] },
+      { role: "toolResult", toolCallId: "tc1", toolName: "read", timestamp: 250, content: [] },
+      { role: "assistant", timestamp: 300, content: [{ type: "text", text: "done" }] },
+    ];
+    expect(detectChains(messages)).toHaveLength(0);
+  });
+
+  test("isChainAnchorCustom predicate", () => {
+    expect(isChainAnchorCustom({ role: "custom", customType: "pi-gauntlet-transition-recovery" })).toBe(true);
+    expect(isChainAnchorCustom({ role: "custom", customType: "context-prune-summary" })).toBe(false);
+    expect(isChainAnchorCustom({ role: "custom" })).toBe(true); // missing customType -> not pruner-namespaced
+    expect(isChainAnchorCustom({ role: "user" })).toBe(false);
+    expect(isChainAnchorCustom(undefined)).toBe(false);
   });
 });
