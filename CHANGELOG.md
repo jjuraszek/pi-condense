@@ -7,7 +7,7 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
-## [Unreleased]
+## [2.10.0] - 2026-09-01
 
 - **Custom-message chain anchors ([#13](https://github.com/jjuraszek/pi-condense/issues/13)).** A non-pruner `role: "custom"` message (`customType` not prefixed `context-prune-`) can now open a chain, but only while the chain detector is idle - a non-pruner custom seen mid-chain stays passthrough, not a new anchor. `resolveRange` accepts these as start anchors fail-closed; persisted `custom_message` steers reach chain detection through a shared projection (`src/batch-capture.ts` `projectBranchMessages`); in `agent-message` batching, eligible customs also bound summary groups.
 - **Opt-in `frontierGapThresholdTokens` flush trigger.** New absolute-token flush trigger (default `null`, disabled), ORed with `autoBudgetThreshold`/`budgetTurnDelta` (precedence: budget, then delta, then frontier-gap) - fires at `turn_end` once the un-pruned tail past the prune frontier (`frontierGapTokens`) reaches the configured token count, independent of window size. Config-file-only, no `/pruner settings` row; self-throttling via frontier advance on processed flush outcomes (empty attempts advance nothing and rewrite nothing) - after a mid-flush summarizer failure the next gated turn may re-fire while consuming the remaining backlog, so the cadence bound is amortized per new tail growth rather than per-turn-exact. New `"frontier-gap"` value on `context-prune-flush-metrics` entries.
