@@ -630,7 +630,7 @@ Names and patterns that don't match any captured tool call are silently ignored.
 
 `spillThreshold: number` (default `65536`) is a capture-time safeguard for outsized single tool results (e.g. a 1 MB web fetch, a full binary diff). When a single `ToolResultMessage`'s `resultText.length` reaches the threshold, the result is spilled immediately at `turn_end` — before the pending-queue trim and before any LLM call.
 
-**Sidecar location:** `<sessionDir>/<sessionId>-blobs/<sanitizedToolCallId>.txt`.
+**Sidecar location:** `<sessionDir>/<sessionId>-blobs/<sanitizedToolCallId>.txt`. When that basename would exceed 255 bytes (very long provider tool-call ids), it is capped to exactly 255 bytes as `<first 234 bytes of the sanitized key>.<16-hex sha1 of the unsanitized occurrence key>.txt`; names that already fit are unchanged.
 
 **Index entry:** `addBatch` is called synchronously with the spilled body (no LLM round-trip). The record is immediately `isSummarized = true`; the pruner emits a mechanical file-pointer stub:
 

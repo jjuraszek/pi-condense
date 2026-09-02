@@ -1,5 +1,7 @@
 # Oversized tool-result spill + budget-delta flush
 
+> **Superseded by:** [doc/specs/2026-09-02-gh-14-spill-filename-cap.md](./2026-09-02-gh-14-spill-filename-cap.md) - sidecar filename derivation and filename-collision handling
+
 Date: 2026-06-02
 Branch/worktree: `oversized-output-spill`
 Status: spec (pre-implementation)

@@ -1,8 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { ToolCallIndexer } from "./indexer.js";
+import { occKey } from "./occurrence-key.js";
 import { spillOversizedBatch, blobPathFor } from "./spill.js";
 import { pruneMessages } from "./pruner.js";
 import type { CapturedBatch } from "./types.js";
@@ -74,5 +75,52 @@ describe("oversized spill end-to-end", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("long-id record survives the backfill -> restart round trip (AC4)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "spill-e2e-"));
+    try {
+      const indexer = new ToolCallIndexer();
+      const entries: any[] = [];
+      const appendEntry = (customType: string, data?: unknown) => {
+        entries.push({ type: "custom", customType, data });
+      };
+      const longId = "toolu_" + "q".repeat(494); // 500 chars
+      const body = "BACKFILL BODY\n".repeat(200);
+      const rec: any = {
+        toolCallId: longId, toolName: "bash", args: { command: "ls" },
+        resultText: body, isError: false, turnIndex: -1, timestamp: 1000, resultTimestamp: 1000,
+      };
+
+      // 1. backfill write: must not throw (fail-closed path), basename capped
+      await indexer.backfillChainRecords([rec], {
+        spillThreshold: 10, spillPreviewBytes: 16, sessionDir: dir, sessionId: "sid", appendEntry,
+      });
+      expect(rec.spillPath).toBeTruthy();
+      expect(Buffer.byteLength(basename(rec.spillPath), "utf8")).toBeLessThanOrEqual(255);
+
+      // 2. persisted index entry exists (backfilled shape)
+      expect(entries.some((e) => e.customType === CUSTOM_TYPE_INDEX && e.data.backfilled)).toBe(true);
+
+      // 3. restart: fresh indexer reconstructs from persisted entries only
+      const rebuilt = new ToolCallIndexer();
+      rebuilt.reconstructFromSession({ sessionManager: { getBranch: () => entries } } as any);
+      const restored = rebuilt.getRecord(occKey(longId, 1000))!;
+      expect(restored.spillPath).toBe(rec.spillPath);
+
+      // 4. read-back of the restored persisted path equals the original body
+      expect(await readFile(restored.spillPath!, "utf-8")).toBe(body);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("capped names are namespace-disjoint from short-key names", () => {
+    const cappedPath = blobPathFor("/s", "sid", "a".repeat(300));
+    const stem = basename(cappedPath).slice(0, -".txt".length);
+    // sanitizeId can never emit ".", so no short key maps onto a capped name -
+    // even the short key spelled exactly like the capped stem.
+    expect(stem).toContain(".");
+    expect(blobPathFor("/s", "sid", stem)).not.toBe(cappedPath);
   });
 });

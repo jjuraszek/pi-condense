@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { CapturedBatch, CapturedToolCall } from "./types.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import { hashToolResult } from "./content-hash.js";
@@ -15,7 +16,18 @@ export function blobDirFor(sessionDir: string, sessionId: string): string {
 }
 
 export function blobPathFor(sessionDir: string, sessionId: string, toolCallId: string): string {
-  return join(blobDirFor(sessionDir, sessionId), `${sanitizeId(toolCallId)}.txt`);
+  const base = sanitizeId(toolCallId);
+  // 255-byte basename cap (gh-14). Uncapped budget: 255 - ".txt" = 251.
+  // Capped: 234-byte prefix + "." + 16-hex sha1 + ".txt" = 255 exactly.
+  // sanitizeId output is ASCII, so slice counts bytes. The "." separator is
+  // unreachable by sanitizeId, keeping capped names disjoint from short-key
+  // names. The hash covers the UNsanitized key so ids that sanitize
+  // identically stay distinct.
+  const name =
+    Buffer.byteLength(base, "utf8") <= 251
+      ? `${base}.txt`
+      : `${base.slice(0, 234)}.${createHash("sha1").update(toolCallId).digest("hex").slice(0, 16)}.txt`;
+  return join(blobDirFor(sessionDir, sessionId), name);
 }
 
 /** Head of `text` capped at `maxBytes` (UTF-8 safe), preferring a line boundary. */

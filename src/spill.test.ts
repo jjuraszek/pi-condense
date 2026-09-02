@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { sanitizeId, blobDirFor, blobPathFor, headPreview, spillOversizedBatch } from "./spill.js";
 import { ToolCallIndexer } from "./indexer.js";
 import { registerQueryTool } from "./query-tool.js";
@@ -21,6 +21,41 @@ describe("blobDirFor / blobPathFor", () => {
   it("builds <sessionDir>/<sessionId>-blobs/<id>.txt", () => {
     expect(blobDirFor("/s", "sid")).toBe(join("/s", "sid-blobs"));
     expect(blobPathFor("/s", "sid", "tc1")).toBe(join("/s", "sid-blobs", "tc1.txt"));
+  });
+});
+
+describe("blobPathFor byte cap (gh-14)", () => {
+  const nameBytes = (p: string) => Buffer.byteLength(basename(p), "utf8");
+
+  it("251-byte sanitized base keeps today's formula (AC5 boundary, just-under)", () => {
+    const id = "a".repeat(251);
+    const p = blobPathFor("/s", "sid", id);
+    expect(p).toBe(join("/s", "sid-blobs", `${id}.txt`));
+    expect(nameBytes(p)).toBe(255);
+  });
+
+  it("252-byte sanitized base is capped to exactly 255 bytes (AC5 boundary, just-over)", () => {
+    const p = blobPathFor("/s", "sid", "a".repeat(252));
+    expect(nameBytes(p)).toBe(255);
+    expect(basename(p)).toMatch(/^a{234}\.[0-9a-f]{16}\.txt$/);
+  });
+
+  it("is deterministic: same long key -> identical path", () => {
+    const key = "x".repeat(500);
+    expect(blobPathFor("/s", "sid", key)).toBe(blobPathFor("/s", "sid", key));
+  });
+
+  it("two long ids sharing the first 300 chars map to distinct filenames (AC3)", () => {
+    const a = "t".repeat(300) + "A".repeat(200);
+    const b = "t".repeat(300) + "B".repeat(200);
+    expect(blobPathFor("/s", "sid", a)).not.toBe(blobPathFor("/s", "sid", b));
+  });
+
+  it("hashes the unsanitized key: long ids that sanitize identically stay distinct", () => {
+    const a = "p".repeat(300) + "/x";
+    const b = "p".repeat(300) + "\\x";
+    expect(sanitizeId(a)).toBe(sanitizeId(b));
+    expect(blobPathFor("/s", "sid", a)).not.toBe(blobPathFor("/s", "sid", b));
   });
 });
 
@@ -204,6 +239,41 @@ describe("spillOversizedBatch", () => {
       expect(indexer.isSummarized("tc2")).toBe(true);
       expect(indexer.getRecord("tc2")!.toolCallId).toBe("tc1");
       await expect(readFile(blobPathFor(dir, "sid", "tc2"), "utf-8")).rejects.toBeDefined();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("spills a 500-char tool-call id: file created, capped basename, record mutated (AC1)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "spill-"));
+    try {
+      const indexer = new ToolCallIndexer();
+      const longId = "toolu_" + "k".repeat(494); // 500 chars
+      const body = "LONG-ID BODY ".repeat(10);
+      const batch = mkBatch([{ toolCallId: longId, toolName: "fetch", args: {}, resultText: body, isError: false, resultTimestamp: 1150 }]);
+      const spilled = await spillOversizedBatch({ batch, indexer, config: cfg, sessionDir: dir, sessionId: "sid", appendEntry: () => {} });
+      expect(spilled.has(longId)).toBe(true);
+      const rec = indexer.getRecord(occKey(longId, 1150))!;
+      expect(rec.resultText).toBe("");
+      expect(rec.resultPreview!.length).toBeGreaterThan(0);
+      expect(Buffer.byteLength(basename(rec.spillPath!), "utf8")).toBeLessThanOrEqual(255);
+      expect(await readFile(rec.spillPath!, "utf-8")).toBe(body);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("same 500-char id at two occurrences spills to two distinct files (AC2)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "spill-"));
+    try {
+      const indexer = new ToolCallIndexer();
+      const longId = "toolu_" + "k".repeat(494);
+      const noDedup = { ...cfg, dedupByContentHash: false };
+      const b1 = mkBatch([{ toolCallId: longId, toolName: "bash", args: {}, resultText: "FIRST".repeat(20), isError: false, resultTimestamp: 1150 }]);
+      const b2 = mkBatch([{ toolCallId: longId, toolName: "bash", args: {}, resultText: "SECOND".repeat(20), isError: false, resultTimestamp: 3150 }]);
+      await spillOversizedBatch({ batch: b1, indexer, config: noDedup, sessionDir: dir, sessionId: "sid", appendEntry: () => {} });
+      await spillOversizedBatch({ batch: b2, indexer, config: noDedup, sessionDir: dir, sessionId: "sid", appendEntry: () => {} });
+      const rec1 = indexer.getRecord(occKey(longId, 1150))!;
+      const rec2 = indexer.getRecord(occKey(longId, 3150))!;
+      expect(rec1.spillPath).not.toBe(rec2.spillPath);
+      expect(await readFile(rec1.spillPath!, "utf-8")).toBe("FIRST".repeat(20));
+      expect(await readFile(rec2.spillPath!, "utf-8")).toBe("SECOND".repeat(20));
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });
