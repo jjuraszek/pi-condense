@@ -7,7 +7,7 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
-## [Unreleased]
+## [2.10.3] - 2026-09-07
 
 - **Protected-path supersession.** Only the newest read of a protected path (`protectedPaths` / `protectedTools` calls with a string `path`) stays verbatim; earlier reads of the same path become a one-line `[Superseded: ...]` stub. Applied at render time (`pruneMessages` phase 1b, `src/supersede.ts`) and only when the pruner is already rewriting at or before that position, or on a cold-cache event (`session_start`, `session_tree`, `model_select`, `session_compact`, `thinking_level_select`) - never as the sole mid-prefix change. No new session entry, index record, or config key; supersession stops exactly when no protected call remains (`protectedPaths: []` with the default `protectedTools: []`); a read protected by tool name alone still participates. Spec: `doc/specs/2026-09-07-protected-path-supersede.md` (partially supersedes the 2026-06-11 protected-paths spec's "verbatim forever" edge case).
 
