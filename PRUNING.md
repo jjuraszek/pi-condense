@@ -567,6 +567,8 @@ graph LR
 captured batches (from turn_end or session scan)
   │
   ├─ 1. Protected-tools/paths filter   (capture-time, see below)
+  │     newest read per protected path stays verbatim; older reads of the same
+  │     path are stubbed at render time once the cache is cold anyway (see § Supersession)
   │     tool calls whose toolName is in protectedTools, OR whose args.path
   │     matches any protectedPaths glob, never enter the batch
   │
@@ -614,7 +616,7 @@ Implementation: `src/pruner.ts` `pruneMessages(messages, indexer)` returns `{ me
 
 ### Protected tools & paths
 
-A tool call is protected if **either** its `toolName` is in `protectedTools` **or** its `args.path` (string) matches any glob in `protectedPaths`. Protected calls are filtered out **at capture time** - they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context.
+A tool call is protected if **either** its `toolName` is in `protectedTools` **or** its `args.path` (string) matches any glob in `protectedPaths`. Protected calls are filtered out **at capture time** - they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context until a newer read of the same path supersedes it (below).
 
 **`protectedTools: string[]`** (default `[]`) - allowlist of tool names. Covers tools whose output is a small handle that must be reused byte-for-byte (e.g. a session-id) or planning tools like `todowrite` / `todoread`.
 
@@ -623,6 +625,10 @@ A tool call is protected if **either** its `toolName` is in `protectedTools` **o
 Glob contract: full-path match against the raw `args.path` string with `\` normalized to `/`. `*` and `?` match within a segment (no `/`); `**` crosses segments; `**/` also matches zero directories (so `**/SKILL.md` matches a bare relative `SKILL.md`). Case-sensitive. All other characters are regex-escaped literals.
 
 **Render-time re-check:** stub replacement runs in-flight on every turn (`pruneMessages`). If a tool call's persisted `args` now satisfy `isProtected` (e.g. a pattern was added mid-session), the stub is skipped and the raw result is left verbatim - this repairs already-summarized records in existing sessions with no schema change. Declared limitation: records inside already-compressed chains (`context-prune-chain` entries) are NOT repaired - their `protectedToolCallIds` set is fixed at compression time (forward-only). Dedup-alias edge: an alias resolving to an unprotected original stays stubbed.
+
+**Supersession (phase 1b, `src/supersede.ts`):** protected calls are never indexed, so content-hash dedup never sees them. Instead, at render time only the **newest** protected occurrence per normalized `args.path` (backslash -> slash; `offset`/`limit` ignored) stays verbatim; every earlier occurrence with a paired result becomes the one-line stub `[Superseded: <path> was read again later in this conversation - see the newer read. Re-read the file if this earlier content is needed.]`. The stub keeps `toolCallId`/`toolName`/`timestamp`, so pi-ai's orphan repair never fires; the assistant `toolCall` block is untouched. A call without a paired result never participates (an aborted call cannot steal the win). Recovery is "re-read the file" - no `t<N>` ref. Provider tool-call ids repeat across turns and an aborted call has no result, so a result is paired only with the same-id call in the immediately preceding assistant message (the per-turn open-set model orphan-sweep uses) - never by a global per-id cursor.
+
+**Cadence (prompt-cache economics):** a superseded read is stubbed only when the pruner is already rewriting at or before its position - `floor` is the earliest result timestamp phase 1 will stub on the next render (indexed batches, plus dedup aliases registered in the pre-flush pass - those are stubbed by phase 1 whatever their batch's outcome; a `skipped-trivial`/`skipped-oversized` batch's own calls set none) or the `startUserTimestamp` of a chain compressed this turn - or on a guaranteed-cold event: `session_start`, `session_tree`, `model_select`, `session_compact`, `thinking_level_select` (`floor = 0`, activate all). Activation is session-sticky (in-memory `occKey` set, cleared on `session_start`/`session_tree`); between those moments a freshly superseded copy stays verbatim on purpose, since a mid-prefix rewrite re-bills the whole tail once. `isProtected` is evaluated live, so a path that stops matching `protectedPaths` drops out of supersession and rejoins the normal pipeline. No config key: supersession is on whenever protection is. Spec: `doc/specs/2026-09-07-protected-path-supersede.md`.
 
 Names and patterns that don't match any captured tool call are silently ignored.
 
@@ -691,7 +697,7 @@ The last attempted prune boundary is persisted as `context-prune-frontier` so `f
 - **Tree browser (`/pruner tree`):** interactive, foldable tree of pruned tool calls grouped under their summaries. `Ctrl-O` on a summary node opens the full markdown summary in a bordered overlay.
 - **Configurable summarizer thinking (`summarizerThinking`):** trade summary cost / latency for quality (`off` / `minimal` / `low` / `medium` / `high` / `xhigh`). `default` omits the option entirely so the provider chooses.
 - **Cumulative stats:** `context-prune-stats` entries track input/output tokens and cost of every summarizer call; full detail surfaces in `/pruner stats`. Cost is also emitted on the `cost:external` pi.events channel for external aggregators (cumulative per session, live only).
-- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages) = JSON.stringify(messages).length`, comparing the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all four phases in a single point (stub-replace, error-purge, chain-range-prune, orphan-sweep); appears on the status line as `│ prune: ON · 92.0k->14.0k (-85%)` once at least one prune has occurred (the leading `│` keeps the segment visually isolated in the shared footer, load-order independent - there is no trailing divider, since the footer's own space-join between segments already provides one).
+- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages) = JSON.stringify(messages).length`, comparing the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all five phases in a single point (stub-replace, supersede, error-purge, chain-range-prune, orphan-sweep); appears on the status line as `│ prune: ON · 92.0k->14.0k (-85%)` once at least one prune has occurred (the leading `│` keeps the segment visually isolated in the shared footer, load-order independent - there is no trailing divider, since the footer's own space-join between segments already provides one).
 - **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
 
 ### Summarizer outage fallback
@@ -884,6 +890,7 @@ A **closed chain** is a span of messages from one user message - or a non-pruner
 raw messages from session
   │
   ├─ [1] tool-result stub-replace   (per-batch; existing)
+  ├─ [1b] supersede                (older protected reads of a re-read path -> stub; see § Supersession)
   ├─ [2] error-purge                (phase 2)
   ├─ [3] chain-range-prune          (runs AFTER stubs)
   │        resolve each entry to a positional index range
@@ -965,6 +972,8 @@ Chain compression does not delete data from the session JSONL. The original tool
 ```
 
 The protected output is relocated (moved), not copied — the original `ToolResultMessage` is dropped with the rest of the middle turns. The text stays in LLM context because it is embedded in the surviving synthetic block. It is NOT registered in the tool-call index and is NOT recoverable via `context_tree_query`; it does not need to be, because it is present verbatim.
+
+Relocation reads the array **after** phase 1b, so a protected read that has been superseded relocates as its one-line stub, not the verbatim body - the verbatim copy is the newer read elsewhere in context.
 
 The `context-prune-chain` session entry carries the matching `protectedToolCallIds` array so `session_start` reconstruction can re-embed the outputs on reload.
 
@@ -1089,7 +1098,7 @@ Error purge replaces those arg bodies with compact stubs after the error has coo
 **Transform position:** Error purge runs in Phase 2, after stub-replace and before chain range prune.
 
 ```
-[stub-replace] → [error-purge] → [chain-range-prune] → [orphan-sweep]
+[stub-replace] → [supersede] → [error-purge] → [chain-range-prune] → [orphan-sweep]
 ```
 
 **Config keys:**

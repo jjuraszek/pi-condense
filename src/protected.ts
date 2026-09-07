@@ -41,11 +41,16 @@ export function globToRegExp(pattern: string): RegExp {
   return compiled;
 }
 
+/** Identity normalization shared by protection matching and supersession: slash direction only, no resolution. */
+export function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
 export function isProtected(toolName: string, args: unknown, config: ProtectionConfig): boolean {
   if (config.protectedTools.includes(toolName)) return true;
   if (config.protectedPaths.length === 0) return false;
   const path = (args as Record<string, unknown> | null | undefined)?.path;
   if (typeof path !== "string") return false;
-  const normalized = path.replace(/\\/g, "/");
+  const normalized = normalizePath(path);
   return config.protectedPaths.some((p) => globToRegExp(p).test(normalized));
 }

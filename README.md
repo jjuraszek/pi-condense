@@ -169,7 +169,7 @@ Settings live under `contextPrune` in `<agent-dir>/settings.json` (`$PI_CODING_A
 | `pruneOn` | `agent-message` | Trigger mode - see Architecture above |
 | `autoBudgetThreshold` | `null` | Fraction (e.g. `0.8`) of the context window that force-flushes everything regardless of `pruneOn`; the trigger point is capped at 300k tokens |
 | `frontierGapThresholdTokens` | `null` | Opt-in absolute-token flush trigger: fires at `turn_end` once the un-pruned tail past the prune frontier reaches N tokens, regardless of window size; recommended starting value `80000` |
-| `protectedTools` / `protectedPaths` | `[]` / `["**/skills/**/*.md", "**/gauntlet-overrides.md"]` | Tool names / path globs that are never pruned |
+| `protectedTools` / `protectedPaths` | `[]` / `["**/skills/**/*.md", "**/gauntlet-overrides.md"]` | Tool names / path globs that are never summarized; only the newest read per protected path stays verbatim (older reads of the same path are stubbed once the prompt cache is cold anyway) |
 | `spillThreshold` | `65536` | Chars above which a single oversized result spills straight to a sidecar file |
 
 The default also protects reads of [pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet)'s per-repo `gauntlet-overrides.md` so the repo's harness contract stays available for gate decisions after pruning.

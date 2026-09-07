@@ -45,6 +45,7 @@ import { StatsAccumulator, emitExternalCost } from "./src/stats.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
+import { createSupersedeState, earliestChainStart, earliestResultTimestamp, lowerFloor } from "./src/supersede.js";
 import { detectChains, withClosingMessage } from "./src/chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, shouldFrontierGapFlush, usageFraction } from "./src/budget.js";
@@ -81,6 +82,10 @@ export default function (pi: ExtensionAPI) {
   // Session-scoped diagnostic sink — tracks recovery-path anomaly counters
   // (dedup'd across the session's lifetime, not per-render).
   const diagnostics = new DiagnosticSink((type, data) => pi.appendEntry(type, data));
+
+  // Newest-protected-read-wins state (spec 2026-09-07). In-memory only: on
+  // session_start / session_tree the cold floor re-activates everything.
+  const supersede = createSupersedeState();
 
   // Pending batches — accumulated until the prune trigger fires
   const pendingBatches: CapturedBatch[] = [];
@@ -454,6 +459,12 @@ export default function (pi: ExtensionAPI) {
       const dedupedBatches: CapturedBatch[] = [];
       let firstFailureIndex = -1;
 
+      // Every tool call phase 1 will stub on the next render is a floor
+      // source for supersession: dedup aliases regardless of batch outcome,
+      // plus the batch's own calls when the batch was actually indexed.
+      const floorSources: import("./src/types.js").CapturedToolCall[] = [];
+      for (let i = 0; i < batches.length; i++) floorSources.push(...dedupedPerBatch[i].toolCalls);
+
       for (let i = 0; i < batches.length; i++) {
         const result = results[i];
         if (result === null) {
@@ -530,6 +541,7 @@ export default function (pi: ExtensionAPI) {
             // Keep the in-memory summary-body registry current so chain compression
             // can build synthetic chain messages without rescanning session entries.
             indexer.registerSummaryBody(batchOccurrenceKeys, summaryText);
+            floorSources.push(...batch.toolCalls);
           } else {
             oversizedBatches.push(batch);
           }
@@ -545,6 +557,8 @@ export default function (pi: ExtensionAPI) {
 
         processedBatches.push(batch);
       }
+
+      lowerFloor(supersede, earliestResultTimestamp(floorSources));
 
       // Restore unprocessed batches (those at and after the first failure)
       if (firstFailureIndex >= 0) {
@@ -664,6 +678,7 @@ export default function (pi: ExtensionAPI) {
             inGrace,
           );
           if (compressedEntries.length > 0) {
+            lowerFloor(supersede, earliestChainStart(compressedEntries));
             statsAccum.addChainsCompressed(compressedEntries.length);
             statsAccum.persist(pi);
             emitExternalCost(pi, statsAccum);
@@ -785,6 +800,8 @@ export default function (pi: ExtensionAPI) {
     statsAccum.reconstructFromSession(ctx);
     fallbackController.reset();
     diagnostics.reset();
+    supersede.activated.clear();
+    supersede.floor = 0;
 
     // Rebuild prune frontier from persisted session entries
     frontier.reconstructFromSession(ctx);
@@ -826,6 +843,8 @@ export default function (pi: ExtensionAPI) {
     blockRefs.rebuildFrom(indexer.getChainEntries().map((e) => e.blockId));
     statsAccum.reconstructFromSession(ctx);
     diagnostics.reset();
+    supersede.activated.clear();
+    supersede.floor = 0;
     frontier.reconstructFromSession(ctx);
     // Pending batches belong to the old branch — discard them
     pendingBatches.length = 0;
@@ -840,6 +859,18 @@ export default function (pi: ExtensionAPI) {
     }
 
     setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
+  });
+
+  // Cache is a per-model prefix; these three moments are cold regardless, so
+  // activating every pending supersession here costs no extra cache miss.
+  pi.on("model_select", async () => {
+    supersede.floor = 0;
+  });
+  pi.on("session_compact", async () => {
+    supersede.floor = 0;
+  });
+  pi.on("thinking_level_select", async () => {
+    supersede.floor = 0;
   });
 
   // ── turn_end: capture batch, flush immediately or queue ──────────────────
@@ -994,7 +1025,7 @@ export default function (pi: ExtensionAPI) {
 
     // pruneMessages is the single source of truth for "is there work to do".
     // It returns the original array reference (pruned: false) only when none of
-    // the four phases changed anything; index/registry emptiness alone does not
+    // the five phases changed anything; index/registry emptiness alone does not
     // imply a no-op, since error-purge (phase 2) prunes independently of them.
     // Calling it unconditionally is safe and avoids a split gate here.
     const result = pruneMessages(
@@ -1005,6 +1036,7 @@ export default function (pi: ExtensionAPI) {
       currentConfig.value,
       currentConfig.value.recoveryGraceTurns,
       diagnostics,
+      { state: supersede, isProtected: protectionPredicate },
     );
     if (result.pruned) {
       messages = result.messages;
@@ -1046,6 +1078,7 @@ export default function (pi: ExtensionAPI) {
       inGrace,
     );
     if (result.compressedEntries.length > 0) {
+      lowerFloor(supersede, earliestChainStart(result.compressedEntries));
       statsAccum.addChainsCompressed(result.compressedEntries.length);
       statsAccum.persist(pi);
       emitExternalCost(pi, statsAccum);

@@ -1,5 +1,7 @@
 # Path-based protection: `protectedPaths`
 
+> **Superseded by:** [doc/specs/2026-09-07-protected-path-supersede.md](./2026-09-07-protected-path-supersede.md) - "Oversized protected read: stays verbatim in context forever" edge case only (now: until a newer read of the same path)
+
 GitHub issue: [#1](https://github.com/jjuraszek/pi-context-prune/issues/1)
 
 ## Problem

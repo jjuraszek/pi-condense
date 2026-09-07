@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { globToRegExp, isProtected } from "./protected.js";
+import { globToRegExp, isProtected, normalizePath } from "./protected.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
 describe("globToRegExp", () => {
@@ -80,5 +80,12 @@ describe("isProtected", () => {
 
   test("empty config protects nothing", () => {
     expect(isProtected("read", { path: "skills/a/SKILL.md" }, { protectedTools: [], protectedPaths: [] })).toBe(false);
+  });
+});
+
+describe("normalizePath", () => {
+  test("normalizePath turns backslashes into forward slashes and nothing else", () => {
+    expect(normalizePath("h\\skills\\x\\SKILL.md")).toBe("h/skills/x/SKILL.md");
+    expect(normalizePath("./a/../b.md")).toBe("./a/../b.md");
   });
 });

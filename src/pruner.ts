@@ -8,6 +8,7 @@ import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 import { occKey } from "./occurrence-key.js";
 import { sweepOrphanToolResults } from "./orphan-sweep.js";
 import type { DiagnosticSink } from "./diagnostics.js";
+import { applySupersede, type SupersedeState } from "./supersede.js";
 
 /**
  * Estimate of a message array's context weight. Serializing the whole array
@@ -20,7 +21,7 @@ export function sizeMessages(messages: any[]): number {
 }
 
 /**
- * Transforms the `context` event message array in four phases:
+ * Transforms the `context` event message array in five phases:
  *
  * Phase 1 — stub-replace: ToolResultMessages for summarized tool calls are
  * replaced with short stubs pointing the model at `context_tree_query`.
@@ -36,6 +37,13 @@ export function sizeMessages(messages: any[]): number {
  *     `context_tree_query` to recover the raw output, so the breadcrumb
  *     to recovery is present on the toolResult itself, not only in the
  *     separate summary message.
+ *
+ * Phase 1b — supersede: protected reads (never indexed) whose `args.path`
+ * is read again later in the same context are replaced with a one-line
+ * "superseded" stub, but only once `SupersedeState.floor` says the pruner
+ * is rewriting at/before their position anyway (or the cache is cold).
+ * See src/supersede.ts. Runs before phase 3 so a superseded read inside a
+ * compressed chain relocates as the stub, not the verbatim body.
  *
  * Phase 2 — error purge: replaces failed toolCall arg bodies with stubs after a
  * cooldown, reclaiming context from large `write`/`edit` arguments that will
@@ -78,6 +86,7 @@ export function pruneMessages(
   protection?: ProtectionConfig,
   recoveryGraceTurns: number = 0,
   diagnostics?: DiagnosticSink,
+  supersede?: { state: SupersedeState; isProtected: (toolName: string, args: unknown) => boolean },
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
@@ -135,6 +144,15 @@ export function pruneMessages(
   });
 
   let current: any[] = pruned ? next : messages;
+
+  // Phase 1b: supersede older protected reads of a re-read path
+  if (supersede) {
+    const afterSupersede = applySupersede(current, supersede.state, supersede.isProtected);
+    if (afterSupersede !== current) {
+      current = afterSupersede;
+      pruned = true;
+    }
+  }
 
   // Phase 2: error purge — replace failed toolCall arg bodies after cooldown
   if (errorPurge?.enabled) {

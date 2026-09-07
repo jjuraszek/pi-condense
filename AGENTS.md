@@ -96,10 +96,11 @@ src/
   occurrence-key.ts                # pure: id@resultTimestamp key ↔ bare-id derivation, the session-durable tool-call discriminant
   orphan-sweep.ts                  # pure: removes toolResults whose id is not open (per-turn tracking; any non-assistant/non-toolResult message is a barrier that clears the open set)
   diagnostics.ts                   # DiagnosticSink: writes context-prune-diagnostic entries, deduped per (kind, dedupKey), never in LLM context
-  pruner.ts                        # pruneMessages: composes stub-replace → error-purge → chain-range-prune → orphan-sweep
+  pruner.ts                        # pruneMessages: composes stub-replace → supersede → error-purge → chain-range-prune → orphan-sweep
   commands.ts                      # /pruner subcommands, settings overlay, status widget
   summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
   summarizer-fallback.ts           # pure: sticky in-memory FallbackController for summarizer-model outages (transient-only, 10-min re-probe)
+  supersede.ts                     # pure: newest protected read per args.path wins; older ones stubbed once SupersedeState.floor says the prefix is being rewritten anyway (or cache is cold)
   context-metrics.ts               # pure: branch -> ContextMetricsSnapshot (open-cycle thinking, chain share, frontier gap)
   stats.ts                         # StatsAccumulator + formatting helpers
   test-support.ts                  # shared test helpers (e.g. expectNoOrphanToolResults) used across multiple *.test.ts files
