@@ -1,138 +1,109 @@
 # pi-condense
 
-Pi extension. Captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Targeted at long agent sessions where raw tool outputs dominate the prompt.
+Pi extension that captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Published to npm as `pi-condense` (`pi install npm:pi-condense`).
 
-## Part of one platform (cross-repo synergy)
+<!-- agents-core:begin v3 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+## Ground Truth Before Reasoning
 
-This repo is one of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** (coordination), **pi-condense** (context economy, this repo), **pi-gauntlet** (process) - that compose into one governed agent workflow. They ship and version independently, but documentation is deliberately cross-referential: a concept is explained in its owning repo and *linked* from the others, never duplicated.
+User instructions outrank skill and AGENTS.md guidance; on conflict, follow the user. Configured gates (design approval, ship verification) still run; a user instruction that already names the gated action satisfies its confirmation.
 
-- Only hard code dependency: pi-gauntlet -> pi-cohort (`subagent()`). pi-condense has no code dependency on any sibling.
-- Real runtime coupling: pi-condense emits `cost:external`; pi-cohort aggregates it into `Σ$`. Naming is one-directional - pi-condense names pi-cohort as the intended consumer; the channel itself is generic.
-- pi-quiver is an independent toolbox; no code coupling with pi-condense.
+Never guess Pi's API, message shapes, config, or values - read the source. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner`; its shipped `.d.ts` is API truth. Third-party APIs: never state a signature, config key, flag, or version-specific behavior from memory - verify in current docs (Context7 `resolve-library-id` then `query-docs`). If the source contradicts your assumption, the source wins; if it is missing, say so and ask - do not fabricate. Check the request's premise before acting: if the source contradicts it, say so once with evidence, then follow the user's decision.
 
-When editing docs here, if a claim belongs to a sibling's concern (e.g. how `subagent()` dispatch works, or the gauntlet gate pipeline), link the sibling's doc rather than restating it. When a change alters the `cost:external` payload shape or semantics, update pi-cohort's observability docs in the same logical change and note it in both CHANGELOGs.
+The same rule applies to state you set up yourself. Before asserting that a job, publish, CI run, or process is in some state, run the command that shows it in this turn (`gh run view`, `npm view`, `git status`). A summary of what you started is a plan, not an observation.
 
-<!-- agents-core:begin v2 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+## Authorization
+
+An instruction that names an action and its parameters is the approval for that action ("release patch", "close #12 with a comment") - do it, then report. Ask only when a parameter is ambiguous or a safety check fails; say what failed, don't fix it silently. Once the design is settled, finish the authorized work before asking - the user approves a concrete result. Reversible, read-only, and already-authorized actions need no permission. Agent-initiated writes to a tracker or to files outside the repo keep their gate.
+
 ## Communication Style
 
-Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
+**North star: sharp, human-readable, example-driven, condense.** Sharp = exact, no hedging (name the file/SHA/value). Human-readable = written like a person, not a report. Example-driven = a small before/after beats a paragraph. Condense = every sentence earns its place. One term per concept: name a thing once, reuse that name. A reply carries its substance inline - never point at tool outputs, finding numbers, or earlier turns the reader didn't see; restate in one sentence.
 
-- **Human, terse, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, `.md` files. Terse is not vague - keep it exact.
-- **Suppress process narration.** No intent classification, phase announcements, tool/subagent preamble, status updates, pleasantries. Start with substance.
-- **Output instead:** outcomes, decisions needing input, verification results, blockers.
-- **Bullets over prose. Short paragraphs.** No wall-of-text, no tutorial tone unless asked.
-- **Show an example when it clarifies a complex point** - a small before/after or a concrete ref beats a paragraph. Examples disambiguate, they don't pad.
-- **End on the ask, not a summary.** Diffs/outputs speak for themselves.
-- **Match the recipient's register** in human-facing artifacts (issues, PRs, chat).
-- **Prefer ASCII.** `-` not em/en-dashes, `...` not the ellipsis glyph, straight quotes. Non-ASCII only for a justified visual mark.
+| Regime | Surfaces | Format |
+|---|---|---|
+| Human-facing comms | chat, commit messages, PR/issue bodies and comments, review feedback | no scaffolding (no Options/TL;DR templates, no headings on short comments); bullets over prose; end on the ask, not a summary |
+| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references, code blocks; density still binds; optimize for unambiguous retrieval |
 
-LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, agent personas, spec docs, code comments where the *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
+**Suppress process narration.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. **Output instead:** outcomes, decisions needing input, verification results, blockers. Start with the substance.
+
+ASCII punctuation everywhere (chat, comments, commits, docs, code): `-` not em-dash, `...` not the ellipsis glyph, straight quotes; non-ASCII only for a justified visual mark. State what you did or will do; don't pad with what you won't do, what stays unchanged, or alternatives nobody asked about. No closing summaries.
 
 ## Code & Documentation Discipline
 
 - **Code is a liability.** Add only what the task requires. No premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives.
 - **No new machinery if not essential.** Reuse an existing field, channel, or code path (plus a small discriminant if needed) over a new sibling construct; new machinery must earn its place by being impossible or misleading to express with what exists.
-- **Docs are a contract.** Dense, current, no preamble. If a sentence doesn't help a future reader act, cut it - this applies to documentation as much as code.
-- **No belt-and-suspenders.** Don't validate / null-check / guard the same thing at multiple layers - validate at the boundary once.
-- **Delete dead code, don't comment it out.** Branch from the deletion commit if reversibility matters.
-- **Comments only when the *why* is non-obvious.** No docstrings on self-evident params/returns. No banner/separator comments. Don't reference the current task or PR - that belongs in the commit message.
-- **Markdown tables use compact `|---|` separators.** Never padded columns.
+- **No belt-and-suspenders.** Validate a thing once, at the boundary that owns it - not at every layer.
+- **Delete dead code, don't comment it out.** When a change supersedes code, remove the old path in the same commit. Branch from the deletion commit if reversibility matters.
+- **Comments are stock, not flow.** Record the durable why, never task context, tickets, or callers. Good: `// output is never empty for a real dispatch`. Bad: `// #12: gate on this so the classifier doesn't no-op`. No docstrings on self-evident params/returns, no banner comments.
 - **Surface, don't auto-fix.** A bug fix doesn't drag in surrounding cleanup; mention adjacent issues separately.
+- **Docs are a current contract, present tense.** No "upcoming"/"pending" in a current-state guide - planned work lives in `doc/specs/`, `doc/plans/`, or the ticket; history lives in `CHANGELOG.md` and commit bodies, never in AGENTS.md or a guide. Doc updates ride with the commit that makes them stale. Editing a doc puts the smallest unit you touch - bullet, row, heading block - in scope: its paths resolve, its commands match the source, its framing is present tense; stale content outside that unit: flag, don't fix.
+- **AGENTS.md is always-on essentials plus routing, not the manual.** Route detail to `doc/` or `README.md` and link it; add an inline pointer only when critical or high-frequency. README and AGENTS.md stay in sync where they overlap.
+- **Markdown tables use compact `|---|` separators.** Never padded columns.
 
 ## Ticket convention
 
-Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` (pi-gauntlet >= the release that ships it) - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments). Status transitions and comments are exempt - plain tracker CLI.
+Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments); a user instruction naming the ticket's body counts as that gate. Status transitions and comments are exempt - plain tracker CLI.
 
-## Ground Truth Before Reasoning
+<!-- agents-core:end v3 -->
 
-Never guess Pi's API, message shapes, config, or values - read the source; the source wins; if it is missing, say so and ask, don't fabricate. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner` - treat its shipped `.d.ts` as API truth. Repo-specific source pointers, if any, follow.
+## Part of one platform
 
-<!-- agents-core:end v2 -->
+One of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** (coordination), **pi-condense** (context economy), **pi-gauntlet** (process). They ship and version independently; a concept is explained in its owning repo and linked from the others, never duplicated.
+
+- No code dependency on any sibling.
+- Runtime coupling: pi-condense emits `cost:external` (`EXTERNAL_COST_CHANNEL`, payload `ExternalCostUpdate`, `source: "pi-condense"`, cumulative, live only); pi-cohort aggregates it into `Σ$`. The channel is generic; pi-condense names pi-cohort as the intended consumer, not the owner. Contract: [`README.md`](README.md#external-cost-channel).
+
+A change to the `cost:external` payload shape or semantics updates pi-cohort's `doc/observability.md` in the same logical change and lands in both CHANGELOGs.
 
 ## Ground truth pointers
 
-Repo-specific sources (the principle is in the shared core above); field names matter and the type files are authoritative:
+Field names matter (`id` vs `toolCallId`, `arguments` vs `input`); the type files are authoritative.
 
-- **Pi event/extension API:** `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` — `ExtensionAPI`, `ExtensionContext`, every `pi.on(...)` event payload, `appendEntry`, `setActiveTools`, `setWidget`, `sendMessage`.
-- **LLM message shapes:** `node_modules/@earendil-works/pi-ai/dist/types.d.ts` — `AssistantMessage`, `ToolResultMessage`, `ToolCall`, `UsageInfo`. Field names matter (`id` vs `toolCallId`, `arguments` vs `input`); the type files are authoritative.
-- **pi-ai's auto-repair behavior:** `node_modules/@earendil-works/pi-ai/dist/providers/transform-messages.js` — `insertSyntheticToolResults` injects `{ isError: true, "No result provided" }` for orphaned tool calls. Knowing this is the reason `src/pruner.ts` returns stub messages instead of deleting them.
-- **Session entry layout:** `node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts` — `getBranch()` returns `SessionEntry[]` (wrapped messages), not `AgentMessage[]`.
+- Pi event/extension API: `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` - `ExtensionAPI`, `ExtensionContext`, every `pi.on(...)` payload, `appendEntry`, `setActiveTools`, `setWidget`, `sendMessage`.
+- LLM message shapes: `node_modules/@earendil-works/pi-ai/dist/types.d.ts` - `AssistantMessage`, `ToolResultMessage`, `ToolCall`, `UsageInfo`.
+- pi-ai auto-repair: `node_modules/@earendil-works/pi-ai/dist/providers/transform-messages.js` - `insertSyntheticToolResults` injects `{ isError: true, "No result provided" }` for orphaned tool calls; this is why `src/pruner.ts` returns stub messages instead of deleting them.
+- Session entry layout: `node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts` - `getBranch()` returns `SessionEntry[]` (wrapped messages), not `AgentMessage[]`.
 
-## Routing
+## Layout
 
-| Want to … | Read |
-|---|---|
-| Understand what pruning does, why, the algorithm, design rationale, references | [`PRUNING.md`](PRUNING.md) |
-| Install, configure, list of `/pruner` commands and settings | [`README.md`](README.md) |
-| Implementation: hook a Pi event, change the indexer, touch the summarizer | open the matching `src/*.ts` file directly |
-| Run a release | `.agents/skills/release/SKILL.md` |
-| Brainstorm / plan a multi-step change | superpowers `brainstorming` then `writing-plans` skills; specs land in `doc/specs/`, plans in `doc/plans/` (ephemeral) |
-| File an issue / ticket | Ticket convention above (`/skill:shape-ticket`) |
-| Override a pi-gauntlet skill for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
-| Historical context for a past change | `doc/specs/*.md` (newest first) |
-| Change the shared AGENTS core (style / discipline / ticket / ground-truth) | edit [`AGENTS.core.md`](AGENTS.core.md), run `node scripts/check-agents-core.mjs --fix`, copy both files to sibling repos |
+```
+index.ts                  # extension entry point, wires all events
+src/pruner.ts             # pruneMessages: stub-replace -> supersede -> error-purge -> chain-range-prune -> orphan-sweep
+src/chain-*.ts            # closed-chain detection, positional range prune, compression orchestrator
+src/indexer.ts            # tool-call index + chain registry + summary body tracking (occurrence-keyed)
+src/summarizer*.ts        # LLM summarization + sticky outage fallback
+src/commands.ts           # /pruner subcommands, settings overlay, status widget
+src/diagnostics.ts        # context-prune-diagnostic sink, never in LLM context
+src/types.ts              # shared types, constants, DEFAULT_CONFIG
+src/test-support.ts       # shared test helpers (expectNoOrphanToolResults)
+PRUNING.md                # algorithm, session entry types, design rationale, research refs
+doc/specs/                # durable specs; reach main
+doc/plans/                # ephemeral plans; git rm before ship, never on main
+```
+
+Session entry `customType`s and what each carries: [`PRUNING.md`](PRUNING.md#session-entry-types).
 
 ## Workflow
 
-- **Multi-step work uses the superpowers `brainstorming` → `writing-plans` skills.** Specs live in `doc/specs/` (`YYYY-MM-DD-<topic>.md`); plans in the sibling `doc/plans/`. Keep the checklist in sync with reality.
-- **Plans are ephemeral; specs are durable.** `doc/plans/` lives only on the feature branch - `git rm` it before finishing the branch so it never lands on `main` (it stays in branch history). Only `doc/specs/` reaches `main`. Codified in [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md); most work here is gauntlet-driven.
-- **Isolate feature work in a git worktree.** Worktrees default to `.worktrees/<branch>` at the repo root (already gitignored); use the superpowers `using-git-worktrees` skill. The spec is the first commit on the branch.
-- **Releases use the `release` skill.** Published to **npm** as `pi-condense` (users install `npm:pi-condense`). Tag-driven and CI-executed: `release.sh` bumps the version, commits, and pushes a `vX.Y.Z` tag; pushing the tag triggers `.github/workflows/release.yml`, which gates on `tag == package.json`, runs `bun test src/`, and publishes via OIDC trusted publishing + provenance. **Never run `npm publish` by hand.** The `release.sh` config header is the only per-repo block; keep it in sync with the sibling `pi-cohort` / `pi-gauntlet` copies. See `.agents/skills/release/SKILL.md` for the full flow + `--dry-run` / `sync-presets` flags.
-- **Smoke-test new behavior end-to-end** with `pi -e ./index.ts --no-extensions -p "..."` against an isolated `$PI_CODING_AGENT_DIR`. Inspect session JSONL entries (`jq -r 'select(.type == "custom" or .type == "custom_message") | .customType' session.jsonl | sort | uniq -c`) to verify the expected `context-prune-*` entries are written.
-- **Typecheck before committing.** No package script is wired; run `bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --allowJs --esModuleInterop --resolveJsonModule --lib es2022 --types node index.ts` (transient `@types/node` add/remove is fine — don't commit it).
+- Multi-step work runs `/skill:brainstorming` -> `/skill:writing-plans` in a git worktree (`.worktrees/<branch>`, gitignored); the spec is the first commit on the branch.
+- Smoke-test end-to-end with `pi -e ./index.ts --no-extensions -p "..."` against an isolated `$PI_CODING_AGENT_DIR`; verify the expected `context-prune-*` entries: `jq -r 'select(.type == "custom" or .type == "custom_message") | .customType' session.jsonl | sort | uniq -c`.
 
-## Project Layout
+## Testing
 
-```
-index.ts                           # extension entry point, wires all events
-src/
-  chain-detector.ts                # pure: AgentMessage[] → ChainRange[] (detects closed chains)
-  chain-range-prune.ts             # pure: resolves ChainCompressionEntry[] to positional index ranges and applies them to messages in-flight
-  chain-compressor.ts              # orchestrator: rolling-window eligibility, persistence, range-summary fusion (async)
-  block-refs.ts                    # monotonic b<N> issuer + rebuild from session
-  indexer.ts                       # tool-call index + chain registry + summary body tracking (occurrence-keyed)
-  nested-placeholders.ts           # pure: {bN} substitution in chain summary text
-  error-purge.ts                   # pure: replace failed toolCall arg bodies with stubs after cooldown
-  occurrence-key.ts                # pure: id@resultTimestamp key ↔ bare-id derivation, the session-durable tool-call discriminant
-  orphan-sweep.ts                  # pure: removes toolResults whose id is not open (per-turn tracking; any non-assistant/non-toolResult message is a barrier that clears the open set)
-  diagnostics.ts                   # DiagnosticSink: writes context-prune-diagnostic entries, deduped per (kind, dedupKey), never in LLM context
-  pruner.ts                        # pruneMessages: composes stub-replace → supersede → error-purge → chain-range-prune → orphan-sweep
-  commands.ts                      # /pruner subcommands, settings overlay, status widget
-  summarizer.ts                    # LLM summarization calls (per-batch + range fusion via shared runSummarization)
-  summarizer-fallback.ts           # pure: sticky in-memory FallbackController for summarizer-model outages (transient-only, 10-min re-probe)
-  supersede.ts                     # pure: newest protected read per args.path wins; older ones stubbed once SupersedeState.floor says the prefix is being rewritten anyway (or cache is cold)
-  context-metrics.ts               # pure: branch -> ContextMetricsSnapshot (open-cycle thinking, chain share, frontier gap)
-  stats.ts                         # StatsAccumulator + formatting helpers
-  test-support.ts                  # shared test helpers (e.g. expectNoOrphanToolResults) used across multiple *.test.ts files
-  types.ts                         # all shared types, constants, DEFAULT_CONFIG
-  (other src/*.ts)                 # frontier, config, dedup, tree-browser
-.agents/skills/                    # in-repo skills (release)
-.pi/gauntlet-overrides.md          # per-repo pi-gauntlet skill overrides (plan retention, ticket convention)
-doc/specs/                         # durable specs (superpowers brainstorming); reach main
-doc/plans/                         # ephemeral plans (superpowers writing-plans); git rm before ship, never on main
-.worktrees/                        # git worktrees for feature branches (gitignored)
-PRUNING.md                         # algorithm + design rationale + research refs
-README.md                          # install + config + command reference
-package.json                       # pi-extension manifest (declares `./index.ts`)
-```
+`bun test src/` (also `npm test`; the CI and release gate). No typecheck script is wired: `bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --allowJs --esModuleInterop --resolveJsonModule --lib es2022 --types node index.ts` (transient `@types/node` add/remove is fine - don't commit it).
 
-Custom session entry types written by the extension (NOT in LLM context unless noted):
+## Release
 
-| customType | Written by | Purpose |
-|---|---|---|
-| `context-prune-index` | `indexer.addBatch`; also `indexer.backfillChainRecords` (uncovered-chain deterministic backfill, `src/chain-compressor.ts`) | One entry per summarized batch; rebuilds the in-memory `ToolCallRecord` map on `session_start`. A backfill-carrier entry additionally sets `backfilled: true` and carries `refs` (the allocated `t<N>` `SummaryToolCallRef[]`) - excluded from content-hash dedup canonical seeding on both the live path and `session_start` reconstruction (poisoned-canonical guard); `refs` are re-registered via `registerSummaryRefs` on reconstruction since backfilled chains have no summary message to derive aliases from |
-| `context-prune-summary` | `flushPending` (runtime: `pi.sendMessage` steer; session: `appendCustomMessageEntry`) | The summary message itself; IS in LLM context (replaces the pruned raw outputs) |
-| `context-prune-stats` | `statsAccum.persist` | Cumulative summarizer token/cost snapshot |
-| `context-prune-frontier` | `flushPending` | Last attempted prune boundary (advances even on `skipped-oversized` / `skipped-trivial` / `skipped-deduped`) |
-| `context-prune-dedup-alias` | `indexer.registerDuplicate` | One entry per content-hash dedup hit; rebuilt on `session_start` to repopulate `dedupAliasToOriginal` |
-| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context; drops are decided **positionally** by `resolveRange` (`src/chain-range-prune.ts`), not by id. `droppedToolCallIds` is a diagnostic cross-check only (recorded-vs-actual mismatch emits `range-id-mismatch`, never changes what's dropped); `droppedOccurrenceKeys` (optional) is load-bearing - it's what the occurrence-keyed synthetic-body lookup (per-batch summary text/coverage) is keyed against; protected-output text is NOT keyed off it - `src/chain-range-prune.ts` pulls `protectedToolCallIds` live by bare id within the resolved range instead. Also carries optional `rangeSummaryText` (fused LLM range summary) when `fuseRangeSummary` is on, and optional `protectedToolCallIds` (verbatim protected outputs - ids protected by tool name or path glob - are relocated into the synthetic body as `<protected-output>` tags at render time). Optional `bodySource: "deterministic"` marks a chain that had zero per-batch summary coverage: `rangeSummaryText` then holds a zero-LLM stub (call count, tool histogram, span duration, `t<N>` refs) built by the uncovered-chain backfill path in `chain-compressor.ts`, instead of a summarizer-derived body. Rebuilt on `session_start` to repopulate the chain registry. |
-| `context-prune-diagnostic` | `pruneMessages` / `applyChainCompressions` / `chain-compressor.compressEligible` (via `DiagnosticSink.report`, `src/diagnostics.ts`) | One entry per distinct `(kind, dedupKey)` prune-time degradation (`unresolved-range` / `range-id-mismatch` / `orphan-sweep` / `backfill-empty`). Never in LLM context; deduped in-memory; reset on `session_start` and `session_tree`. Surfaced on the footer status widget as `diag u<N>/m<N>/o<N>/b<N>`. See [PRUNING.md § Diagnostics](PRUNING.md#diagnostics). |
-| `context-prune-flush-metrics` | `flushPending` (end of every non-concurrent attempt, single `finally` emit site, outside the chain-compression try/catch) | One entry per flush attempt, all outcomes (incl. `empty`/`error`): trigger, batch counts, pre-flush `ContextMetricsSnapshot` (open-cycle thinking, largest-chain share, frontier gap). Append-only observability log - never in LLM context, never reconstructed on `session_start`. |
+`/skill:release` owns the flow: `release.sh <level>` promotes `## [Unreleased]` in `CHANGELOG.md`, bumps `package.json`, commits `Release X.Y.Z`, tests, tags `vX.Y.Z`, pushes; CI publishes via OIDC. A user instruction naming the level is the approval. Mechanics and safety checks: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
 
-## Events emitted
+## Routing
 
-The extension emits on the shared `pi.events` bus. These are **outbound live signals only** — not persisted to the session JSONL, not in the `context-prune-*` customTypes table above, not re-seeded on `session_start`.
-
-| Channel | Constant | Payload | Semantics |
-|---|---|---|---|
-| `cost:external` | `EXTERNAL_COST_CHANNEL` | `ExternalCostUpdate { source: string; totalCost: number; inputTokens?: number; outputTokens?: number }` | Cumulative summarizer cost for the current session (USD). `source = EXTERNAL_COST_SOURCE = "pi-condense"`. Re-emitted on every update; aggregators key by `source` and replace. Live only: not persisted, not re-seeded on `session_start`. Designed for pi-cohort-style aggregators that fold multiple extension costs into one Σ$ total. |
+| Want to ... | Read |
+|---|---|
+| Install, configure, `/pruner` commands and settings, `cost:external` contract | [`README.md`](README.md) |
+| What pruning does, the algorithm, session entry types, design rationale, references | [`PRUNING.md`](PRUNING.md) |
+| What changed across versions | [`CHANGELOG.md`](CHANGELOG.md) |
+| Rationale for a past change | `doc/specs/*.md` |
+| pi-gauntlet skill overrides for this repo (plan retention, tracker) | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
+| Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
+| Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |

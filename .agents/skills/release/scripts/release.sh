@@ -4,7 +4,7 @@ set -euo pipefail
 # ============================================================================
 # Release helper - shared skeleton across the jjuraszek pi-* repos.
 # Only the CONFIG block below differs between repos; keep the rest byte-identical
-# so the copies stay diffable. See AGENTS.md "Release model".
+# so the copies stay diffable.
 #
 # Tag scheme: v<major>.<minor>.<patch>. package.json version mirrors the tag
 # without the leading "v". This script assigns the version and pushes the tag;
@@ -18,6 +18,7 @@ PACKAGE_NAME="pi-condense"
 REPO_SLUG="jjuraszek/pi-condense"
 FORMER_PACKAGE_NAME="pi-context-prune"   # pre-rename name; sync-presets flags stale pins
 TEST_CMD="bun test src/"
+CHANGELOG_HEADING='## [%s] - %s'         # printf: version, date; consume both %s (use %.0s to drop one)
 # ----------------------------------------------------------------------------
 
 RELEASE_WORKFLOW="release.yml"
@@ -32,8 +33,9 @@ Commands:
   propose                 Show commits since the last tag and a heuristic bump
                           level. Advisory only; no changes. The user picks.
   current                 Tag the version already in package.json (no bump).
-  patch|minor|major       Bump package.json, commit "Release <version>", run
-                          ${TEST_CMD}, tag, push main + tag.
+  patch|minor|major       Promote CHANGELOG "## [Unreleased]" to the new
+                          version, bump package.json, commit "Release <version>",
+                          run ${TEST_CMD}, tag, push main + tag.
   verify [X.Y.Z]          Monitor the release workflow, then poll npm and the
                           pi.dev catalog for the version (default: package.json).
   sync-presets            Report pins of ${PACKAGE_NAME} in pi settings.json
@@ -121,6 +123,46 @@ require_main() {
   fi
 }
 
+# Accepts "## [Unreleased]" or "## Unreleased".
+has_unreleased() {
+  grep -qiE '^## \[?unreleased\]?\s*$' CHANGELOG.md
+}
+
+changelog_top_version() {
+  grep -m1 -oE '^## \[?v?[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true
+}
+
+# Ensures CHANGELOG.md's top versioned heading is $1. Promotes an Unreleased
+# section in place (heading only; body untouched) and stages the file; the
+# section must hold at least one non-heading, non-blank line before the next
+# "## ". Returns 1 if there is nothing to promote and the top heading is not $1.
+prepare_changelog() {
+  local version="$1" heading
+  if has_unreleased; then
+    heading="$(printf "$CHANGELOG_HEADING" "$version" "$(date +%F)")"
+    HEADING="$heading" node -e '
+      const fs = require("fs");
+      const src = fs.readFileSync("CHANGELOG.md", "utf8");
+      const eol = src.includes("\r\n") ? "\r\n" : "\n";
+      const lines = src.split(eol);
+      const i = lines.findIndex((l) => /^## \[?unreleased\]?\s*$/i.test(l));
+      const body = lines.slice(i + 1).findIndex((l) => l.trim() !== "" && !/^#/.test(l));
+      const next = lines.slice(i + 1).findIndex((l) => /^## /.test(l));
+      if (body === -1 || (next !== -1 && body > next)) {
+        console.error("error: CHANGELOG.md Unreleased section is empty"); process.exit(1);
+      }
+      lines[i] = process.env.HEADING;
+      fs.writeFileSync("CHANGELOG.md", lines.join(eol));
+    '
+    run git add CHANGELOG.md
+    return 0
+  fi
+  [[ "$(changelog_top_version)" == "$version" ]] && return 0
+  echo "error: CHANGELOG.md has no '## [Unreleased]' section and its top heading is not ${version}" >&2
+  echo "       add the release notes under '## [Unreleased]', commit, and re-run" >&2
+  return 1
+}
+
 # ---- propose ---------------------------------------------------------------
 cmd_propose() {
   local last range log count suggestion
@@ -174,7 +216,13 @@ cmd_release() {
     echo "  new tag:         $tag"
     echo "  branch:          $(git branch --show-current)"
     [[ -n "$(git status --porcelain)" ]] && echo "  note: tree not clean; a real release stops until clean."
-    [[ "$mode" != "current" ]] && echo "  would set package.json to $new and commit 'Release $new'"
+    if has_unreleased; then
+      echo "  would promote CHANGELOG '## [Unreleased]' to '$(printf "$CHANGELOG_HEADING" "$new" "$(date +%F)")'"
+    elif [[ "$(changelog_top_version)" != "$new" ]]; then
+      echo "  note: CHANGELOG has no Unreleased section and top heading is not $new; a real release stops."
+    fi
+    [[ "$mode" != "current" ]] && echo "  would set package.json to $new"
+    if [[ "$mode" != "current" ]] || has_unreleased; then echo "  would commit 'Release $new'"; fi
     [[ "$SKIP_TESTS" -eq 0 ]] && echo "  would run ${TEST_CMD} before tagging"
     echo "  would create annotated tag $tag and push main + tag to origin"
     echo "  then monitor the workflow and verify npm + pi.dev"
@@ -183,6 +231,7 @@ cmd_release() {
 
   require_main
   require_clean_tree
+  prepare_changelog "$new"
 
   if [[ "$mode" != "current" ]]; then
     node -e '
@@ -192,6 +241,8 @@ cmd_release() {
       fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
     ' "$new"
     run git add package.json
+  fi
+  if [[ -n "$(git diff --cached --name-only)" ]]; then
     run git commit -m "Release ${new}"
   fi
 

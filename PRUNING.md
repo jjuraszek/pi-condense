@@ -10,6 +10,7 @@
 2. [What Pruning Does](#what-pruning-does)
 3. [Pruned Data Is Still Available](#pruned-data-is-still-available)
 4. [What Actually Lives in the Pruner Index](#what-actually-lives-in-the-pruner-index)
+   - [Session entry types](#session-entry-types)
 5. [How the Model Re-reads Raw Outputs](#how-the-model-re-reads-raw-outputs)
 6. [How Prefix Caching Works](#how-prefix-caching-works)
 7. [Why Frequent Pruning Busts Cache](#why-frequent-pruning-busts-cache)
@@ -286,6 +287,21 @@ So after pruning, the model is working with a **two-layer memory**:
 | Summary message | **Added to context** | Gives the model a compact description of what happened |
 | Indexed tool-call record | **Stored in pruner index** (`context-prune-index` session entry) | Lets the model re-open the original raw output later via `context_tree_query` |
 | Duplicate of an already-indexed record (same toolName + content) | **Aliased to the original; no new summary, no LLM call** (`context-prune-dedup-alias` session entry) | See [Content-hash dedup](#content-hash-dedup) |
+
+### Session entry types
+
+Custom session entry types written by the extension (NOT in LLM context unless noted). Rebuilt on `session_start` where stated; see the `Written by` column for the source.
+
+| customType | Written by | Purpose |
+|---|---|---|
+| `context-prune-index` | `indexer.addBatch`; also `indexer.backfillChainRecords` (uncovered-chain deterministic backfill, `src/chain-compressor.ts`) | One entry per summarized batch; rebuilds the in-memory `ToolCallRecord` map on `session_start`. A backfill-carrier entry additionally sets `backfilled: true` and carries `refs` (the allocated `t<N>` `SummaryToolCallRef[]`) - excluded from content-hash dedup canonical seeding on both the live path and `session_start` reconstruction; `refs` are re-registered via `registerSummaryRefs` on reconstruction since backfilled chains have no summary message to derive aliases from |
+| `context-prune-summary` | `flushPending` (runtime: `pi.sendMessage` steer; session: `appendCustomMessageEntry`) | The summary message itself; IS in LLM context (replaces the pruned raw outputs) |
+| `context-prune-stats` | `statsAccum.persist` | Cumulative summarizer token/cost snapshot |
+| `context-prune-frontier` | `flushPending` | Last attempted prune boundary (advances even on `skipped-oversized` / `skipped-trivial` / `skipped-deduped`) |
+| `context-prune-dedup-alias` | `indexer.registerDuplicate` | One entry per content-hash dedup hit; rebuilt on `session_start` to repopulate `dedupAliasToOriginal` |
+| `context-prune-chain` | `chain-compressor.compressEligible` (called from `flushPending` in `index.ts` and from `/pruner compact`) | One entry per chain that has been range-dropped from LLM context; drops are decided **positionally** by `resolveRange` (`src/chain-range-prune.ts`), not by id. `droppedToolCallIds` is a diagnostic cross-check only (recorded-vs-actual mismatch emits `range-id-mismatch`); `droppedOccurrenceKeys` (optional) is load-bearing - it's what the occurrence-keyed synthetic-body lookup (per-batch summary text/coverage) is keyed against; protected-output text is NOT keyed off it - `src/chain-range-prune.ts` pulls `protectedToolCallIds` live by bare id within the resolved range instead. Also carries optional `rangeSummaryText` (fused LLM range summary) when `fuseRangeSummary` is on, and optional `protectedToolCallIds` (verbatim protected outputs - ids protected by tool name or path glob - are relocated into the synthetic body as `<protected-output>` tags at render time). Optional `bodySource: "deterministic"` marks a chain that had zero per-batch summary coverage: `rangeSummaryText` then holds a zero-LLM stub (call count, tool histogram, span duration, `t<N>` refs) built by the uncovered-chain backfill path in `chain-compressor.ts`, instead of a summarizer-derived body. Rebuilt on `session_start` to repopulate the chain registry. |
+| `context-prune-diagnostic` | `pruneMessages` / `applyChainCompressions` / `chain-compressor.compressEligible` (via `DiagnosticSink.report`, `src/diagnostics.ts`) | One entry per distinct `(kind, dedupKey)` prune-time degradation (`unresolved-range` / `range-id-mismatch` / `orphan-sweep` / `backfill-empty`). Never in LLM context; deduped in-memory; reset on `session_start` and `session_tree`. Surfaced on the footer status widget as `diag u<N>/m<N>/o<N>/b<N>`. See [Diagnostics](#diagnostics). |
+| `context-prune-flush-metrics` | `flushPending` (end of every non-concurrent attempt, single `finally` emit site, outside the chain-compression try/catch) | One entry per flush attempt, all outcomes (incl. `empty`/`error`): trigger, batch counts, pre-flush `ContextMetricsSnapshot` (open-cycle thinking, largest-chain share, frontier gap). Append-only observability log - never in LLM context, never reconstructed on `session_start`. |
 
 ## How the Model Re-reads Raw Outputs
 
