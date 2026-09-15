@@ -23,7 +23,7 @@ import {
   DEFAULT_CONFIG,
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { saveConfig } from "./config.js";
+import { saveConfig, persistConfig } from "./config.js";
 import { MAX_BUDGET_WINDOW } from "./budget.js";
 import { formatTokens, formatCost, formatCharProgress, formatCompactCount } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@earendil-works/pi-tui";
@@ -477,6 +477,7 @@ export function registerCommands(
   getDiagnosticCounts?: () => Record<DiagnosticKind, number>,
   getContextMetrics?: (ctx: ExtensionCommandContext) => ContextMetricsSnapshot,
   getRearmed?: () => boolean,
+  save: (config: ContextPruneConfig) => Promise<void> = saveConfig,
 ): void {
   // Register the /pruner command
   pi.registerCommand("pruner", {
@@ -822,7 +823,7 @@ export function registerCommands(
               };
             }
             currentConfig.value = newConfig;
-            saveConfig(newConfig);
+            void persistConfig((m, t) => ctx.ui.notify(m, t), newConfig, save);
             setPruneStatusWidget(ctx, newConfig, getLiveReclaim(), getDiagnosticCounts?.());
             settingsList?.invalidate();
           };
@@ -856,7 +857,7 @@ export function registerCommands(
         // ── /pruner on ──
         case "on": {
           currentConfig.value = { ...currentConfig.value, enabled: true };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify("Context pruning enabled.");
           setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;
@@ -865,7 +866,7 @@ export function registerCommands(
         // ── /pruner off ──
         case "off": {
           currentConfig.value = { ...currentConfig.value, enabled: false };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify("Context pruning disabled.");
           setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;
@@ -943,7 +944,7 @@ export function registerCommands(
               summarizerModel: parsed.model,
               summarizerThinking: parsed.thinking ?? currentConfig.value.summarizerThinking,
             };
-            saveConfig(currentConfig.value);
+            void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
             const thinkingText = parsed.thinking ? ` with thinking ${parsed.thinking}` : "";
             ctx.ui.notify(`Summarizer model set to: ${parsed.model}${thinkingText}`);
           }
@@ -971,7 +972,7 @@ export function registerCommands(
             );
             return;
           }
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(`Summarizer thinking set to: ${currentConfig.value.summarizerThinking}`);
           break;
         }
@@ -989,7 +990,7 @@ export function registerCommands(
           } else {
             currentConfig.value = { ...currentConfig.value, pruneOn: modeArg as ContextPruneConfig["pruneOn"] };
           }
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;
         }
@@ -1013,7 +1014,7 @@ export function registerCommands(
             }
             currentConfig.value = { ...currentConfig.value, batchingMode: batchArg as ContextPruneConfig["batchingMode"] };
           }
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(`Batching mode set to: ${batchingModeLabel(currentConfig.value.batchingMode)}`);
           break;
         }
@@ -1164,7 +1165,7 @@ export function registerCommands(
           }
 
           currentConfig.value = { ...currentConfig.value, protectedTools: nextList };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(`Protected tools: ${protectedToolsDisplay(nextList)}`);
           break;
         }
@@ -1197,7 +1198,7 @@ export function registerCommands(
           }
 
           currentConfig.value = { ...currentConfig.value, protectedPaths: nextList };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(`Protected paths: ${protectedToolsDisplay(nextList)}`);
           break;
         }
@@ -1221,7 +1222,7 @@ export function registerCommands(
             break;
           }
           currentConfig.value = { ...currentConfig.value, minBatchChars: parsed };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(
             parsed === 0
               ? "minBatchChars set to 0 — pre-flush trivial-batch skipping disabled."
@@ -1244,7 +1245,7 @@ export function registerCommands(
             break;
           }
           currentConfig.value = { ...currentConfig.value, recoveryGraceTurns: parsed };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(
             parsed === 0
               ? "recovery-grace set to 0 - context_tree_query output stubs immediately."
@@ -1269,7 +1270,7 @@ export function registerCommands(
           }
           const next = arg === "on" || arg === "true";
           currentConfig.value = { ...currentConfig.value, dedupByContentHash: next };
-          saveConfig(currentConfig.value);
+          void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(`Content-hash dedup turned ${next ? "ON" : "OFF"}.`);
           break;
         }

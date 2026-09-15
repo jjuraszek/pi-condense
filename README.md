@@ -160,7 +160,7 @@ By default the extension is **off**. `/pruner on` enables it and it stays enable
 
 ## Configuration - the knobs most people touch
 
-Settings live under `contextPrune` in `<agent-dir>/settings.json` (`$PI_CODING_AGENT_DIR` if set, else `~/.pi/agent`). Each pi preset gets its own settings.
+Settings live under `contextPrune` in `<agent-dir>/settings.json` (`$PI_CODING_AGENT_DIR` if set, else `~/.pi/agent`). Each pi preset gets its own settings. A `settings.json` that cannot be read as a JSON object is never overwritten by a `/pruner` change: the change applies to the current session and an error notification names the file.
 
 | Key | Default | Notes |
 |---|---|---|

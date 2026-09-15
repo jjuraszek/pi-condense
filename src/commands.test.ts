@@ -1,5 +1,15 @@
 import { describe, it, expect, mock } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Command handlers persist through src/config.ts, which resolves the settings
+// path lazily from PI_CODING_AGENT_DIR; point it at a scratch dir so no test
+// ever touches the developer's real settings.json.
+process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-condense-commands-test-"));
+
 import { pruneStatusText, setPruneStatusWidget, registerCommands } from "./commands.js";
+import { settingsPath } from "./config.js";
 import type { ContextPruneConfig, ContextMetricsSnapshot, SummarizerStats } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
@@ -26,6 +36,7 @@ function setupPrunerCommand(overrides: {
   flushPending?: (ctx: any, options?: any) => Promise<any>;
   getRearmed?: () => boolean;
   getContextMetrics?: (ctx: any) => ContextMetricsSnapshot;
+  save?: (config: ContextPruneConfig) => Promise<void>;
 } = {}) {
   let handler: (args: string, ctx: any) => Promise<void>;
   const notifications: { message: string; type?: string }[] = [];
@@ -59,6 +70,7 @@ function setupPrunerCommand(overrides: {
     undefined,
     overrides.getContextMetrics,
     overrides.getRearmed,
+    overrides.save,
   );
 
   const ctx: any = {
@@ -66,6 +78,7 @@ function setupPrunerCommand(overrides: {
       notify(message: string, type?: string) {
         notifications.push({ message, type });
       },
+      setStatus() {},
     },
   };
 
@@ -73,6 +86,7 @@ function setupPrunerCommand(overrides: {
     run: (args: string) => handler(args, ctx),
     notifications,
     flushCalls,
+    currentConfig,
   };
 }
 
@@ -173,6 +187,41 @@ describe("setPruneStatusWidget", () => {
 
   it("clears (no wrap) when the status line is hidden", () => {
     expect(captureStatus(cfg(true))).toBeUndefined();
+  });
+});
+
+describe("/pruner off with a rejecting save (#15)", () => {
+  it("keeps the in-memory change, notifies an error naming the settings path, and raises no unhandledRejection", async () => {
+    const unhandled: unknown[] = [];
+    const recorder = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", recorder);
+    try {
+      const { run, notifications, currentConfig } = setupPrunerCommand({
+        save: () => Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" })),
+      });
+
+      await run("off");
+
+      // The error toast lands after the handler returns; wait for it with a
+      // bounded poll rather than a microtask hop.
+      const deadline = Date.now() + 2000;
+      while (!notifications.some((n) => n.type === "error") && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await new Promise((r) => setImmediate(r));
+
+      const errorIdx = notifications.findIndex((n) => n.type === "error");
+      const successIdx = notifications.findIndex((n) => n.message === "Context pruning disabled.");
+      expect(errorIdx).toBeGreaterThan(-1);
+      expect(successIdx).toBeGreaterThan(-1);
+      expect(successIdx).toBeLessThan(errorIdx);
+      expect(notifications[errorIdx].message).toContain(settingsPath());
+      expect(notifications[errorIdx].message).toContain("EACCES");
+      expect(currentConfig.value.enabled).toBe(false);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", recorder);
+    }
   });
 });
 

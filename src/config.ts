@@ -115,22 +115,58 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
   };
 }
 
-async function readJsonObject(path: string): Promise<Record<string, unknown> | undefined> {
-  try {
-    const raw = await readFile(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return undefined;
-  } catch {
-    return undefined;
+export class SettingsReadError extends Error {
+  constructor(
+    public readonly path: string,
+    public readonly reason: string,
+  ) {
+    super(`settings.json unreadable at ${path}: ${reason}`);
+    this.name = "SettingsReadError";
   }
 }
 
-/** Reads `<agent-dir>/settings.json` and returns the `contextPrune` block, or defaults. */
+/**
+ * Single classifier for settings.json read outcomes. Only ENOENT means "no
+ * file"; every other failure throws so a save never starts from `{}` over a
+ * file it could not read.
+ */
+async function readJsonObject(
+  path: string,
+  read: typeof readFile = readFile,
+): Promise<Record<string, unknown> | undefined> {
+  let raw: string;
+  try {
+    raw = await read(path, "utf-8");
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === "ENOENT") return undefined;
+    throw new SettingsReadError(path, e.code ?? e.message);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SettingsReadError(path, "invalid JSON");
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed as Record<string, unknown>;
+  }
+  throw new SettingsReadError(path, "not a JSON object");
+}
+
+/**
+ * Reads `<agent-dir>/settings.json` and returns the `contextPrune` block, or
+ * defaults. Fail-soft: an unreadable or malformed file yields defaults, since
+ * a broken settings.json is pi-wide and not this extension's to report.
+ */
 export async function loadConfig(): Promise<ContextPruneConfig> {
-  const main = await readJsonObject(settingsPath());
+  let main: Record<string, unknown> | undefined;
+  try {
+    main = await readJsonObject(settingsPath());
+  } catch (err) {
+    if (err instanceof SettingsReadError) return { ...DEFAULT_CONFIG };
+    throw err;
+  }
   const namespaced = main?.[SETTINGS_KEY];
   if (namespaced && typeof namespaced === "object" && !Array.isArray(namespaced)) {
     return normalize(namespaced as Partial<ContextPruneConfig>);
@@ -140,18 +176,39 @@ export async function loadConfig(): Promise<ContextPruneConfig> {
 
 /**
  * Writes the full config back to `<agent-dir>/settings.json` under
- * {@link SETTINGS_KEY}, preserving every other top-level key in the file. Uses
- * a tmp-file + atomic rename so concurrent pi writes (e.g. theme changes via
- * `/settings`) cannot observe a partial file. We do not coordinate with pi's
- * own internal lock since both writers do whole-file replacements and a
- * last-write-wins race only loses a single change, never corrupts the file.
+ * {@link SETTINGS_KEY}, preserving every other top-level key in the file.
+ * Tmp-file + atomic rename, so a concurrent reader never observes a partial
+ * file. A file that cannot be read as a JSON object is never replaced: the
+ * read throws {@link SettingsReadError} before anything is written. Concurrent
+ * saves (ours or pi's own) are last-write-wins; that race is not coordinated.
  */
-export async function saveConfig(config: ContextPruneConfig): Promise<void> {
+export async function saveConfig(config: ContextPruneConfig, read: typeof readFile = readFile): Promise<void> {
   const path = settingsPath();
-  const current = (await readJsonObject(path)) ?? {};
+  const current = (await readJsonObject(path, read)) ?? {};
   const next = { ...current, [SETTINGS_KEY]: config };
   await mkdir(dirname(path), { recursive: true });
   const tmpPath = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`);
   await rename(tmpPath, path);
+}
+
+type Notify = (message: string, type?: "info" | "warning" | "error") => void;
+
+/**
+ * Saves and reports failure through `notify` instead of rejecting, so callers
+ * can fire-and-forget. The in-memory change stands; only persistence failed.
+ */
+export async function persistConfig(
+  notify: Notify,
+  config: ContextPruneConfig,
+  save: (config: ContextPruneConfig) => Promise<void> = saveConfig,
+): Promise<void> {
+  try {
+    await save(config);
+  } catch (err) {
+    const reason = err instanceof SettingsReadError
+      ? err.reason
+      : ((err as NodeJS.ErrnoException | null | undefined)?.code ?? String(err));
+    notify(`Could not save settings to ${settingsPath()}: ${reason}. Change applies to this session only.`, "error");
+  }
 }

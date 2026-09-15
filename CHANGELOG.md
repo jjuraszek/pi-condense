@@ -9,6 +9,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `saveConfig` no longer overwrites a `settings.json` it could not read as a JSON object (unreadable, truncated, or non-object); only a missing file starts from empty. A failed `/pruner` save now shows an error notification naming the file instead of an unhandled promise rejection; the change still applies to the current session. (#15)
+
 ### Changed
 
 - `release.sh <level>` promotes the CHANGELOG `## [Unreleased]` section to the versioned heading and commits it with `package.json` in the single `Release X.Y.Z` commit; a missing or empty section fails the run. New CONFIG field `CHANGELOG_HEADING`.
