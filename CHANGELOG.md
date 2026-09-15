@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- Mid-run auto-flush triggers (budget, delta, frontier-gap) stayed dead after every human reply until the new run's per-run turn index caught up with the session-wide persisted frontier: live `turn_end` batches carried Pi's run-local `event.turnIndex` while the frontier counts assistant messages session-wide. Live capture now derives the session-wide index from the session branch. Flush metrics entries gain a `stubCount` field. (#16)
+
 ## [2.10.4] - 2026-09-15
 
 ### Fixed
@@ -19,10 +25,6 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 - Release skill: a user instruction naming the level is the approval - no proposal step or re-confirmation; bundled follow-ups run after `verify`.
 - AGENTS.md rewritten to always-on essentials plus routing; shared core bumped to v3. Session entry types table moved to `PRUNING.md`.
 - `.pi/gauntlet-overrides.md` gains `tracker: github`, the release path, and a write-gate carve-out for user-named writes; the Tickets section is superseded by the core Ticket convention.
-
-### Fixed
-
-- Mid-run auto-flush triggers (budget, delta, frontier-gap) stayed dead after every human reply until the new run's per-run turn index caught up with the session-wide persisted frontier: live `turn_end` batches carried Pi's run-local `event.turnIndex` while the frontier counts assistant messages session-wide. Live capture now derives the session-wide index from the session branch. Flush metrics entries gain a `stubCount` field. (#16)
 
 ## [2.10.3] - 2026-09-07
 
