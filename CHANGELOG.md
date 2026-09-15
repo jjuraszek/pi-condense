@@ -20,6 +20,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 - AGENTS.md rewritten to always-on essentials plus routing; shared core bumped to v3. Session entry types table moved to `PRUNING.md`.
 - `.pi/gauntlet-overrides.md` gains `tracker: github`, the release path, and a write-gate carve-out for user-named writes; the Tickets section is superseded by the core Ticket convention.
 
+### Fixed
+
+- Mid-run auto-flush triggers (budget, delta, frontier-gap) stayed dead after every human reply until the new run's per-run turn index caught up with the session-wide persisted frontier: live `turn_end` batches carried Pi's run-local `event.turnIndex` while the frontier counts assistant messages session-wide. Live capture now derives the session-wide index from the session branch. Flush metrics entries gain a `stubCount` field. (#16)
+
 ## [2.10.3] - 2026-09-07
 
 - **Protected-path supersession.** Only the newest read of a protected path (`protectedPaths` / `protectedTools` calls with a string `path`) stays verbatim; earlier reads of the same path become a one-line `[Superseded: ...]` stub. Applied at render time (`pruneMessages` phase 1b, `src/supersede.ts`) and only when the pruner is already rewriting at or before that position, or on a cold-cache event (`session_start`, `session_tree`, `model_select`, `session_compact`, `thinking_level_select`) - never as the sole mid-prefix change. No new session entry, index record, or config key; supersession stops exactly when no protected call remains (`protectedPaths: []` with the default `protectedTools: []`); a read protected by tool name alone still participates. Spec: `doc/specs/2026-09-07-protected-path-supersede.md` (partially supersedes the 2026-06-11 protected-paths spec's "verbatim forever" edge case).

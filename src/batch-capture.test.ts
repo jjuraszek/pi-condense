@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   captureBatch,
   captureUnindexedBatchesFromSession,
+  deriveLiveTurnIndex,
   projectBranchMessages,
   serializeBatchForSummarizer,
 } from "./batch-capture.js";
@@ -177,6 +178,45 @@ describe("projectBranchMessages", () => {
       details: {},
       timestamp: new Date("2026-08-31T10:00:00.000Z").getTime(),
     });
+  });
+});
+
+describe("deriveLiveTurnIndex (#16)", () => {
+  // Branch mixing every entry class the projection must classify: tool-calling
+  // assistants, a text-only assistant, a custom_message steer, a pruner custom
+  // entry, a compaction entry. The last assistant carries a ready, unsummarized
+  // tool call so the rescan emits a batch for it.
+  function mixedBranch(): any[] {
+    return [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "start" }] } },
+      { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "tc-old", name: "read", arguments: {} }] } },
+      { type: "message", message: { role: "toolResult", toolCallId: "tc-old", toolName: "read", content: [{ type: "text", text: "y".repeat(200) }], timestamp: 1 } },
+      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "text only" }] } },
+      { type: "custom_message", customType: "gauntlet-gate", content: "go", display: true },
+      { type: "custom", customType: "context-prune-summary", data: {} },
+      { type: "compaction", summary: "..." },
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "again" }] } },
+      { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "tc-live", name: "read", arguments: {} }] } },
+      { type: "message", message: { role: "toolResult", toolCallId: "tc-live", toolName: "read", content: [{ type: "text", text: "x".repeat(200) }], timestamp: 2 } },
+    ];
+  }
+
+  test("returns the rescan index of the branch's last assistant message (AC5 parity)", () => {
+    const branch = mixedBranch();
+    // 3 projected assistant messages (tc-old, text-only, tc-live) -> last index 2.
+    // custom_message/custom/compaction entries never count.
+    expect(deriveLiveTurnIndex(branch)).toBe(2);
+    const rescan = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false });
+    const liveBatch = rescan.find((b) => b.toolCalls.some((tc) => tc.toolCallId === "tc-live"));
+    expect(liveBatch).toBeDefined();
+    expect(liveBatch!.turnIndex).toBe(deriveLiveTurnIndex(branch));
+  });
+
+  test("returns -1 when the branch has no projected assistant message", () => {
+    expect(deriveLiveTurnIndex([])).toBe(-1);
+    expect(
+      deriveLiveTurnIndex([{ type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } }]),
+    ).toBe(-1);
   });
 });
 

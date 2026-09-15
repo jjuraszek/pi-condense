@@ -76,6 +76,27 @@ describe("pruneMessages", () => {
     expect(out[1].content[0].text).toContain("context_tree_query");
   });
 
+  it("two renders of unchanged history are byte-identical (AC6 cache-prefix guard)", () => {
+    const indexer = makeMockIndexer({
+      summarized: new Set(["tc1"]),
+      shortRefs: new Map([["tc1", "t1"]]),
+    });
+    const build = () => [
+      { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash", input: {} }], timestamp: 0 },
+      {
+        role: "toolResult",
+        toolCallId: "tc1",
+        toolName: "bash",
+        content: [{ type: "text", text: "big output" }],
+        isError: false,
+        timestamp: 1,
+      },
+    ];
+    const first = pruneMessages(build(), indexer);
+    const second = pruneMessages(build(), indexer);
+    expect(JSON.stringify(second.messages)).toBe(JSON.stringify(first.messages));
+  });
+
   it("returns original array reference when nothing is summarized or compressed", () => {
     const indexer = makeMockIndexer();
     const messages = [{ role: "user", content: "hello", timestamp: 1 }];

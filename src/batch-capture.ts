@@ -1,3 +1,4 @@
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { CapturedBatch, CapturedToolCall, BatchingMode } from "./types.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import { isChainAnchorCustom } from "./chain-detector.js";
@@ -15,6 +16,22 @@ export function projectBranchMessages(branch: any[]): any[] {
   return branch
     .filter(isProjectableEntry)
     .map((e: any) => (e.type === "custom_message" ? projectCustomMessageEntry(e) : e.message));
+}
+
+/**
+ * Session-wide index for the live turn at `turn_end`: the index the rescan
+ * below assigns to the branch's last assistant message. Shares the rescan's
+ * counting rule (every projected assistant message, text-only included) so
+ * live capture and the persisted flush frontier live in one numbering domain.
+ * Returns -1 when the branch has no projected assistant message (harness-only;
+ * a real `turn_end` always follows a persisted assistant message).
+ */
+export function deriveLiveTurnIndex(branch: SessionEntry[]): number {
+  let count = 0;
+  for (const msg of projectBranchMessages(branch)) {
+    if (msg.role === "assistant") count++;
+  }
+  return count - 1;
 }
 
 /** True for SessionEntry shapes that project into an AgentMessage-like object (see projectBranchMessages). */
@@ -109,8 +126,10 @@ export function captureUnindexedBatchesFromSession(
   // turnCounter increments for EVERY assistant message (not just prunable ones).
   // This makes turnIndex stable across multiple prune cycles: pruning removes
   // ToolResultMessages from the context event but leaves AssistantMessages in the
-  // session branch, so the count of all assistant messages never decreases and
-  // always matches Pi's own event.turnIndex numbering.
+  // session branch, so the count of all assistant messages never decreases. This
+  // session-wide count is the frontier's numbering domain; Pi's event.turnIndex
+  // matches it only inside one agent run (it resets on agent_start), so the live
+  // capture path derives the same index from the branch via deriveLiveTurnIndex.
   let turnCounter = 0;
 
   // userTurnGroup increments on every user message or eligible custom anchor seen

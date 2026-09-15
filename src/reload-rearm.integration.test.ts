@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as actualCompat from "@earendil-works/pi-ai/compat";
@@ -150,6 +150,44 @@ function pendingBatchEntries(toolCallId: string, text: string, timestamp: number
   ];
 }
 
+function textOnlyTurns(count: number, startTs: number): any[] {
+  const msgs: any[] = [];
+  let t = startTs;
+  for (let i = 0; i < count; i++) {
+    msgs.push({ type: "message", message: { role: "user", content: [{ type: "text", text: `turn ${i}` }], timestamp: (t += 1000) } });
+    msgs.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `answer ${i}` }], timestamp: (t += 1000) } });
+  }
+  return msgs;
+}
+
+function frontierEntry(turnIndex: number, toolCallId: string): any {
+  return {
+    type: "custom",
+    customType: "context-prune-frontier",
+    data: {
+      lastAttemptedToolCallId: toolCallId,
+      lastAttemptedToolName: "read",
+      lastAttemptedTurnIndex: turnIndex,
+      lastAttemptedTimestamp: Date.now(),
+      attemptedBatchCount: 1,
+      attemptedToolCallCount: 1,
+      rawCharCount: 1000,
+      summaryCharCount: 100,
+      outcome: "summarized",
+    },
+  };
+}
+
+async function fireTurn(handlers: Map<string, any>, ctx: any, branch: any[], toolCallId: string, text: string, runLocalIndex: number) {
+  const t = Date.now();
+  const [, assistant, result] = pendingBatchEntries(toolCallId, text, t);
+  branch.push(assistant, result);
+  await handlers.get("turn_end")!(
+    { message: assistant.message, toolResults: [result.message], turnIndex: runLocalIndex },
+    ctx,
+  );
+}
+
 // Boots a fresh index.ts extension instance against an isolated agent dir +
 // session, mirroring the fixtures shared across the three scenarios below.
 //
@@ -288,6 +326,110 @@ async function boot(options?: Parameters<typeof bootExtension>[0]) {
 }
 
 describe("reload rearm (issue #6)", () => {
+  it("falls back to the run-local index at capture when getBranch throws, and the flush-time rescan re-derives the session-wide index", async () => {
+    const { handlers, ctx, notifications, appended } = await boot();
+
+    await handlers.get("session_start")!({}, ctx);
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    const healthyGetBranch = ctx.sessionManager.getBranch;
+    ctx.sessionManager.getBranch = () => {
+      throw new Error("boom");
+    };
+
+    await expect(
+      handlers.get("turn_end")!(
+        {
+          message: { role: "assistant", content: [{ type: "toolCall", id: "tc2", name: "read", arguments: {} }] },
+          toolResults: [
+            { role: "toolResult", toolCallId: "tc2", toolName: "read", content: [{ type: "text", text: "result" }], timestamp: Date.now() },
+          ],
+          turnIndex: 7,
+        },
+        ctx,
+      ),
+    ).resolves.toBeUndefined();
+    expect(notifications.filter((message) => message.includes("pruner: 1 turn queued"))).toHaveLength(1);
+
+    ctx.sessionManager.getBranch = healthyGetBranch;
+    await handlers.get("message_end")!(
+      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+      ctx,
+    );
+
+    const flushMetrics = appended.find((entry) => entry.type === "context-prune-flush-metrics");
+    expect(flushMetrics).toBeDefined();
+    expect((flushMetrics!.data as any).outcome).not.toBe("error");
+
+    const frontier = appended.find((entry) => entry.type === "context-prune-frontier");
+    expect(frontier).toBeDefined();
+    // The flush-time rescan re-derives the session-wide index; the run-local fallback value never persists.
+    expect((frontier!.data as any).lastAttemptedTurnIndex).toBe(0);
+  });
+
+  it("persists the queued batch's run-local index when the flush itself runs on the getBranch fallback", async () => {
+    const { handlers, ctx, appended } = await boot();
+
+    await handlers.get("session_start")!({}, ctx);
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    ctx.sessionManager.getBranch = () => {
+      throw new Error("boom");
+    };
+
+    // Long result text so the queued batch clears the oversized-summary guard
+    // and reaches indexer.addBatch (a 6-char result would be skipped-oversized
+    // and leave no index entry to assert against).
+    await handlers.get("turn_end")!(
+      {
+        message: { role: "assistant", content: [{ type: "toolCall", id: "tc2", name: "read", arguments: {} }] },
+        toolResults: [
+          { role: "toolResult", toolCallId: "tc2", toolName: "read", content: [{ type: "text", text: "x".repeat(400) }], timestamp: Date.now() },
+        ],
+        turnIndex: 7,
+      },
+      ctx,
+    );
+
+    // getBranch is still down at flush time: capturePendingBatches' catch
+    // branch serves pendingBatches.slice() (index.ts), so the queued batch's
+    // captured run-local index (7) is what reaches persistence.
+    await handlers.get("message_end")!(
+      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+      ctx,
+    );
+
+    const flushMetrics = appended.find((entry) => entry.type === "context-prune-flush-metrics");
+    expect(flushMetrics).toBeDefined();
+    expect((flushMetrics!.data as any).outcome).toBe("summarized");
+
+    const indexEntry = appended.find((entry) => entry.type === "context-prune-index");
+    expect(indexEntry).toBeDefined();
+    expect((indexEntry!.data as any).toolCalls[0].turnIndex).toBe(7);
+
+    const frontier = appended.find((entry) => entry.type === "context-prune-frontier");
+    expect(frontier).toBeDefined();
+    expect((frontier!.data as any).lastAttemptedTurnIndex).toBe(7);
+  });
+
+  it("propagates turn-index derivation errors at turn_end", async () => {
+    const { handlers, ctx, branch } = await boot();
+
+    await handlers.get("session_start")!({}, ctx);
+    branch.push(null);
+
+    await expect(
+      handlers.get("turn_end")!(
+        {
+          message: { role: "assistant", content: [{ type: "toolCall", id: "tc2", name: "read", arguments: {} }] },
+          toolResults: [
+            { role: "toolResult", toolCallId: "tc2", toolName: "read", content: [{ type: "text", text: "result" }], timestamp: Date.now() },
+          ],
+          turnIndex: 0,
+        },
+        ctx,
+      ),
+    ).rejects.toThrow();
+  });
+
   it("rearms the turn_end budget gate after a reload so recovered pending work still flushes", async () => {
     const { handlers, ctx, appended } = await boot();
 
@@ -784,6 +926,8 @@ describe("reload rearm (issue #6)", () => {
     expect(flushMetricsEntries.length).toBe(1);
     const fm = flushMetricsEntries[0].data as any;
     expect(fm.trigger).toBe("frontier-gap");
+    // defaultBranch's single tc1 call is summarized+indexed by this flush.
+    expect(fm.stubCount).toBe(1);
     expect(fm.metrics.frontierGapTokens).toBeGreaterThanOrEqual(10);
 
     expect(notifications.some((n) => n.includes("un-pruned tail exceeded frontier gap threshold"))).toBe(true);
@@ -895,6 +1039,9 @@ describe("reload rearm (issue #6)", () => {
     expect(frontierEntries.length).toBe(1);
     const firstFrontier = frontierEntries[0].data as any;
     expect(firstFrontier.lastAttemptedToolCallId).toBe("tc-a");
+    // Turn 2's flush indexed tc-a (1 call) and aliased nothing else.
+    const firstMetrics = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect((firstMetrics[0].data as any).stubCount).toBe(1);
 
     // Grow the branch again (tc-b is still unsummarized/pending after the
     // restore; add tc-c as this turn's new work) — gap stays over threshold.
@@ -1228,10 +1375,45 @@ describe("supersede floor cadence (spec 2026-09-07)", () => {
     const frontierEntries = appended.filter((e) => e.type === "context-prune-frontier");
     expect(frontierEntries.length).toBe(1);
     expect((frontierEntries[0].data as any).outcome).toBe("skipped-trivial");
+    const flushMetricsEntries = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(flushMetricsEntries.length).toBe(1);
+    expect((flushMetricsEntries[0].data as any).outcome).toBe("skipped-trivial");
+    expect((flushMetricsEntries[0].data as any).stubCount).toBe(0);
 
     const rendered = await render(branch, handlers, ctx);
     expect(toolResultText(rendered, "r1")).toBe("content-r1");
     expect(toolResultText(rendered, "r2")).toBe("content-r2");
+  });
+
+  it("a partially deduped skipped-trivial batch counts only its alias in stubCount", async () => {
+    const R = "R".repeat(400);
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ protectedPaths: [PROTECTED_GLOB], branch });
+
+    await handlers.get("session_start")!({}, ctx);
+    await fireTurn(handlers, ctx, branch, "bashOrig", R, 1);
+    expect(appended.some((e) => e.type === "context-prune-index")).toBe(true);
+
+    const assistant = {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "bashDup", name: "read", arguments: {} },
+        { type: "toolCall", id: "trivial", name: "read", arguments: {} },
+      ],
+    };
+    const toolResults = [
+      { role: "toolResult", toolCallId: "bashDup", toolName: "read", content: [{ type: "text", text: R }], timestamp: 90 },
+      { role: "toolResult", toolCallId: "trivial", toolName: "read", content: [{ type: "text", text: "" }], timestamp: 91 },
+    ];
+    branch.push({ type: "message", message: assistant }, ...toolResults.map((message) => ({ type: "message", message })));
+    await handlers.get("turn_end")!({ message: assistant, toolResults, turnIndex: 2 }, ctx);
+
+    const aliasEntries = appended.filter((e) => e.type === "context-prune-dedup-alias");
+    expect(aliasEntries.length).toBe(1);
+    const flushMetricsEntries = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    const metrics = flushMetricsEntries[flushMetricsEntries.length - 1].data as any;
+    expect(metrics.outcome).toBe("skipped-trivial");
+    expect(metrics.stubCount).toBe(1);
   });
 
   it("a skipped-oversized batch (summary longer than raw) sets no floor", async () => {
@@ -1263,6 +1445,10 @@ describe("supersede floor cadence (spec 2026-09-07)", () => {
     const frontierEntries = appended.filter((e) => e.type === "context-prune-frontier");
     expect(frontierEntries.length).toBe(1);
     expect((frontierEntries[0].data as any).outcome).toBe("skipped-oversized");
+    const flushMetricsEntries = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(flushMetricsEntries.length).toBe(1);
+    expect((flushMetricsEntries[0].data as any).outcome).toBe("skipped-oversized");
+    expect((flushMetricsEntries[0].data as any).stubCount).toBe(0);
 
     const rendered = await render(branch, handlers, ctx);
     expect(toolResultText(rendered, "r1")).toBe("content-r1");
@@ -1316,6 +1502,10 @@ describe("supersede floor cadence (spec 2026-09-07)", () => {
     expect(frontierEntries[frontierEntries.length - 1].data && (frontierEntries[frontierEntries.length - 1].data as any).outcome).toBe(
       "skipped-deduped",
     );
+    const flushMetricsEntries = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    const dedupMetrics = flushMetricsEntries[flushMetricsEntries.length - 1].data as any;
+    expect(dedupMetrics.outcome).toBe("skipped-deduped");
+    expect(dedupMetrics.stubCount).toBe(1);
     // The alias's own resultTimestamp (90) is <= the older read's (100) — the
     // property that lets it, alone, explain the activation below.
 
@@ -1432,5 +1622,110 @@ describe("supersede floor cadence (spec 2026-09-07)", () => {
     // (1000): only a floor still clamped at 10 explains its activation.
     expect(toolResultText(rendered, "r_mid")).toBe(supersededStub(PROTECTED_PATH));
     expect(toolResultText(rendered, "r_new")).toBe("content-r_new");
+  });
+});
+
+describe("session-wide live turn index (#16)", () => {
+  it("AC8: pre-fix fixture with frontier 83 flushes one eligible live turn past the frontier", async () => {
+    const fixture = readFileSync(join(import.meta.dirname, "fixtures", "gh16-frontier-83.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const { handlers, ctx, appended } = await boot({
+      branch: fixture,
+      autoBudgetThreshold: null,
+      budgetTurnDelta: null,
+      frontierGapThresholdTokens: 100,
+    });
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-live", "x".repeat(800), 0);
+
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("frontier-gap");
+    expect((fm[0].data as any).outcome).toBe("summarized");
+    expect((fm[0].data as any).stubCount).toBeGreaterThan(0);
+
+    const frontierEntries = appended.filter((e) => e.type === "context-prune-frontier");
+    const next = frontierEntries[frontierEntries.length - 1].data as any;
+    expect(next.lastAttemptedTurnIndex).toBeGreaterThanOrEqual(83);
+  });
+
+  it("AC1: a new run's first batch survives the frontier and reaches the budget gate", async () => {
+    const branch = [...textOnlyTurns(84, 1700000000000), frontierEntry(83, "tc-old")];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: 0.5 });
+    ctx.getContextUsage = () => ({ tokens: 900000, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-new", "x".repeat(400), 0);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("budget");
+    expect((fm[0].data as any).trigger).not.toBe("rearmed");
+  });
+
+  it("AC2: an already-summarized live batch is still dropped (no re-summarization)", async () => {
+    const branch = [...textOnlyTurns(84, 1700000000000), frontierEntry(83, "tc-old")];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: 0.5 });
+    ctx.getContextUsage = () => ({ tokens: 900000, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-new", "x".repeat(400), 0);
+    const callsAfterFirst = summarizerCalls;
+    expect(appended.filter((e) => e.type === "context-prune-flush-metrics").length).toBe(1);
+    const [assistant, result] = ctx.sessionManager.getBranch().slice(-2);
+    await handlers.get("turn_end")!({ message: assistant.message, toolResults: [result.message], turnIndex: 1 }, ctx);
+    expect(summarizerCalls).toBe(callsAfterFirst);
+    expect(appended.filter((e) => e.type === "context-prune-flush-metrics").length).toBe(1);
+  });
+
+  it("AC3: above-frontier live batches in a continuing run keep flushing", async () => {
+    const branch = [...textOnlyTurns(84, 1700000000000), frontierEntry(83, "tc-old")];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: 0.5 });
+    ctx.getContextUsage = () => ({ tokens: 900000, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-a", "a".repeat(400), 0);
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-b", "b".repeat(400), 1);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(2);
+    expect((fm[1].data as any).trigger).toBe("budget");
+  });
+
+  it("AC4: equal-index partial turn keeps only the suffix after the recorded call", async () => {
+    const branch = [...textOnlyTurns(2, 1700000000000), frontierEntry(2, "tc-2")];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: 0.5 });
+    ctx.getContextUsage = () => ({ tokens: 900000, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    const t = Date.now();
+    const assistant = { type: "message", message: { role: "assistant", content: [
+      { type: "toolCall", id: "tc-1", name: "read", arguments: {} },
+      { type: "toolCall", id: "tc-2", name: "read", arguments: {} },
+      { type: "toolCall", id: "tc-3", name: "read", arguments: {} },
+    ] }, timestamp: t };
+    const results = ["tc-1", "tc-2", "tc-3"].map((id, i) => ({
+      type: "message", message: { role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "x".repeat(400) }], timestamp: t + 1 + i },
+    }));
+    ctx.sessionManager.getBranch().push(assistant, ...results);
+    await handlers.get("turn_end")!({ message: assistant.message, toolResults: results.map((r) => r.message), turnIndex: 0 }, ctx);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).stubCount).toBe(1);
+    const indexEntries = appended.filter((e) => e.type === "context-prune-index");
+    const indexPayload = JSON.stringify(indexEntries.map((e) => e.data));
+    expect(indexPayload).toContain("tc-3");
+    expect(indexPayload).not.toContain("tc-1");
+  });
+
+  it("AC7: frontier-gap fires on the second post-reply turn, not before", async () => {
+    const branch = [...textOnlyTurns(51, 1700000000000), frontierEntry(50, "tc-old")];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: null, budgetTurnDelta: null, frontierGapThresholdTokens: 1000 });
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-g1", "g".repeat(3500), 0);
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+    await fireTurn(handlers, ctx, ctx.sessionManager.getBranch(), "tc-g2", "g".repeat(3500), 1);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("frontier-gap");
   });
 });

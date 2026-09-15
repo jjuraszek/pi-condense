@@ -13,9 +13,9 @@
  * Usage:  pi -e .
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
-import { captureBatch, captureUnindexedBatchesFromSession, groupBatchesByMode, projectBranchMessages } from "./src/batch-capture.js";
+import { captureBatch, captureUnindexedBatchesFromSession, deriveLiveTurnIndex, groupBatchesByMode, projectBranchMessages } from "./src/batch-capture.js";
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { FallbackController } from "./src/summarizer-fallback.js";
 import { ToolCallIndexer } from "./src/indexer.js";
@@ -241,6 +241,7 @@ export default function (pi: ExtensionAPI) {
     // the emitter falls back to pi.appendEntry.
     let capturedBatches = 0;
     let processedCount = 0;
+    let stubCount = 0;
     let outcome: FlushMetricsEntry["outcome"] = "empty";
     let appendEntry: ((customType: string, data?: unknown) => void) | undefined;
 
@@ -251,6 +252,7 @@ export default function (pi: ExtensionAPI) {
         trigger,
         capturedBatches,
         processedBatches: processedCount,
+        stubCount,
         outcome,
         metrics: entryMetrics,
       };
@@ -486,6 +488,7 @@ export default function (pi: ExtensionAPI) {
           totalRawCharCount += dedupRawChars;
           totalToolCallCount += dedupCount;
           totalDedupedCount += dedupCount;
+          stubCount += dedupCount;
           dedupedBatches.push(batch);
           processedBatches.push(batch);
           continue;
@@ -500,6 +503,7 @@ export default function (pi: ExtensionAPI) {
           totalRawCharCount += batchRawCharCount + dedupRawChars;
           totalToolCallCount += batch.toolCalls.length + dedupCount;
           totalDedupedCount += dedupCount;
+          stubCount += dedupCount;
           trivialBatches.push(batch);
           processedBatches.push(batch);
           continue;
@@ -541,8 +545,10 @@ export default function (pi: ExtensionAPI) {
             // Keep the in-memory summary-body registry current so chain compression
             // can build synthetic chain messages without rescanning session entries.
             indexer.registerSummaryBody(batchOccurrenceKeys, summaryText);
+            stubCount += batch.toolCalls.length + dedupCount;
             floorSources.push(...batch.toolCalls);
           } else {
+            stubCount += dedupCount;
             oversizedBatches.push(batch);
           }
         } catch (err) {
@@ -889,10 +895,25 @@ export default function (pi: ExtensionAPI) {
 
     let pushedBatch = false;
     if (hasToolResults) {
+      // Live batches must be numbered in the frontier's session-wide domain, not
+      // Pi's run-local event.turnIndex (which resets on agent_start, #16). The
+      // branch at turn_end already holds the just-ended assistant message (pi
+      // persists it at message_end, a strictly earlier event), so the derived
+      // index is the rescan index of this turn.
+      let liveTurnIndex = event.turnIndex;
+      let branch: SessionEntry[] | undefined;
+      try {
+        branch = ctx.sessionManager.getBranch();
+      } catch {
+        // Transient getBranch failure must never block the turn; fall back to
+        // the run-local index (pre-#16 behavior). The flush-time rescan still
+        // recovers the batch.
+      }
+      if (branch) liveTurnIndex = deriveLiveTurnIndex(branch);
       const capturedBatch = captureBatch(
         event.message,
         event.toolResults,
-        event.turnIndex,
+        liveTurnIndex,
         Date.now()
       );
       // Drop user-protected tool/path results so they stay verbatim in context.
