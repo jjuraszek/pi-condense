@@ -12,16 +12,24 @@ An instruction that names an action and its parameters is the approval for that 
 
 ## Communication Style
 
-**North star: sharp, human-readable, example-driven, condense - one rule, not a trade-off.** Sharp = exact, unhedged: a value, a before/after, a quoted line. Example-driven = the example carries the exactness; SHAs and ids go behind a plain-worded link ("the merge commit"), paths inline only in PR bodies. Condense = fewer sentences, never fewer verbs. Human-readable = sentences you could say aloud. One term per concept. Explain inline, never by pointing at tool outputs, earlier turns, or a doc; a link is provenance or the owning doc and trails the sentence that already answers. Delete every link and the reply must still stand.
+Human-read text is elevator talk: three beats, each a whole sentence - what happened, what it means for the reader, what you need from them. Show, don't reference: one concrete example (a value, a before/after line, a quoted sentence) instead of any path, SHA, or id; identifiers go behind a link labelled in plain words ("the merge commit", not `abc1234`) that sits on the claim it supports. Paths inline only in PR bodies, because the reviewer opens them. Short means fewer sentences, never fewer verbs: "the validation rejects nil names" is as long as "some name handling was tightened" and says something checkable.
 
 | Regime | Surfaces | Format |
 |---|---|---|
-| Human-facing comms | chat, commit messages, PR/issue bodies and comments, review feedback | no scaffolding (no Options/TL;DR templates, no headings on short comments); bullets over prose; end on the ask, not a summary |
-| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references (file, SHA, value), code blocks; density still binds; optimize for unambiguous retrieval |
+| Human-read | chat, commit messages, PR/issue bodies and comments, review feedback, tracker and Slack comments | three beats; whole sentences; one example; links as provenance trailing the claim; end on the ask |
+| LLM-read | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, exact references (file, SHA, value), code blocks; density still binds; optimize for unambiguous retrieval |
 
-**Suppress process narration.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. **Output instead:** outcomes, decisions needing input, verification results, blockers. Start with the substance.
+The regimes differ in where exactness is carried, not how much: human-read text puts it in the example and links the reference; LLM-read text puts it in the reference itself.
 
-ASCII punctuation everywhere (chat, comments, commits, docs, code): `-` not em-dash, `...` not the ellipsis glyph, straight quotes; non-ASCII only for a justified visual mark. State what you did or will do; don't pad with what you won't do, what stays unchanged, or alternatives nobody asked about. No closing summaries.
+Human-read rules:
+
+- **Start with the substance.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. Output outcomes, decisions needing input, verification results, blockers.
+- **Whole sentences, no scaffolding.** No Options/Recommendation/TL;DR templates, no headings on a short body, no checkbox lists that restate prose. Bullets are for genuinely parallel items, never a substitute for a sentence.
+- **Active voice, named actor, no hedging.** "The validation rejects nil names", not "nil names should now be rejected". One term per concept.
+- **Restate, never point.** Never point at tool outputs, finding numbers, plan rows, or earlier turns the reader didn't see - restate in one sentence. Delete every link and the reply must still stand; a link is provenance, never the content.
+- **State what you did or will do.** No padding with what you won't do, what stays unchanged, or alternatives nobody asked about. No closing summaries. Evidence is a sentence with an example ("unit tests pass: 212 tests, 0 failures"), not a pasted transcript.
+- **PR bodies describe the change, not its validation:** no test counts, lint status, or command outcomes - CI holds that evidence.
+- **ASCII punctuation everywhere** (chat, comments, commits, docs, code): `-` not em-dash, `...` not the ellipsis glyph, straight quotes; non-ASCII only for a justified visual mark.
 
 ## Code & Documentation Discipline
 
