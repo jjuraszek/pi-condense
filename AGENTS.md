@@ -2,7 +2,7 @@
 
 Pi extension that captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Published to npm as `pi-condense` (`pi install npm:pi-condense`).
 
-<!-- agents-core:begin v3 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+<!-- agents-core:begin v4 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Ground Truth Before Reasoning
 
 User instructions outrank skill and AGENTS.md guidance; on conflict, follow the user. Configured gates (design approval, ship verification) still run; a user instruction that already names the gated action satisfies its confirmation.
@@ -17,12 +17,12 @@ An instruction that names an action and its parameters is the approval for that 
 
 ## Communication Style
 
-**North star: sharp, human-readable, example-driven, condense.** Sharp = exact, no hedging (name the file/SHA/value). Human-readable = written like a person, not a report. Example-driven = a small before/after beats a paragraph. Condense = every sentence earns its place. One term per concept: name a thing once, reuse that name. A reply carries its substance inline - never point at tool outputs, finding numbers, or earlier turns the reader didn't see; restate in one sentence.
+**North star: sharp, human-readable, example-driven, condense - one rule, not a trade-off.** Sharp = exact, unhedged: a value, a before/after, a quoted line. Example-driven = the example carries the exactness; SHAs and ids go behind a plain-worded link ("the merge commit"), paths inline only in PR bodies. Condense = fewer sentences, never fewer verbs. Human-readable = sentences you could say aloud. One term per concept. Explain inline, never by pointing at tool outputs, earlier turns, or a doc; a link is provenance or the owning doc and trails the sentence that already answers. Delete every link and the reply must still stand.
 
 | Regime | Surfaces | Format |
 |---|---|---|
 | Human-facing comms | chat, commit messages, PR/issue bodies and comments, review feedback | no scaffolding (no Options/TL;DR templates, no headings on short comments); bullets over prose; end on the ask, not a summary |
-| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references, code blocks; density still binds; optimize for unambiguous retrieval |
+| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references (file, SHA, value), code blocks; density still binds; optimize for unambiguous retrieval |
 
 **Suppress process narration.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. **Output instead:** outcomes, decisions needing input, verification results, blockers. Start with the substance.
 
@@ -44,7 +44,7 @@ ASCII punctuation everywhere (chat, comments, commits, docs, code): `-` not em-d
 
 Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments); a user instruction naming the ticket's body counts as that gate. Status transitions and comments are exempt - plain tracker CLI.
 
-<!-- agents-core:end v3 -->
+<!-- agents-core:end v4 -->
 
 ## Part of one platform
 

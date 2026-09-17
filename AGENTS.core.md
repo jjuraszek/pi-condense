@@ -12,12 +12,12 @@ An instruction that names an action and its parameters is the approval for that 
 
 ## Communication Style
 
-**North star: sharp, human-readable, example-driven, condense.** Sharp = exact, no hedging (name the file/SHA/value). Human-readable = written like a person, not a report. Example-driven = a small before/after beats a paragraph. Condense = every sentence earns its place. One term per concept: name a thing once, reuse that name. A reply carries its substance inline - never point at tool outputs, finding numbers, or earlier turns the reader didn't see; restate in one sentence.
+**North star: sharp, human-readable, example-driven, condense - one rule, not a trade-off.** Sharp = exact, unhedged: a value, a before/after, a quoted line. Example-driven = the example carries the exactness; SHAs and ids go behind a plain-worded link ("the merge commit"), paths inline only in PR bodies. Condense = fewer sentences, never fewer verbs. Human-readable = sentences you could say aloud. One term per concept. Explain inline, never by pointing at tool outputs, earlier turns, or a doc; a link is provenance or the owning doc and trails the sentence that already answers. Delete every link and the reply must still stand.
 
 | Regime | Surfaces | Format |
 |---|---|---|
 | Human-facing comms | chat, commit messages, PR/issue bodies and comments, review feedback | no scaffolding (no Options/TL;DR templates, no headings on short comments); bullets over prose; end on the ask, not a summary |
-| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references, code blocks; density still binds; optimize for unambiguous retrieval |
+| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references (file, SHA, value), code blocks; density still binds; optimize for unambiguous retrieval |
 
 **Suppress process narration.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. **Output instead:** outcomes, decisions needing input, verification results, blockers. Start with the substance.
 
