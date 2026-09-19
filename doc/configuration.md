@@ -46,7 +46,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | Key | Values | Default | Notes |
 |---|---|---|---|
 | `enabled` | `true` / `false` | `false` | Master switch |
-| `showPruneStatusLine` | `true` / `false` | `true` | Footer widget + queued-turn notifications |
+| `showPruneStatusLine` | `true` / `false` | `true` | Footer widget + startup/queued-turn notifications |
 | `summarizerModel` | `"default"` or `"provider/model-id"` | `"default"` | `default` = your active pi model. See [Choosing a summarizer model](#choosing-a-summarizer-model) |
 | `summarizerThinking` | `default`/`off`/`minimal`/`low`/`medium`/`high`/`xhigh` | `default` | Provider-specific reasoning effort knob |
 | `pruneOn` | `agent-message` / `on-demand` | `agent-message` | Trigger mode - see README Architecture section |
@@ -189,7 +189,7 @@ Every rendered state is prefixed with a single leading `|` divider so the segmen
   See [PRUNING.md § Single-chain sessions](../PRUNING.md#single-chain-sessions) for exact definitions.
 - `| prune: recovered pending (reload)` - shown at `agent_end` when a session reload found recoverable unflushed work but no new turn re-queued it. See [PRUNING.md § Reload rearm](../PRUNING.md#reload-rearm) for what "recovered" means and when it actually flushes.
 
-Setting `showPruneStatusLine: false` hides the widget and silences the queued-turn notice; pruning still runs.
+Setting `showPruneStatusLine: false` hides the widget and silences the startup and queued-turn notices; pruning still runs.
 
 The status line does not show cost. Full token/cost detail is available via `/pruner stats`. The extension also emits cumulative session cost on the `cost:external` pi.events channel for external aggregators - see [README § External cost channel](../README.md#external-cost-channel).
 

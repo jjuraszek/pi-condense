@@ -218,6 +218,7 @@ function bootExtension(
     autoBudgetThreshold?: number | null;
     budgetTurnDelta?: number | null;
     frontierGapThresholdTokens?: number | null;
+    showPruneStatusLine?: boolean;
   } = {},
 ) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-condense-rearm-"));
@@ -229,7 +230,7 @@ function bootExtension(
     autoBudgetThreshold: options.autoBudgetThreshold === undefined ? 0.5 : options.autoBudgetThreshold,
     summarizerModel: "default",
     minBatchChars: 1,
-    showPruneStatusLine: true,
+    showPruneStatusLine: options.showPruneStatusLine ?? true,
     protectedTools: options.protectedTools ?? [],
     chainCompression: {
       enabled: options.chainCompressionEnabled ?? false,
@@ -258,6 +259,7 @@ function bootExtension(
   const handlers = new Map<string, (event: any, ctx: any) => any>();
   const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
   const notifications: string[] = [];
+  const widgets: Array<{ id: string; content: unknown }> = [];
 
   const pushPi = (type: string, data?: unknown) => {
     piAppended.push({ type, data });
@@ -307,7 +309,9 @@ function bootExtension(
     },
     ui: {
       setStatus() {},
-      setWidget() {},
+      setWidget(id: string, content: unknown) {
+        widgets.push({ id, content });
+      },
       notify(message: string) {
         notifications.push(message);
       },
@@ -315,7 +319,7 @@ function bootExtension(
     },
   };
 
-  return { handlers, commands, notifications, ctx, pi, piAppended, sessionAppended, appended, branch };
+  return { handlers, commands, notifications, widgets, ctx, pi, piAppended, sessionAppended, appended, branch };
 }
 
 async function boot(options?: Parameters<typeof bootExtension>[0]) {
@@ -326,6 +330,14 @@ async function boot(options?: Parameters<typeof bootExtension>[0]) {
 }
 
 describe("reload rearm (issue #6)", () => {
+  it("hides the startup widget when the prune status line is disabled", async () => {
+    const { handlers, ctx, widgets } = await boot({ showPruneStatusLine: false });
+
+    await handlers.get("session_start")!({}, ctx);
+
+    expect(widgets.some(({ id }) => id === "pruner-boot")).toBe(false);
+  });
+
   it("falls back to the run-local index at capture when getBranch throws, and the flush-time rescan re-derives the session-wide index", async () => {
     const { handlers, ctx, notifications, appended } = await boot();
 
