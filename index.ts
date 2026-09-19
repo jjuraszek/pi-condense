@@ -827,20 +827,22 @@ export default function (pi: ExtensionAPI) {
     // Update footer status
     setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
 
-    ctx.ui.setWidget(
-      "pruner-boot",
-      [
-        `pruner loaded — pruning ${currentConfig.value.enabled ? "ON" : "OFF"} | model: ${currentConfig.value.summarizerModel}`,
-      ],
-      { placement: "belowEditor" },
-    );
-    setTimeout(() => {
-      try {
-        ctx.ui.setWidget("pruner-boot", undefined);
-      } catch {
-        // UI owner may be gone after session replacement.
-      }
-    }, 10000).unref?.();
+    if (currentConfig.value.showPruneStatusLine) {
+      ctx.ui.setWidget(
+        "pruner-boot",
+        [
+          `pruner loaded — pruning ${currentConfig.value.enabled ? "ON" : "OFF"} | model: ${currentConfig.value.summarizerModel}`,
+        ],
+        { placement: "belowEditor" },
+      );
+      setTimeout(() => {
+        try {
+          ctx.ui.setWidget("pruner-boot", undefined);
+        } catch {
+          // UI owner may be gone after session replacement.
+        }
+      }, 10000).unref?.();
+    }
   });
 
   // Rebuild index and stats after tree navigation too (branch may have different history)

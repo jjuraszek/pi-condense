@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- `showPruneStatusLine: false` now also suppresses the transient `pruner loaded` startup widget on new and restored sessions.
+
 ## [2.10.5] - 2026-09-15
 
 ### Fixed
