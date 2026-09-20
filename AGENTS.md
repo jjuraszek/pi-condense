@@ -2,7 +2,7 @@
 
 Pi extension that captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Published to npm as `pi-condense` (`pi install npm:pi-condense`).
 
-<!-- agents-core:begin v5 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+<!-- agents-core:begin v6 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Ground Truth Before Reasoning
 
 User instructions outrank skill and AGENTS.md guidance; on conflict, follow the user. Configured gates (design approval, ship verification) still run; a user instruction that already names the gated action satisfies its confirmation.
@@ -47,12 +47,13 @@ Human-read rules:
 - **Docs are a current contract, present tense.** No "upcoming"/"pending" in a current-state guide - planned work lives in `doc/specs/`, `doc/plans/`, or the ticket; history lives in `CHANGELOG.md` and commit bodies, never in AGENTS.md or a guide. Doc updates ride with the commit that makes them stale. Editing a doc puts the smallest unit you touch - bullet, row, heading block - in scope: its paths resolve, its commands match the source, its framing is present tense; stale content outside that unit: flag, don't fix.
 - **AGENTS.md is always-on essentials plus routing, not the manual.** Route detail to `doc/` or `README.md` and link it; add an inline pointer only when critical or high-frequency. README and AGENTS.md stay in sync where they overlap.
 - **Markdown tables use compact `|---|` separators.** Never padded columns.
+- **Skill, persona, and prompt edits follow `/skill:writing-skills`** - any size, including one-line rewordings; its authoring rules (imperative voice, low conditionality, minimal diff, oversized-skill extraction) bind the edit.
 
 ## Ticket convention
 
 Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments); a user instruction naming the ticket's body counts as that gate. Status transitions and comments are exempt - plain tracker CLI.
 
-<!-- agents-core:end v5 -->
+<!-- agents-core:end v6 -->
 
 ## Part of one platform
 

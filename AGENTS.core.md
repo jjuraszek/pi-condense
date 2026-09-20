@@ -42,6 +42,7 @@ Human-read rules:
 - **Docs are a current contract, present tense.** No "upcoming"/"pending" in a current-state guide - planned work lives in `doc/specs/`, `doc/plans/`, or the ticket; history lives in `CHANGELOG.md` and commit bodies, never in AGENTS.md or a guide. Doc updates ride with the commit that makes them stale. Editing a doc puts the smallest unit you touch - bullet, row, heading block - in scope: its paths resolve, its commands match the source, its framing is present tense; stale content outside that unit: flag, don't fix.
 - **AGENTS.md is always-on essentials plus routing, not the manual.** Route detail to `doc/` or `README.md` and link it; add an inline pointer only when critical or high-frequency. README and AGENTS.md stay in sync where they overlap.
 - **Markdown tables use compact `|---|` separators.** Never padded columns.
+- **Skill, persona, and prompt edits follow `/skill:writing-skills`** - any size, including one-line rewordings; its authoring rules (imperative voice, low conditionality, minimal diff, oversized-skill extraction) bind the edit.
 
 ## Ticket convention
 
