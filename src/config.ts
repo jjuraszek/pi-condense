@@ -112,6 +112,12 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       merged.frontierGapThresholdTokens > 0
         ? Math.floor(merged.frontierGapThresholdTokens)
         : DEFAULT_CONFIG.frontierGapThresholdTokens,
+    maxImagesPerRequest:
+      typeof merged.maxImagesPerRequest === "number" &&
+      Number.isFinite(merged.maxImagesPerRequest) &&
+      merged.maxImagesPerRequest >= 1
+        ? Math.floor(merged.maxImagesPerRequest)
+        : DEFAULT_CONFIG.maxImagesPerRequest,
   };
 }
 

@@ -15,6 +15,7 @@
 
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
+import { capImages, imageLimitFor } from "./src/image-cap.js";
 import { captureBatch, captureUnindexedBatchesFromSession, deriveLiveTurnIndex, groupBatchesByMode, projectBranchMessages } from "./src/batch-capture.js";
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { FallbackController } from "./src/summarizer-fallback.js";
@@ -1041,10 +1042,21 @@ export default function (pi: ExtensionAPI) {
 
   // ── context: prune summarized tool results from next LLM call ─────────────
   pi.on("context", async (event, ctx) => {
-    if (!currentConfig.value.enabled) return undefined;
-
     let messages = event.messages;
     let changed = false;
+
+    // Request-validity guard, independent of `enabled`: a transcript past the
+    // provider's per-request image limit fails every request until trimmed.
+    const imageCap = imageLimitFor(currentConfig.value.maxImagesPerRequest, ctx.model?.api);
+    if (imageCap !== null) {
+      const capped = capImages(messages, imageCap);
+      if (capped) {
+        messages = capped;
+        changed = true;
+      }
+    }
+
+    if (!currentConfig.value.enabled) return changed ? { messages } : undefined;
 
     // pruneMessages is the single source of truth for "is there work to do".
     // It returns the original array reference (pruned: false) only when none of

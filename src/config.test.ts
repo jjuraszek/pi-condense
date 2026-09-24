@@ -176,6 +176,28 @@ describe("loadConfig frontierGapThresholdTokens normalization", () => {
   });
 });
 
+describe("loadConfig maxImagesPerRequest normalization", () => {
+  it("defaults to null when unset", async () => {
+    await writeContextPrune({});
+    const config = await loadConfig();
+    expect(config.maxImagesPerRequest).toBeNull();
+  });
+
+  it("floors a fractional value", async () => {
+    await writeContextPrune({ maxImagesPerRequest: 20.9 });
+    const config = await loadConfig();
+    expect(config.maxImagesPerRequest).toBe(20);
+  });
+
+  it("falls back to null for 0, a value below 1, negative, Infinity, or a string", async () => {
+    for (const value of [0, 0.5, -3, Infinity, "20"]) {
+      await writeContextPrune({ maxImagesPerRequest: value });
+      const config = await loadConfig();
+      expect(config.maxImagesPerRequest).toBeNull();
+    }
+  });
+});
+
 describe("saveConfig fails closed (#15)", () => {
   const config: ContextPruneConfig = { ...DEFAULT_CONFIG, enabled: false };
 
