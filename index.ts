@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
-import { capImages } from "./src/image-cap.js";
+import { capImages, imageLimitFor } from "./src/image-cap.js";
 import { captureBatch, captureUnindexedBatchesFromSession, deriveLiveTurnIndex, groupBatchesByMode, projectBranchMessages } from "./src/batch-capture.js";
 import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summarizer.js";
 import { FallbackController } from "./src/summarizer-fallback.js";
@@ -1047,7 +1047,7 @@ export default function (pi: ExtensionAPI) {
 
     // Request-validity guard, independent of `enabled`: a transcript past the
     // provider's per-request image limit fails every request until trimmed.
-    const imageCap = currentConfig.value.maxImagesPerRequest;
+    const imageCap = imageLimitFor(currentConfig.value.maxImagesPerRequest, ctx.model?.api);
     if (imageCap !== null) {
       const capped = capImages(messages, imageCap);
       if (capped) {

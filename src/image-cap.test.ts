@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { IMAGE_OMITTED_NOTE, capImages } from "./image-cap.js";
+import { IMAGE_OMITTED_NOTE, capImages, imageLimitFor } from "./image-cap.js";
 
 const image = (n: number) => ({ type: "image", data: `img${n}`, mimeType: "image/png" });
 const imagesOf = (messages: any[]) =>
@@ -38,5 +38,20 @@ describe("capImages", () => {
 
   it("returns undefined when the request is already under the cap", () => {
     expect(capImages([{ role: "user", content: [image(1)] }, { role: "assistant", content: "text" }], 5)).toBeUndefined();
+  });
+});
+
+describe("imageLimitFor", () => {
+  it("prefers the configured number over the built-in", () => {
+    expect(imageLimitFor(30, "anthropic-messages")).toBe(30);
+  });
+
+  it("falls back to the built-in Anthropic Messages limit", () => {
+    expect(imageLimitFor(null, "anthropic-messages")).toBe(100);
+  });
+
+  it("returns null for an API without a built-in limit or no model", () => {
+    expect(imageLimitFor(null, "openai-completions")).toBeNull();
+    expect(imageLimitFor(null, undefined)).toBeNull();
   });
 });

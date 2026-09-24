@@ -10,7 +10,19 @@
  */
 
 export const IMAGE_OMITTED_NOTE =
-  "[earlier image omitted from this request: over maxImagesPerRequest; read the file again to view it]";
+  "[earlier image omitted from this request: over maxImagesPerRequest; re-read the file or re-attach it to view it]";
+
+// Documented per-request limits of first-party wire APIs (Anthropic Messages:
+// 100 images per request). Keyed by `api`, not `provider`: the limit is enforced
+// by the protocol endpoint, whichever provider fronts it. Unlisted APIs
+// (OpenAI 1,500, Gemini 3,600) sit far above any realistic transcript.
+const BUILTIN_IMAGE_LIMITS: Record<string, number> = { "anthropic-messages": 100 };
+
+/** The effective cap: an explicit `maxImagesPerRequest` wins, else the built-in limit for the model's API. */
+export function imageLimitFor(configured: number | null, api: string | undefined): number | null {
+  if (configured !== null) return configured;
+  return api !== undefined ? (BUILTIN_IMAGE_LIMITS[api] ?? null) : null;
+}
 
 type Block = { type?: unknown };
 

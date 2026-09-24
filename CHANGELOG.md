@@ -11,7 +11,7 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ### Added
 
-- **Per-request image cap (`maxImagesPerRequest`).** Every image a model has seen stays in the transcript, so a session that reads many images eventually sends more than a provider accepts in one request - one gateway answers `Too many images in request: 31 > 30` - and then fails on every request, including after a resume. When set, the `context` handler replaces the oldest `image` blocks with a text note once a request carries more than N, in steps of half of N so the prompt prefix - and with it the provider's prompt cache - changes only once per step; the session file is untouched. It runs even with `enabled: false`, since it guards request validity rather than context size. Default `null` (off); config-file-only.
+- **Per-request image cap (`maxImagesPerRequest`).** Every image a model has seen stays in the transcript, so a session that reads many images eventually sends more than a provider accepts in one request - one gateway answers `Too many images in request: 31 > 30` - and then fails on every request, including after a resume. When set, the `context` handler replaces the oldest `image` blocks with a text note once a request carries more than N, in steps of half of N so the prompt prefix - and with it the provider's prompt cache - changes only once per step; the session file is untouched. It runs even with `enabled: false`, since it guards request validity rather than context size. Default `null` applies the built-in limit of the model's wire API - `100` for `anthropic-messages`, the documented Anthropic maximum; no cap for other APIs - and a number overrides it for every API. Config-file-only.
 
 ## [2.10.6] - 2026-09-19
 
