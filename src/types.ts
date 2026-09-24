@@ -421,6 +421,13 @@ export interface ContextPruneConfig {
    * null (default) disables. Config-file-only — no settings overlay row.
    */
   frontierGapThresholdTokens: number | null;
+  /**
+   * Opt-in request-validity guard: keep only the newest N image blocks in
+   * each outgoing request and replace older ones with a text note, so a long
+   * session never exceeds a provider's per-request image limit. Applies even
+   * when `enabled` is false. null (default) disables. Config-file-only.
+   */
+  maxImagesPerRequest: number | null;
 }
 
 /**
@@ -581,6 +588,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   spillPreviewBytes: 2048,
   budgetTurnDelta: null,
   frontierGapThresholdTokens: null,
+  maxImagesPerRequest: null,
 };
 
 // ── Captured batch ─────────────────────────────────────────────────────────

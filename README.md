@@ -169,6 +169,7 @@ Settings live under `contextPrune` in `<agent-dir>/settings.json` (`$PI_CODING_A
 | `pruneOn` | `agent-message` | Trigger mode - see Architecture above |
 | `autoBudgetThreshold` | `null` | Fraction (e.g. `0.8`) of the context window that force-flushes everything regardless of `pruneOn`; the trigger point is capped at 300k tokens |
 | `frontierGapThresholdTokens` | `null` | Opt-in absolute-token flush trigger: fires at `turn_end` once the un-pruned tail past the prune frontier reaches N tokens, regardless of window size; recommended starting value `80000` |
+| `maxImagesPerRequest` | `null` | Opt-in guard: once a request carries more than N images, the oldest become a text note (in cache-friendly steps of half of N) so a long session stays under a provider's per-request image limit; applies even with pruning off |
 | `protectedTools` / `protectedPaths` | `[]` / `["**/skills/**/*.md", "**/gauntlet-overrides.md"]` | Tool names / path globs that are never summarized; only the newest read per protected path stays verbatim (older reads of the same path are stubbed once the prompt cache is cold anyway) |
 | `spillThreshold` | `65536` | Chars above which a single oversized result spills straight to a sidecar file |
 

@@ -31,6 +31,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "spillPreviewBytes": 2048,
     "budgetTurnDelta": null,
     "frontierGapThresholdTokens": null,
+    "maxImagesPerRequest": null,
     "chainCompression": {
       "enabled": true,
       "rollingWindow": 3,
@@ -64,6 +65,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `spillPreviewBytes` | non-negative integer | `2048` | Head preview (bytes) kept inline in the stub and index record for a spilled result. Full body is on disk. |
 | `budgetTurnDelta` | fraction `0`-`1`, or `null` | `null` | Force a flush when a single turn's context-usage fraction jumps by at least this amount, ORed with `autoBudgetThreshold`. The fraction is measured against `min(context window, 300k)`, so `0.1` = +30k tokens in one turn on any model at or above 300k (+20k on a 200k model). Catches sudden spikes a static threshold would miss until the next turn. `null` = off. |
 | `frontierGapThresholdTokens` | `number \| null` | `null` | Opt-in absolute-token flush trigger: force a flush at `turn_end` when the un-pruned tail past the prune frontier (`frontierGapTokens`) reaches this many tokens. Validated finite and `> 0`, floored to an integer; any invalid value including `0` resets to `null`. Config-file-only - no `/pruner settings` row. `null` = off. See [Frontier-gap flush trigger](#frontier-gap-flush-trigger) |
+| `maxImagesPerRequest` | `number \| null` | `null` | Opt-in request-validity guard: once an outgoing request carries more than N image blocks, the oldest are replaced with a text note, in steps of half of N so the prompt prefix (and the provider's prompt cache) changes only once per step; a long session then never exceeds a provider's per-request image limit (one gateway rejects more than `30`). Request-local: the session file keeps every image. Applies even when `enabled` is `false`. Validated finite and `>= 1`, floored to an integer; any other value resets to `null`. Config-file-only - no `/pruner settings` row. `null` = off |
 | `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
