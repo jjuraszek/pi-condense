@@ -21,15 +21,43 @@ Human-read text is elevator talk: three beats, each a whole sentence - what happ
 
 The regimes differ in where exactness is carried, not how much: human-read text puts it in the example and links the reference; LLM-read text puts it in the reference itself.
 
+Wording (binds both regimes; the lists are illustrative, the rule is the pattern):
+
+- American English ("behavior", "labeled", "analyze").
+- Everyday word over formal synonym: "supports" not "corroborates", "use" not "utilize", "start" not "commence", "help" not "facilitate", "about" not "regarding".
+- No connective filler or stock openers: "It's worth noting", "Note that", "Importantly", "Additionally", "In other words".
+- No hedging on things you checked, no intensifiers ("robust", "comprehensive", "seamless"), no triplets for rhythm ("clear, concise, and correct").
+- No restating the question before answering it, no summary sentence after the answer.
+- Test: if a sentence could open any status update on any project, delete it.
+
 Human-read rules:
 
+- **Length is the first rule.** Default to one paragraph. A second paragraph needs a reason; anything that needs headings goes into a PR body, thread, or doc.
 - **Start with the substance.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. Output outcomes, decisions needing input, verification results, blockers.
 - **Whole sentences, no scaffolding.** No Options/Recommendation/TL;DR templates, no headings on a short body, no checkbox lists that restate prose. Bullets are for genuinely parallel items, never a substitute for a sentence.
 - **Active voice, named actor, no hedging.** "The validation rejects nil names", not "nil names should now be rejected". One term per concept.
 - **Restate, never point.** Never point at tool outputs, finding numbers, plan rows, or earlier turns the reader didn't see - restate in one sentence. Delete every link and the reply must still stand; a link is provenance, never the content.
 - **State what you did or will do.** No padding with what you won't do, what stays unchanged, or alternatives nobody asked about. No closing summaries. Evidence is a sentence with an example ("unit tests pass: 212 tests, 0 failures"), not a pasted transcript.
+- **Cut on sight:** restated-goal paragraph, any sentence that restates the diff, filler (see Wording), headings on a short comment.
 - **PR bodies describe the change, not its validation:** no test counts, lint status, or command outcomes - CI holds that evidence.
+- **A problem report is concrete:** what happened (the failing input, line, or before/after) and the decision you need. Bad: "blocked, see finding 3". Good: "The packed-install test fails because `dist/` is missing from the tarball - add it to `files`, or build at `prepack`?"
 - **ASCII punctuation everywhere** (chat, comments, commits, docs, code): `-` not em-dash, `...` not the ellipsis glyph, straight quotes; non-ASCII only for a justified visual mark.
+
+PR body, before (compressed):
+
+> Gate slack registration on `enabled`.
+>
+> - `extensions/slack.ts`: early return in `session_start`
+> - `lib/slack-core.ts`: drop eager token read
+> - tests: disabled path
+
+After:
+
+> The `slack` extension now does nothing when `quiver.slack.enabled` is false. Before, a disabled config still read the token file and registered seven tools at startup, so a user who had never set up Slack saw `slack_post` in the tool list; registration now stays behind the `enabled` check and the tool list is empty.
+>
+> The gate lives in `extensions/slack.ts`; `lib/slack-core.ts` no longer reads the token eagerly.
+
+The after wins because the first paragraph names the observable behavior a reviewer can falsify (a disabled config, an empty tool list), the paths trail for the reviewer, and nothing restates the diff. Models match an example harder than they follow prose.
 
 ## Code & Documentation Discipline
 
