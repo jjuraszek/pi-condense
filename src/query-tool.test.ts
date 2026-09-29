@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { registerQueryTool } from "./query-tool.js";
+import { imageDigest } from "./batch-capture.js";
 import { ToolCallIndexer } from "./indexer.js";
 import type { CapturedBatch } from "./types.js";
 
@@ -23,13 +24,71 @@ const captureLegacy = (idx: ToolCallIndexer, id: string, timestamp: number, text
   idx.addBatch(batch, () => {});
 };
 
-// execute returns { content: [{ type: "text", text }], details } (src/query-tool.ts:73-76)
-const runTool = async (indexer: ToolCallIndexer, toolCallIds: string[]): Promise<string> => {
+const runToolResult = async (indexer: ToolCallIndexer, toolCallIds: string[], branch: any[] = []): Promise<any> => {
   let registered: any;
   registerQueryTool({ registerTool: (def: any) => (registered = def) } as any, indexer);
-  const result = await registered.execute("call-1", { toolCallIds }, undefined, undefined, undefined);
-  return result.content[0].text as string;
+  return registered.execute("call-1", { toolCallIds }, undefined, undefined, { sessionManager: { getBranch: () => branch } });
 };
+
+const runTool = async (indexer: ToolCallIndexer, toolCallIds: string[], branch: any[] = []): Promise<string> =>
+  (await runToolResult(indexer, toolCallIds, branch)).content[0].text as string;
+
+const png = (data: string) => ({ type: "image", data, mimeType: "image/png" });
+const branchWith = (...images: any[]) => [
+  { type: "message", message: { role: "toolResult", toolCallId: "x", content: [{ type: "text", text: "Read image file [image/png]" }, ...images] } },
+];
+const markerText = (data: string) => `[image returned: image/png sha256:${imageDigest(data)}]\nRead image file [image/png]`;
+
+describe("context_tree_query image recovery", () => {
+  test("short ref returns only the image named by its marker", async () => {
+    const idx = new ToolCallIndexer();
+    capture(idx, "read_1", 1150, markerText("AAAA"), 0);
+    idx.registerSummaryRefs([{ shortId: "t1", toolCallId: "read_1", resultTimestamp: 1150 }]);
+    const result = await runToolResult(idx, ["t1"], branchWith(png("AAAA"), png("BBBB")));
+    expect(result.content[0].type).toBe("text");
+    expect(result.content.slice(1)).toEqual([png("AAAA")]);
+  });
+
+  test("explicit occurrence key returns the image", async () => {
+    const idx = new ToolCallIndexer();
+    capture(idx, "read_1", 1150, markerText("AAAA"), 0);
+    const result = await runToolResult(idx, ["read_1@1150"], branchWith(png("AAAA")));
+    expect(result.content.slice(1)).toEqual([png("AAAA")]);
+  });
+
+  test("bare alias id returns its original's image", async () => {
+    const idx = new ToolCallIndexer();
+    capture(idx, "read_1", 1150, markerText("AAAA"), 0);
+    idx.registerDuplicate("read_2@2150", "read_1@1150", () => {});
+    const result = await runToolResult(idx, ["read_2"], branchWith(png("AAAA")));
+    expect(result.content.slice(1)).toEqual([png("AAAA")]);
+  });
+
+  test("legacy record without marker returns text only", async () => {
+    const idx = new ToolCallIndexer();
+    captureLegacy(idx, "read_1", 1000, "Read image file [image/png]", 0);
+    expect((await runToolResult(idx, ["read_1"], branchWith(png("AAAA")))).content).toHaveLength(1);
+  });
+
+  test("image off the current branch returns text only", async () => {
+    const idx = new ToolCallIndexer();
+    capture(idx, "read_1", 1150, markerText("AAAA"), 0);
+    expect((await runToolResult(idx, ["read_1"], branchWith(png("BBBB")))).content).toHaveLength(1);
+  });
+
+  test("pre-change alias between different images returns text only", async () => {
+    const idx = new ToolCallIndexer();
+    capture(idx, "read_1", 1150, "Read image file [image/png]", 0);
+    idx.registerDuplicate("read_2@2150", "read_1@1150", () => {});
+    expect((await runToolResult(idx, ["read_2"], branchWith(png("AAAA"), png("BBBB")))).content).toHaveLength(1);
+  });
+
+  test("description mentions image blocks", () => {
+    let registered: any;
+    registerQueryTool({ registerTool: (def: any) => (registered = def) } as any, new ToolCallIndexer());
+    expect(registered.description).toContain("image blocks");
+  });
+});
 
 describe("context_tree_query occurrence handling", () => {
   test("a bare id with two occurrences returns both blocks, chronologically", async () => {

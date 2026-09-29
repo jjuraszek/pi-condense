@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { CapturedBatch, CapturedToolCall, BatchingMode } from "./types.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
@@ -44,13 +45,28 @@ function projectCustomMessageEntry(e: any): any {
   return { role: "custom", customType: e.customType, content: e.content, display: e.display, details: e.details, timestamp: new Date(e.timestamp).getTime() };
 }
 
-/** Joins the text blocks of a ToolResultMessage into a single string. */
+export function imageDigest(data: string): string {
+  return createHash("sha256").update(data).digest("hex").slice(0, 8);
+}
+
+const IMAGE_MARKER_DIGEST = /\[image returned: [^\]\n]* sha256:([0-9a-f]{8})\]/g;
+
+export function imageMarkerDigests(text: string): string[] {
+  return [...text.matchAll(IMAGE_MARKER_DIGEST)].map((m) => m[1]);
+}
+
+/**
+ * Joins a ToolResultMessage's content into one string: one marker line per
+ * image block, then the text blocks. Markers lead because the summarizer
+ * input keeps only the first 2,000 result chars.
+ */
 export function extractToolResultText(msg: any): string {
   const content: any[] = Array.isArray(msg?.content) ? msg.content : [];
-  return content
-    .filter((c: any) => c.type === "text")
-    .map((c: any) => c.text)
-    .join("\n");
+  const markers = content
+    .filter((c: any) => c.type === "image")
+    .map((c: any) => `[image returned: ${c.mimeType} sha256:${imageDigest(c.data)}]`);
+  const texts = content.filter((c: any) => c.type === "text").map((c: any) => c.text);
+  return [...markers, ...texts].join("\n");
 }
 
 /**

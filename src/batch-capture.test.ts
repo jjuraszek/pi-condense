@@ -3,10 +3,14 @@ import {
   captureBatch,
   captureUnindexedBatchesFromSession,
   deriveLiveTurnIndex,
+  extractToolResultText,
+  imageDigest,
+  imageMarkerDigests,
   projectBranchMessages,
   serializeBatchForSummarizer,
 } from "./batch-capture.js";
 import type { CapturedBatch, CapturedToolCall } from "./types.js";
+import { ToolCallIndexer } from "./indexer.js";
 
 function toolCall(overrides: Partial<CapturedToolCall> = {}): CapturedToolCall {
   return {
@@ -276,5 +280,64 @@ describe("custom-anchor group boundary", () => {
 
     expect(batches).toHaveLength(2);
     expect(batches[0].userTurnGroup).toBe(batches[1].userTurnGroup);
+  });
+});
+
+const img = (data: string, mimeType = "image/png") => ({ type: "image", data, mimeType });
+
+describe("image markers", () => {
+  test("markers lead the text, in block order, with mime type and 8-hex hash", () => {
+    const text = extractToolResultText({
+      content: [{ type: "text", text: "Read image file [image/png]" }, img("AAAA"), img("BBBB", "image/jpeg")],
+    });
+    expect(text.split("\n")).toEqual([
+      `[image returned: image/png sha256:${imageDigest("AAAA")}]`,
+      `[image returned: image/jpeg sha256:${imageDigest("BBBB")}]`,
+      "Read image file [image/png]",
+    ]);
+    expect(imageDigest("AAAA")).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  test("same base64 -> same marker, different base64 -> different marker", () => {
+    const a1 = extractToolResultText({ content: [img("AAAA")] });
+    const a2 = extractToolResultText({ content: [img("AAAA")] });
+    const b = extractToolResultText({ content: [img("BBBB")] });
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b);
+  });
+
+  test("text-only content is unchanged", () => {
+    expect(extractToolResultText({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] })).toBe("a\nb");
+  });
+
+  test("imageMarkerDigests reads the digests back in marker order", () => {
+    const text = extractToolResultText({ content: [img("AAAA"), { type: "text", text: "x" }, img("BBBB")] });
+    expect(imageMarkerDigests(text)).toEqual([imageDigest("AAAA"), imageDigest("BBBB")]);
+    expect(imageMarkerDigests("no markers here")).toEqual([]);
+  });
+
+  test("a result with >2,000 text chars plus an image keeps the marker in the summarizer input", () => {
+    const message = { role: "assistant", content: [{ type: "toolCall", id: "r1", name: "read", input: { path: "a.png" } }], timestamp: 1 };
+    const results = [
+      { role: "toolResult", toolCallId: "r1", toolName: "read", content: [{ type: "text", text: "x".repeat(5000) }, img("AAAA")], isError: false, timestamp: 2 },
+    ];
+    const out = serializeBatchForSummarizer(captureBatch(message, results, 0, 9999));
+    expect(out).toContain(`[image returned: image/png sha256:${imageDigest("AAAA")}]`);
+  });
+
+  test("identical text with different data misses lookupByContent; identical data hits", () => {
+    const captureRead = (id: string, data: string, ts: number) =>
+      captureBatch(
+        { role: "assistant", content: [{ type: "toolCall", id, name: "read", input: { path: "s.png" } }], timestamp: ts },
+        [{ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "Read image file [image/png]" }, img(data)], isError: false, timestamp: ts + 1 }],
+        0,
+        ts
+      );
+    const idx = new ToolCallIndexer();
+    idx.addBatch(captureRead("r1", "AAAA", 100), () => {});
+    const other = captureRead("r2", "BBBB", 200).toolCalls[0];
+    expect(idx.lookupByContent(other.toolName, other.resultText)).toBeUndefined();
+    const same = captureRead("r3", "AAAA", 300).toolCalls[0];
+    expect(idx.lookupByContent(same.toolName, same.resultText)).toBe("r1@101");
   });
 });

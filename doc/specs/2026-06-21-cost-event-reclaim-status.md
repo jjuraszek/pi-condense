@@ -1,5 +1,7 @@
 # Spec: unified cost event + live-reclaim status line
 
+> **Superseded by:** [doc/specs/2026-09-29-image-honest-pruning.md](./2026-09-29-image-honest-pruning.md) - "Change 2 - live reclaim headline" / "Measurement (single point, all mechanisms)" `sizeMessages` basis only
+
 Date: 2026-06-21
 Branch: `cost-event-reclaim-status`
 

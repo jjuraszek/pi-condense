@@ -152,7 +152,7 @@ describe("G4/C4: legacy bare-id sidecar recovery", () => {
 
       let registered: any;
       registerQueryTool({ registerTool: (def: any) => (registered = def) } as any, indexer);
-      const result = await registered.execute("call-1", { toolCallIds: ["bash_7"] }, undefined, undefined, undefined);
+      const result = await registered.execute("call-1", { toolCallIds: ["bash_7"] }, undefined, undefined, { sessionManager: { getBranch: () => [] } });
       const text = result.content[0].text as string;
 
       expect(text).toContain("OLD SPILLED BODY");

@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { Type } from "@sinclair/typebox";
 import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { imageDigest, imageMarkerDigests } from "./batch-capture.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import { QUERY_TOOL_NAME } from "./types.js";
 
@@ -19,7 +21,7 @@ export function registerQueryTool(pi: ExtensionAPI, indexer: ToolCallIndexer): v
     name: QUERY_TOOL_NAME,
     label: "Query Original Tool History",
     description:
-      "Retrieve original tool call results that have been pruned from active context. Pass the short refs listed in a pruner-summary message, e.g. context_tree_query({ toolCallIds: [\"t12\", \"t3\"] }), to get back the full original outputs. A raw id that was reused returns every occurrence, each labelled id@timestamp.",
+      "Retrieve original tool call results that have been pruned from active context. Pass the short refs listed in a pruner-summary message, e.g. context_tree_query({ toolCallIds: [\"t12\", \"t3\"] }), to get back the full original outputs. A raw id that was reused returns every occurrence, each labelled id@timestamp. Results include the original image blocks when the pruned output carried images.",
     promptSnippet: "Retrieve original pruned tool outputs by short ref",
     promptGuidelines: [
       "When you need the full output of a tool call that was summarized and pruned from context, use context_tree_query with the short refs listed in the relevant pruner-summary message.",
@@ -30,7 +32,15 @@ export function registerQueryTool(pi: ExtensionAPI, indexer: ToolCallIndexer): v
       }),
     }),
 
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const branchImages = new Map<string, ImageContent>();
+      for (const entry of ctx.sessionManager.getBranch()) {
+        if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+        for (const block of entry.message.content) {
+          if (block.type === "image") branchImages.set(imageDigest(block.data), block);
+        }
+      }
+      const images: ImageContent[] = [];
       const foundRecords: Record<string, any> = {};
       const blocks: string[] = [];
 
@@ -70,6 +80,11 @@ export function registerQueryTool(pi: ExtensionAPI, indexer: ToolCallIndexer): v
             }
           }
 
+          for (const digest of imageMarkerDigests(raw)) {
+            const image = branchImages.get(digest);
+            if (image) images.push(image);
+          }
+
           const t = truncateHead(raw, {
             maxLines: DEFAULT_MAX_LINES,
             maxBytes: DEFAULT_MAX_BYTES,
@@ -87,7 +102,7 @@ export function registerQueryTool(pi: ExtensionAPI, indexer: ToolCallIndexer): v
       const combined = blocks.join("\n\n---\n\n");
 
       return {
-        content: [{ type: "text", text: combined }],
+        content: [{ type: "text", text: combined }, ...images],
         details: { results: foundRecords },
       };
     },

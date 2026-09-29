@@ -7,6 +7,15 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- Summaries of image-bearing tool results now say an image was returned instead of reporting the read as empty; the summarizer is told never to describe an image it cannot see.
+- `context_tree_query` returns the original image blocks of a pruned image result instead of only its text.
+- Pre-flush dedup no longer aliases different screenshots whose tool text is identical; image data is part of the dedup key.
+- The live reclaim figure prices image blocks at the flat 1,600-token estimate instead of counting base64 as text.
+
 ## [2.11.1] - 2026-09-29
 
 ### Fixed

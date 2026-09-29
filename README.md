@@ -82,7 +82,7 @@ Every summarizer cost update is emitted on the shared `pi.events` channel `cost:
 | Term | Meaning |
 |---|---|
 | Stub | The short breadcrumb (`[Summarized in pruner summary, ref \`t1\`...]`) that replaces a pruned tool result in context |
-| `context_tree_query` | The tool the model calls to recover a stubbed original by ref (`tN`) or `toolCallId`. A reused id returns every matching occurrence, not just one, including any that were content-deduplicated to an earlier record - see [PRUNING.md § Occurrence Identity](PRUNING.md#occurrence-identity) |
+| `context_tree_query` | The tool the model calls to recover a stubbed original by ref (`tN`) or `toolCallId`. Image results come back with their original image blocks. A reused id returns every matching occurrence, not just one, including any that were content-deduplicated to an earlier record - see [PRUNING.md § Occurrence Identity](PRUNING.md#occurrence-identity) |
 | Batch vs chain | A batch is one flush's worth of tool calls; a chain is a longer closed sequence eligible for range compression |
 | Prune frontier | The last attempted prune boundary - advances even on a skip, so nothing is reconsidered twice |
 | Diagnostics (`diag u/m/o/b`) | A self-hiding status-line segment surfacing prune-time degradations: `u` = unresolved chain range, `m` = detection/render id mismatch (informational, does not change what's dropped), `o` = orphan tool-result sweep, `b` = a zero-coverage chain with nothing left to backfill (genuine span mismatch, see below). Each letter's count is omitted when zero; the whole segment disappears when all four are zero. Backing session entries are `context-prune-diagnostic` - see below |

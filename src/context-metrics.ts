@@ -4,7 +4,7 @@ import type { ContextMetricsSnapshot, PruneFrontier } from "./types.js";
 
 const IMAGE_TOKEN_ESTIMATE = 1600;
 
-function charsOf(msg: any): number {
+export function charsOf(msg: any): number {
   if (!Array.isArray(msg.content)) return JSON.stringify(msg).length;
   let imageCount = 0;
   const content = msg.content.map((block: any) => {

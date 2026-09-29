@@ -312,7 +312,7 @@ The intended recovery flow is:
 3. The model decides the summary is not enough and wants exact raw output.
 4. The model calls `context_tree_query({ toolCallIds: ["t1", ...] })`. The tool accepts short refs and full `toolCallId`s interchangeably (`indexer.resolveToolCallId`).
 5. The tool looks up those IDs in the pruner index.
-6. The tool returns the original stored output back into the current turn.
+6. The tool returns the original stored output back into the current turn. For each `[image returned: ...]` marker in a recovered record, it appends the original image block from the current session branch whose SHA-256 prefix matches; a record with no marker, or whose image is off the branch, returns text only.
 7. The model can now inspect that raw result and continue reasoning.
 
 ### ASCII: end-to-end "prune, then re-read" flow
@@ -690,9 +690,11 @@ Mechanism:
    - Keying by occurrence key, not bare id, means a duplicate is only ever aliased to the specific earlier *occurrence* it matches byte-for-byte - a reused id whose later occurrence has different content is not conflated with the stale one.
    - A `context-prune-dedup-alias` custom entry is persisted so `reconstructFromSession` rebuilds the maps after a restart.
 4. The duplicate is removed from the batch — no summarizer call, no new index entry.
-5. Later, `pruneMessages` stub-replaces the duplicate's `ToolResultMessage` using the original's short ref, and `context_tree_query` returns the original's record whether the model passes the duplicate's id or the original's.
+5. Later, `pruneMessages` stub-replaces the duplicate's `ToolResultMessage` using the original's short ref, and `context_tree_query` returns the original's record whether the model passes the duplicate's id or the original's. An aliased image result recovers the original's image blocks (see [How the Model Re-reads Raw Outputs](#how-the-model-re-reads-raw-outputs)).
 
 Normalization is conservative: `\r\n` → `\n`, per-line trailing whitespace stripping, final `trim()`. Internal whitespace, tabs, and capitalization are preserved so two genuinely different outputs do **not** collide.
+
+Image blocks enter `resultText` as leading marker lines `[image returned: <mimeType> sha256:<8hex>]` (`extractToolResultText`, `src/batch-capture.ts`), so the marker is part of the dedup key and two image results alias only when their base64 data matches to the 8-hex prefix. Results captured before the marker existed carry none.
 
 Typical wins: re-reading an unchanged file, repeated `git status` / `ls`, retries of the same command. v1 only matches against records **already in the indexer** (cross-flush dedup); intra-flush dedup is deferred so canonicals that get skipped as oversized / trivial never produce dangling aliases.
 
@@ -715,7 +717,7 @@ The frontier's `lastAttemptedTurnIndex` uses a session-wide numbering domain: it
 - **Tree browser (`/pruner tree`):** interactive, foldable tree of pruned tool calls grouped under their summaries. `Ctrl-O` on a summary node opens the full markdown summary in a bordered overlay.
 - **Configurable summarizer thinking (`summarizerThinking`):** trade summary cost / latency for quality (`off` / `minimal` / `low` / `medium` / `high` / `xhigh`). `default` omits the option entirely so the provider chooses.
 - **Cumulative stats:** `context-prune-stats` entries track input/output tokens and cost of every summarizer call; full detail surfaces in `/pruner stats`. Cost is also emitted on the `cost:external` pi.events channel for external aggregators (cumulative per session, live only).
-- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages) = JSON.stringify(messages).length`, comparing the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all five phases in a single point (stub-replace, supersede, error-purge, chain-range-prune, orphan-sweep); appears on the status line as `│ prune: ON · 92.0k->14.0k (-85%)` once at least one prune has occurred (the leading `│` keeps the segment visually isolated in the shared footer, load-order independent - there is no trailing divider, since the footer's own space-join between segments already provides one).
+- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages)` = the sum of `charsOf(message)` (`src/context-metrics.ts`): whole-message JSON chars with each image block priced at a flat 1,600 tokens (6,400 chars) instead of its base64 length, the same estimate the frontier-gap trigger uses. This compares the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all five phases in a single point (stub-replace, supersede, error-purge, chain-range-prune, orphan-sweep); appears on the status line as `│ prune: ON · 92.0k->14.0k (-85%)` once at least one prune has occurred (the leading `│` keeps the segment visually isolated in the shared footer, load-order independent - there is no trailing divider, since the footer's own space-join between segments already provides one).
 - **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
 
 ### Summarizer outage fallback

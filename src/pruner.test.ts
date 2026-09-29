@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { pruneMessages, sizeMessages } from "./pruner.js";
+import { charsOf } from "./context-metrics.js";
 import { ToolCallIndexer } from "./indexer.js";
 import { CUSTOM_TYPE_INDEX } from "./types.js";
 import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
@@ -899,6 +900,19 @@ describe("occurrence-keyed coverage via mock indexer (spill / protection / grace
 });
 
 describe("sizeMessages", () => {
+  it("prices an image block with the flat charsOf estimate, not its base64 length", () => {
+    const msg = {
+      role: "toolResult",
+      toolCallId: "r1",
+      toolName: "read",
+      content: [{ type: "text", text: "Read image file [image/png]" }, { type: "image", data: "A".repeat(137000), mimeType: "image/png" }],
+      isError: false,
+      timestamp: 1,
+    };
+    expect(sizeMessages([msg])).toBe(charsOf(msg));
+    expect(sizeMessages([msg])).toBeLessThan(JSON.stringify(msg).length / 10);
+  });
+
   it("counts hidden fields (thinking blocks), not just visible text", () => {
     // Two messages with identical visible .text but different hidden content.
     // sizeMessages must count the full serialized weight so all reclaim

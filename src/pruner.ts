@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { charsOf } from "./context-metrics.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import type { ChainCompressionConfig, ErrorPurgeConfig } from "./types.js";
 import { isProtected, type ProtectionConfig } from "./protected.js";
@@ -11,13 +12,13 @@ import type { DiagnosticSink } from "./diagnostics.js";
 import { applySupersede, type SupersedeState } from "./supersede.js";
 
 /**
- * Estimate of a message array's context weight. Serializing the whole array
- * (not just visible text) is deliberate: it counts tool-call argument bodies
- * (error-purge) and tool-result arrays (stub-replace / chain-range) so all
- * reclaim mechanisms register.
+ * Estimate of a message array's context weight: whole-message JSON chars
+ * (tool-call arguments, tool-result arrays, hidden blocks) so every reclaim
+ * mechanism registers, with image blocks at the flat estimate `charsOf`
+ * shares with the frontier-gap trigger.
  */
 export function sizeMessages(messages: any[]): number {
-  return JSON.stringify(messages).length;
+  return messages.reduce((sum, message) => sum + charsOf(message), 0);
 }
 
 /**

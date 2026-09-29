@@ -1,5 +1,7 @@
 # Single-chain observability + reload trigger repair (issue #6)
 
+> **Superseded by:** [doc/specs/2026-09-29-image-honest-pruning.md](./2026-09-29-image-honest-pruning.md) - "Measurement convention" for image blocks only
+
 Implements [jjuraszek/pi-condense#6](https://github.com/jjuraszek/pi-condense/issues/6): long single-chain sessions expose two compounding gaps - no observability into what the pruner *cannot* see (open-cycle thinking, chain dominance, frontier gap), and reloads discarding the in-memory `pendingBatches` queue, which strands the automatic flush trigger even though the branch-rescan data path could recover the work.
 
 Issue AC 2, verbatim: "`/pruner status` + footer show open-cycle thinking, largest-chain share, frontier gap; a session entry records them per flush." All three metrics therefore appear on both surfaces.
