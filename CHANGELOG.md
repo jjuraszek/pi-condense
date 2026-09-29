@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- The frontier-gap metric prices image blocks at a flat estimate instead of counting base64 as text, so screenshot reads no longer trigger a premature frontier-gap flush that prunes images before the model sees them.
+
 ## [2.11.0] - 2026-09-24
 
 ### Added

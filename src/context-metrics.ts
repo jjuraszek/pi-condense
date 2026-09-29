@@ -2,8 +2,17 @@ import { detectChains, isChainAnchorCustom } from "./chain-detector.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { ContextMetricsSnapshot, PruneFrontier } from "./types.js";
 
+const IMAGE_TOKEN_ESTIMATE = 1600;
+
 function charsOf(msg: any): number {
-  return JSON.stringify(msg).length;
+  if (!Array.isArray(msg.content)) return JSON.stringify(msg).length;
+  let imageCount = 0;
+  const content = msg.content.map((block: any) => {
+    if (block?.type !== "image") return block;
+    imageCount++;
+    return { type: "image" };
+  });
+  return JSON.stringify({ ...msg, content }).length + imageCount * IMAGE_TOKEN_ESTIMATE * 4;
 }
 
 function tokensOf(msg: any): number {

@@ -260,6 +260,22 @@ describe("computeContextMetrics", () => {
     expect(result.frontierGapTokens).toBe(expected);
   });
 
+  test("frontierGapTokens: image blocks use a flat estimate instead of base64 length", () => {
+    const msgs = [userMsg(100), assistantWithTools(200, ["tc1", "tc2", "tc3"])];
+    for (let i = 0; i < 3; i++) {
+      const result = toolResult(300 + i, `tc${i + 1}`, "read", "screenshot");
+      result.content.push({ type: "image", data: "A".repeat(137000), mimeType: "image/png" });
+      msgs.push(result);
+    }
+    const expected = msgs.slice(2).reduce((sum, msg) => {
+      const stub = { ...msg, content: msg.content.map((block: any) => block.type === "image" ? { type: "image" } : block) };
+      return sum + Math.round((JSON.stringify(stub).length + 1600 * 4) / 4);
+    }, 0);
+    const result = computeContextMetrics(msgs, null, noSummarized, noProtected);
+    expect(result.frontierGapTokens).toBe(expected);
+    expect(result.frontierGapTokens).toBeLessThan(20000);
+  });
+
   test("frontierGapTokens: boundary mid-turn split excludes at-or-before calls, includes later calls in same turn", () => {
     const msgs = [userMsg(100), assistantWithTools(200, ["tc1", "tc2"]), toolResult(300, "tc1"), toolResult(310, "tc2")];
     const frontier = fullFrontier({ lastAttemptedToolCallId: "tc1", lastAttemptedTurnIndex: 0 });
