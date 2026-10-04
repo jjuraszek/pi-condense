@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- Error purge keeps a failed tool call's argument keys, types, and array lengths and shrinks only strings over 200 characters, so grammar-constrained tools such as `codemode` no longer fail every later request with `Grammar tool call "codemode" requires argument "code" to be a string` after a purge. (#19)
+
 ## [2.11.2] - 2026-09-29
 
 ### Fixed

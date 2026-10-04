@@ -1096,23 +1096,26 @@ Short refs (`tN`) always resolve 1:1 - one ref, one record - and are the primary
 
 Failed tool calls often embed large argument bodies in the assistant message — a `write` call with a 30 KB file body, an `edit` call with a multiline diff. The error result is small (e.g. `"Error: file not found"`), but the original `arguments` stay in the assistant turn indefinitely.
 
-Error purge replaces those arg bodies with compact stubs after the error has cooled down:
+Error purge shrinks the large string values inside those argument bodies after the error has cooled down. Every key, JSON type, and array length survives; only strings longer than 200 characters (`PURGE_STRING_MIN_CHARS` in `src/error-purge.ts`, not configurable) become a placeholder carrying the original length:
 
 ```
-{ "_purged": "<purged-errored-args size=\"N\"/>" }
+{ "path": "src/foo.ts", "content": "<purged-errored-args size=\"30000\"/>" }
 ```
+
+Providers validate replayed tool calls against the declared schema - pi-ai's grammar-constrained tools (`codemode`) require the input property to be a string - so the shape must stay intact. The 200-character floor keeps `path`, a short `command`, or a small `newText` readable; it is a constant because nobody has a reason to tune a readability guard.
 
 **What triggers a purge:**
 
 - The matching `ToolResultMessage` has `isError: true`.
 - The error occurred at least `purgeErrors.cooldownTurns` assistant turns ago (default 2). The cooldown gives the model 1–2 turns to retry before context is mutated.
-- The JSON-stringified argument body is at least `purgeErrors.minArgChars` characters long (default 500). Small args are not worth the substitution.
+- The JSON-stringified argument body is at least `purgeErrors.minArgChars` characters long (default 500). Small args are not worth the substitution. A body that qualifies but holds no string over 200 characters is returned unchanged.
 
 **What error purge does NOT touch:**
 
 - The `ToolResultMessage` content — the error message stays visible so the model can see what went wrong.
 - Non-errored `toolCall` argument bodies.
 - Argument bodies below `minArgChars`.
+- Keys, non-string values, array lengths, and strings of 200 characters or fewer inside a purged body.
 - Anything when `purgeErrors.enabled` is `false`.
 
 **Transform position:** Error purge runs in Phase 2, after stub-replace and before chain range prune.
@@ -1127,7 +1130,7 @@ Error purge replaces those arg bodies with compact stubs after the error has coo
 |---|---|---|
 | `purgeErrors.enabled` | `true` | Master toggle |
 | `purgeErrors.cooldownTurns` | `2` | Turns to wait after error before purging |
-| `purgeErrors.minArgChars` | `500` | Minimum argument body size to purge |
+| `purgeErrors.minArgChars` | `500` | Minimum JSON body size for a failed call to be scanned; only strings over 200 chars inside it are replaced |
 
 ---
 

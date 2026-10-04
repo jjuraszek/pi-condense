@@ -70,9 +70,9 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
 | `chainCompression.fuseRangeSummary` | `true` / `false` | `true` | Fuse a compressed chain's per-batch summaries into one cohesive LLM summary (one extra summarizer call per multi-batch span); off keeps the per-batch concatenation |
-| `purgeErrors.enabled` | `true` / `false` | `true` | Replace failed toolCall argument bodies with compact stubs after cooldown |
+| `purgeErrors.enabled` | `true` / `false` | `true` | Shrink strings over 200 chars inside failed toolCall arguments after cooldown, keeping keys and types |
 | `purgeErrors.cooldownTurns` | positive integer | `2` | Turns to wait after a tool error before purging its argument body |
-| `purgeErrors.minArgChars` | non-negative integer | `500` | Only purge arg bodies at least this many characters long |
+| `purgeErrors.minArgChars` | non-negative integer | `500` | Only scan failed-call arg bodies at least this many characters long; strings over 200 chars inside them are replaced |
 
 See [PRUNING.md § Chain Compression](../PRUNING.md#chain-compression) and [PRUNING.md § Error Purge](../PRUNING.md#error-purge) for the full algorithms.
 

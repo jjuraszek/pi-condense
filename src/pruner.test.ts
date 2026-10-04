@@ -278,7 +278,7 @@ describe("pruneMessages", () => {
 
   it("purges errored toolCall args through errorPurge wiring", () => {
     const indexer = makeMockIndexer();
-    const largeArgs = { content: "x".repeat(200) };
+    const largeArgs = { path: "src/foo.ts", content: "x".repeat(300) };
     const messages: any[] = [
       {
         role: "assistant",
@@ -344,7 +344,8 @@ describe("pruneMessages", () => {
     expect(pruned).toBe(true);
     const errAsst = out.find((m: any) => m.role === "assistant" && m.timestamp === 100) as any;
     expect(errAsst).toBeDefined();
-    expect(errAsst.content[0].arguments._purged).toMatch(/^<purged-errored-args size=/);
+    expect(errAsst.content[0].arguments.path).toBe("src/foo.ts");
+    expect(errAsst.content[0].arguments.content).toMatch(/^<purged-errored-args size=/);
   });
 
   it("spill stub tolerates absent spillBytes/resultPreview", () => {
@@ -1009,7 +1010,7 @@ describe("G4/C3: orphan-sweep zero-fire proof across pruner fixtures", () => {
     }],
     ["purges errored toolCall args through errorPurge wiring", () => {
       const indexer = makeMockIndexer();
-      const largeArgs = { content: "x".repeat(200) };
+      const largeArgs = { path: "src/foo.ts", content: "x".repeat(300) };
       const messages: any[] = [
         { role: "assistant", content: [{ type: "toolCall", id: "tc-err", name: "write", arguments: largeArgs }], timestamp: 100, usage: {}, stopReason: "tool_use" },
         { role: "toolResult", toolCallId: "tc-err", toolName: "write", content: [{ type: "text", text: "Error: permission denied" }], isError: true, timestamp: 110 },

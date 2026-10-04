@@ -1,8 +1,42 @@
 import type { ErrorPurgeConfig } from "./types.js";
 
+// Keep short paths and commands readable while reclaiming large failed-call bodies.
+const PURGE_STRING_MIN_CHARS = 200;
+
+function shrinkStrings(value: unknown): [unknown, boolean] {
+  if (typeof value === "string") {
+    if (value.length > PURGE_STRING_MIN_CHARS) return [`<purged-errored-args size="${value.length}"/>`, true];
+    return [value, false];
+  }
+  if (Array.isArray(value)) {
+    let out: unknown[] | undefined;
+    for (let i = 0; i < value.length; i++) {
+      const [next, changed] = shrinkStrings(value[i]);
+      if (!changed) continue;
+      out ??= value.slice();
+      out[i] = next;
+    }
+    return out ? [out, true] : [value, false];
+  }
+  if (value !== null && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    let out: Record<string, unknown> | undefined;
+    for (const key of Object.keys(object)) {
+      const [next, changed] = shrinkStrings(object[key]);
+      if (!changed) continue;
+      // Spread creates own data properties, including JSON's possible __proto__ key.
+      out ??= { ...object };
+      out[key] = next;
+    }
+    return out ? [out, true] : [value, false];
+  }
+  return [value, false];
+}
+
 /**
- * Replaces the `arguments` body of failed toolCall blocks with a compact stub
- * once the error is old enough to be beyond the cooldown window.
+ * Shrinks long strings in failed toolCall arguments after the cooldown window.
+ * Keys and JSON types must survive because pi-ai validates grammar-tool input
+ * properties when replaying calls.
  *
  * Why only the arguments, not the whole toolCall or its toolResult:
  *   - The toolResult content (e.g. "Error: file not found") is small and carries
@@ -58,8 +92,11 @@ export function purgeErroredArgs(messages: any[], config: ErrorPurgeConfig): any
       const argBody = JSON.stringify(block.arguments);
       if (argBody.length < config.minArgChars) return block;
 
+      const [shrunk, changed] = shrinkStrings(block.arguments);
+      if (!changed) return block;
+
       contentModified = true;
-      return { ...block, arguments: { _purged: `<purged-errored-args size="${argBody.length}"/>` } };
+      return { ...block, arguments: shrunk };
     });
 
     if (!contentModified) return msg;

@@ -155,7 +155,7 @@ export function pruneMessages(
     }
   }
 
-  // Phase 2: error purge — replace failed toolCall arg bodies after cooldown
+  // Phase 2: error purge - shrink long strings in failed toolCall args after cooldown
   if (errorPurge?.enabled) {
     const afterPurge = purgeErroredArgs(current, errorPurge);
     if (afterPurge !== current) {

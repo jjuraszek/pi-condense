@@ -675,7 +675,7 @@ export function registerCommands(
               label: "Error purge",
               values: ["true", "false"],
               currentValue: String(config.purgeErrors.enabled),
-              description: `Replace failed toolCall argument bodies with compact stubs after a cooldown. Reclaims context from large write/edit args that will never succeed. Currently ${config.purgeErrors.enabled ? "ON" : "OFF"}.`,
+              description: `Shrink long strings inside failed toolCall arguments after a cooldown, keeping argument shape. Reclaims context from large write/edit args that will never succeed. Currently ${config.purgeErrors.enabled ? "ON" : "OFF"}.`,
             },
             {
               id: "purgeErrorsCooldown",
