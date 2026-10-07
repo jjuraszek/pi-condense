@@ -6,6 +6,8 @@ Never guess Pi's API, message shapes, config, or values - read the source. The p
 
 The same rule applies to state you set up yourself. Before asserting that a job, publish, CI run, or process is in some state, run the command that shows it in this turn (`gh run view`, `npm view`, `git status`). A summary of what you started is a plan, not an observation.
 
+Tickets, specs, and eval samples carry no private or proprietary data and no secrets. Material that originates in a private repo is anonymized or replaced by simpler synthetic text before it lands; a sample, ticket body, or spec that still names a customer, an internal system, a credential, or a `/Users/<name>` path is not ready to commit.
+
 ## Authorization
 
 An instruction that names an action and its parameters is the approval for that action ("release patch", "close #12 with a comment") - do it, then report. Ask only when a parameter is ambiguous or a safety check fails; say what failed, don't fix it silently. Once the design is settled, finish the authorized work before asking - the user approves a concrete result. Reversible, read-only, and already-authorized actions need no permission. Agent-initiated writes to a tracker or to files outside the repo keep their gate.

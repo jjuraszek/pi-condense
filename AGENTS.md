@@ -2,7 +2,7 @@
 
 Pi extension that captures completed tool-call batches, summarizes them with an LLM, replaces raw tool results with short stubs in future context, and exposes `context_tree_query` to recover originals on demand. Published to npm as `pi-condense` (`pi install npm:pi-condense`).
 
-<!-- agents-core:begin v8 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+<!-- agents-core:begin v9 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Ground Truth Before Reasoning
 
 User instructions outrank skill and AGENTS.md guidance; on conflict, follow the user. Configured gates (design approval, ship verification) still run; a user instruction that already names the gated action satisfies its confirmation.
@@ -10,6 +10,8 @@ User instructions outrank skill and AGENTS.md guidance; on conflict, follow the 
 Never guess Pi's API, message shapes, config, or values - read the source. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner`; its shipped `.d.ts` is API truth. Third-party APIs: never state a signature, config key, flag, or version-specific behavior from memory - verify in current docs (Context7 `resolve-library-id` then `query-docs`). If the source contradicts your assumption, the source wins; if it is missing, say so and ask - do not fabricate. Check the request's premise before acting: if the source contradicts it, say so once with evidence, then follow the user's decision.
 
 The same rule applies to state you set up yourself. Before asserting that a job, publish, CI run, or process is in some state, run the command that shows it in this turn (`gh run view`, `npm view`, `git status`). A summary of what you started is a plan, not an observation.
+
+Tickets, specs, and eval samples carry no private or proprietary data and no secrets. Material that originates in a private repo is anonymized or replaced by simpler synthetic text before it lands; a sample, ticket body, or spec that still names a customer, an internal system, a credential, or a `/Users/<name>` path is not ready to commit.
 
 ## Authorization
 
@@ -81,7 +83,7 @@ The after wins because the first paragraph names the observable behavior a revie
 
 Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments); a user instruction naming the ticket's body counts as that gate. Status transitions and comments are exempt - plain tracker CLI.
 
-<!-- agents-core:end v8 -->
+<!-- agents-core:end v9 -->
 
 ## Part of one platform
 
