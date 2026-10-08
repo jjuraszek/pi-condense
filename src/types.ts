@@ -194,8 +194,8 @@ export const ROLLING_WINDOW_PRESETS: { value: string; label: string }[] = [
 export const MIN_BATCH_CHARS_PRESETS: { value: string; label: string }[] = [
   { value: "0", label: "0 (disabled)" },
   { value: "500", label: "500" },
-  { value: "1000", label: "1000 (default)" },
-  { value: "2000", label: "2000" },
+  { value: "1000", label: "1000" },
+  { value: "2000", label: "2000 (default)" },
   { value: "5000", label: "5000" },
 ];
 
@@ -567,7 +567,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   pruneOn: "agent-message",
   batchingMode: "turn",
   quietOversizedSkips: false,
-  minBatchChars: 1000,
+  minBatchChars: 2000,
   recoveryGraceTurns: 3,
   summarizerIdleTimeoutMs: 20000,
   summarizerMaxTimeoutMs: 180000,

@@ -591,7 +591,7 @@ export function registerCommands(
               values: MIN_BATCH_CHARS_PRESETS.map((p) => p.value),
               currentValue: MIN_BATCH_CHARS_PRESETS.some((p) => p.value === String(config.minBatchChars))
                 ? String(config.minBatchChars)
-                : MIN_BATCH_CHARS_PRESETS[2].value, // fall back to "1000" if a custom value isn't in the preset cycle
+                : MIN_BATCH_CHARS_PRESETS[3].value, // fall back to "2000" if a custom value isn't in the preset cycle
               description: minBatchCharsDescription(config),
             },
             {

@@ -600,7 +600,7 @@ captured batches (from turn_end or session scan)
   │     identical (toolName, normalize(resultText)) → alias of original;
   │     no LLM call; persist as context-prune-dedup-alias
   │
-  ├─ 5. Trivial-batch skip            (config: minBatchChars, default 1000)
+  ├─ 5. Trivial-batch skip            (config: minBatchChars, default 2000)
   │     batches whose remaining raw chars < threshold → skip; no LLM call;
   │     leave originals in context; advance frontier
   │
@@ -677,11 +677,11 @@ Why a window and not the whole result: summarizer input is paid on every flush, 
 
 ### Trivial-batch skip (minBatchChars)
 
-`minBatchChars: number` (default `1000`) is a pre-flush guard against "summary would be roughly the same size as the input" cases. If the total raw `resultText` across a batch is below the threshold, the batch is skipped: no summarizer LLM call, no `context-prune-index` entry, no `context-prune-summary` injection. The frontier still advances, so the same tool calls are not reconsidered next flush.
+`minBatchChars: number` (default `2000`) is a pre-flush guard against "summary would be roughly the same size as the input" cases. If the total raw `resultText` across a batch is below the threshold, the batch is skipped: no summarizer LLM call, no `context-prune-index` entry, no `context-prune-summary` injection. The frontier still advances, so the same tool calls are not reconsidered next flush.
 
 Why it exists: a short LLM summary like "Tool X did Y" is itself ~50–150 chars per call. For a 200-byte file read or an `ls` of a short directory, the summary is the same size or larger than the input — the post-call `skipped-oversized` mechanism would catch it anyway, but only after the LLM round-trip and the cost. `minBatchChars` short-circuits the obvious cases at zero LLM cost.
 
-Set `minBatchChars: 0` to disable. The default `1000` skips obvious trivial batches (`git status`, small file reads, short directory listings) without affecting realistic tool outputs. Edit with `/pruner min-batch-chars <n>` or via the settings overlay.
+Set `minBatchChars: 0` to disable. The default `2000` skips obvious trivial batches (`git status`, small file reads, short directory listings) without affecting realistic tool outputs; batches under 2,000 chars compress to only about 44% of their size when summarized (the per-call bullet scaffolding dominates), against about 7% for a typical session, so summarizing them costs an LLM call for little context saved. Edit with `/pruner min-batch-chars <n>` or via the settings overlay.
 
 ### Content-hash dedup
 

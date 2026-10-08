@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- `minBatchChars` defaults to 2000 (was 1000): batches under 2,000 raw chars compress to only about 44% of their size when summarized, so they now stay verbatim and skip the summarizer call. Set `contextPrune.minBatchChars` explicitly to keep the old threshold.
+
 ## [2.11.4] - 2026-10-08
 
 ### Fixed
