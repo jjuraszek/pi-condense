@@ -57,8 +57,8 @@ export function imageMarkerDigests(text: string): string[] {
 
 /**
  * Joins a ToolResultMessage's content into one string: one marker line per
- * image block, then the text blocks. Markers lead because the summarizer
- * input keeps only the first 2,000 result chars.
+ * image block, then the text blocks. Markers lead so they survive the
+ * summarizer's head + tail window.
  */
 export function extractToolResultText(msg: any): string {
   const content: any[] = Array.isArray(msg?.content) ? msg.content : [];
@@ -218,6 +218,10 @@ export function captureUnindexedBatchesFromSession(
   return batches;
 }
 
+// Fixed, not a setting: the 8,000-char total is the per-result ceiling on summarizer input.
+const HEAD_CHARS = 4000;
+const TAIL_CHARS = 4000;
+
 /** Serializes a single CapturedBatch into readable text for the summarizer LLM. */
 export function serializeBatchForSummarizer(batch: CapturedBatch): string {
   const parts: string[] = [];
@@ -231,10 +235,9 @@ export function serializeBatchForSummarizer(batch: CapturedBatch): string {
     const argsJson = JSON.stringify(tc.args, null, 2);
 
     let resultText = tc.resultText;
-    const MAX_CHARS = 2000;
-    if (resultText.length > MAX_CHARS) {
-      const remaining = resultText.length - MAX_CHARS;
-      resultText = resultText.slice(0, MAX_CHARS) + ` ...[${remaining} chars truncated]`;
+    if (resultText.length > HEAD_CHARS + TAIL_CHARS) {
+      const elided = resultText.length - HEAD_CHARS - TAIL_CHARS;
+      resultText = `${resultText.slice(0, HEAD_CHARS)} ...[${elided} chars elided]... ${resultText.slice(-TAIL_CHARS)}`;
     }
 
     return `[[${index + 1}:${tc.toolName}]] Tool: ${tc.toolName}(${argsJson})\nResult (${status}): ${resultText}`;

@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- The summarizer now sees the first 4,000 and last 4,000 characters of each tool result instead of only the first 2,000, so an error at the end of a test run or the newest rows of a `git log` reach the summary instead of being reported as missing; the prompt tells the model an elided middle is omitted, not empty.
+
 ## [2.11.3] - 2026-10-04
 
 ### Fixed

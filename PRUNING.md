@@ -19,6 +19,7 @@
    - [Stub-replace instead of delete](#stub-replace-instead-of-delete)
    - [Protected tools](#protected-tools)
    - [Eager single-result spill](#eager-single-result-spill)
+   - [Summarizer input window](#summarizer-input-window)
    - [Trivial-batch skip (minBatchChars)](#trivial-batch-skip-minbatchchars)
    - [Content-hash dedup](#content-hash-dedup)
    - [Oversized summary skip](#oversized-summary-skip)
@@ -667,6 +668,12 @@ Full output: <sidecar path>. Use context_tree_query(<shortRef>) to retrieve.]
 **Atomicity:** the sidecar is written first; only on success is the in-memory record mutated. A write failure leaves the result inline for the normal flush and is logged via `console.error` — no data is lost.
 
 **Hybrid storage:** bodies below `spillThreshold` stay inline in the `context-prune-index` session entry (portable, as before); only oversized bodies are spilled. Moving the session `.jsonl` without its `-blobs/` directory loses only the giant-blob recovery path; the stub and head preview remain in the index entry.
+
+### Summarizer input window
+
+Each tool result reaches the summarizer LLM through a fixed head + tail window: results up to 8,000 chars are sent whole; longer ones are sent as their first 4,000 chars, a ` ...[N chars elided]... ` marker, and their last 4,000 chars. The prompt tells the model the elided region was removed, never that it was empty. Results at or above `spillThreshold` are spilled before any summarizer call and never windowed, unless the sidecar write fails; the result then flushes inline and is windowed like any other.
+
+Why a window and not the whole result: summarizer input is paid on every flush, and budget-triggered sessions flush every turn, so an uncapped 64k-char result would cost about 16k tokens per summary and raise the chance of a `length`-stopped, unusable summary. Why head + tail and not head only: the facts a summary most often needs - the error at the end of a test run, the newest rows of a log - sit at the tail. The constants are internal, not settings; the fixed total is the per-result cost ceiling. The indexer keeps the full result; `context_tree_query` is unaffected.
 
 ### Trivial-batch skip (minBatchChars)
 

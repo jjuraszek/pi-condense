@@ -58,4 +58,27 @@ describe("summarizer prompt", () => {
     await summarizeBatch(batch, DEFAULT_CONFIG, ctx);
     expect(JSON.stringify(seenInput)).toContain("means the tool returned an image you cannot see");
   });
+
+  it("tells the model that an elided middle is omitted, not empty", async () => {
+    const model = { id: "m", provider: "p", name: "M" };
+    const ctx = {
+      model,
+      modelRegistry: {
+        find: () => model,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
+        getProviderAuth: async () => undefined,
+      },
+      ui: { notify() {} },
+    } as any;
+    const batch = {
+      turnIndex: 0,
+      timestamp: 0,
+      assistantText: "",
+      toolCalls: [{ toolCallId: "a", toolName: "bash", args: {}, resultText: "x".repeat(9000), isError: false }],
+    } as any;
+    await summarizeBatch(batch, DEFAULT_CONFIG, ctx);
+    const sent = JSON.stringify(seenInput);
+    expect(sent).toContain("chars elided");
+    expect(sent).toContain("never report the elided region as empty or absent");
+  });
 });

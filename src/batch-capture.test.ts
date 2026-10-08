@@ -58,6 +58,74 @@ describe("serializeBatchForSummarizer", () => {
     expect(result).toContain("[[2:read]] Tool:");
     expect(result).toContain("[[3:write]] Tool:");
   });
+
+  const MARKER = /^ \.\.\.\[(\d+) chars elided\]\.\.\. $/;
+
+  function resultBody(serialized: string): string {
+    const prefix = "Result (OK): ";
+    return serialized.slice(serialized.indexOf(prefix) + prefix.length);
+  }
+
+  test("a result of 8,000 chars serializes whole with no marker", () => {
+    const raw = "a".repeat(8000);
+    const body = resultBody(serializeBatchForSummarizer(batch([toolCall({ resultText: raw })])));
+    expect(body).toBe(raw);
+    expect(body).not.toContain("chars elided");
+  });
+
+  test("a result of 8,001 chars becomes head 4,000 + marker + tail 4,000", () => {
+    const raw = "h".repeat(4000) + "m" + "t".repeat(4000);
+    const body = resultBody(serializeBatchForSummarizer(batch([toolCall({ resultText: raw })])));
+    expect(body).toBe("h".repeat(4000) + " ...[1 chars elided]... " + "t".repeat(4000));
+    expect(body.length).toBe(8024);
+  });
+
+  test("a result of 20,000 chars keeps raw.slice(0, 4000) and raw.slice(16000) around a 12000 marker", () => {
+    const raw = Array.from({ length: 20000 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const body = resultBody(serializeBatchForSummarizer(batch([toolCall({ resultText: raw })])));
+    expect(body.startsWith(raw.slice(0, 4000))).toBe(true);
+    expect(body.endsWith(raw.slice(16000))).toBe(true);
+    expect(body).toContain(" ...[12000 chars elided]... ");
+  });
+
+  test("a sentinel in the last 100 chars of a 5,175-char result survives; one at char 10,000 of 20,000 does not", () => {
+    const tailRaw = "x".repeat(5075) + "ERROR_AT_TAIL" + "x".repeat(5175 - 5075 - "ERROR_AT_TAIL".length);
+    expect(tailRaw.length).toBe(5175);
+    expect(serializeBatchForSummarizer(batch([toolCall({ resultText: tailRaw })]))).toContain("ERROR_AT_TAIL");
+
+    const midRaw = "x".repeat(10000) + "MID_SENTINEL" + "x".repeat(20000 - 10000 - "MID_SENTINEL".length);
+    expect(midRaw.length).toBe(20000);
+    expect(serializeBatchForSummarizer(batch([toolCall({ resultText: midRaw })]))).not.toContain("MID_SENTINEL");
+  });
+
+  test("result body equals raw up to 8,000 and head + marker + tail above, for boundary lengths", () => {
+    for (const length of [0, 1, 7999, 8000, 8001, 65535, 1008000]) {
+      const raw = Array.from({ length }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+      const body = resultBody(serializeBatchForSummarizer(batch([toolCall({ resultText: raw })])));
+      if (length <= 8000) {
+        expect(body).toBe(raw);
+      } else {
+        const marker = ` ...[${length - 8000} chars elided]... `;
+        expect(marker).toMatch(MARKER);
+        expect(body).toBe(raw.slice(0, 4000) + marker + raw.slice(-4000));
+        expect(body.length - raw.length).toBeLessThanOrEqual(marker.length);
+        expect(body.length).toBe(8000 + 23 + String(length - 8000).length);
+      }
+    }
+  });
+
+  test("labels and Tool: lines are unchanged for windowed results", () => {
+    const b = batch([
+      toolCall({ toolCallId: "a", toolName: "read", resultText: "r".repeat(9000) }),
+      toolCall({ toolCallId: "b", toolName: "bash", resultText: "s".repeat(9000) }),
+    ]);
+
+    const result = serializeBatchForSummarizer(b);
+
+    expect(result).toContain("[[1:read]] Tool: read(");
+    expect(result).toContain("[[2:bash]] Tool: bash(");
+    expect(result.match(/chars elided/g)?.length).toBe(2);
+  });
 });
 
 describe("occurrence capture", () => {
@@ -316,10 +384,10 @@ describe("image markers", () => {
     expect(imageMarkerDigests("no markers here")).toEqual([]);
   });
 
-  test("a result with >2,000 text chars plus an image keeps the marker in the summarizer input", () => {
+  test("a result with >8,000 text chars plus an image keeps the marker in the summarizer input", () => {
     const message = { role: "assistant", content: [{ type: "toolCall", id: "r1", name: "read", input: { path: "a.png" } }], timestamp: 1 };
     const results = [
-      { role: "toolResult", toolCallId: "r1", toolName: "read", content: [{ type: "text", text: "x".repeat(5000) }, img("AAAA")], isError: false, timestamp: 2 },
+      { role: "toolResult", toolCallId: "r1", toolName: "read", content: [{ type: "text", text: "x".repeat(9000) }, img("AAAA")], isError: false, timestamp: 2 },
     ];
     const out = serializeBatchForSummarizer(captureBatch(message, results, 0, 9999));
     expect(out).toContain(`[image returned: image/png sha256:${imageDigest("AAAA")}]`);
