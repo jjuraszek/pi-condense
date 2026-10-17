@@ -49,7 +49,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `enabled` | `true` / `false` | `false` | Master switch |
 | `showPruneStatusLine` | `true` / `false` | `true` | Footer widget + startup/queued-turn notifications |
 | `summarizerModel` | `"default"` or `"provider/model-id"` | `"default"` | `default` = your active pi model. See [Choosing a summarizer model](#choosing-a-summarizer-model) |
-| `summarizerThinking` | `default`/`off`/`minimal`/`low`/`medium`/`high`/`xhigh` | `default` | Provider-specific reasoning effort knob |
+| `summarizerThinking` | `default`/`off`/`minimal`/`low`/`medium`/`high`/`xhigh` | `default` | Reasoning level sent with every summarizer call on every provider; `default` and `off` send none. A virtual model's router receives it and may clamp it |
 | `pruneOn` | `agent-message` / `on-demand` | `agent-message` | Trigger mode - see README Architecture section |
 | `batchingMode` | `turn` / `agent-message` | `turn` | How coarse each summary is (independent of `pruneOn`) |
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
@@ -108,6 +108,8 @@ Single tool results larger than `spillThreshold` chars are written to `<session-
 The `default` setting reuses whatever model you have active in pi - convenient but wasteful, since summary writing doesn't need a top-tier coding model. Picking the smallest/fastest model on your plan saves both latency and cost.
 
 If the configured summarizer model suffers a transient outage while your active pi model is healthy, pi-condense automatically falls back to the session model for the duration (with a one-time notice) and probes the configured model back every few minutes - no configuration needed.
+
+Virtual models (router-backed catalog entries registered by an extension) work in every role: as `summarizerModel`, as the `default` session model, and as the outage-fallback target.
 
 | Plan | Suggested summarizer |
 |---|---|

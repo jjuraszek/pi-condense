@@ -1,22 +1,14 @@
-import { describe, it, expect, mock } from "bun:test";
-import * as actualCompat from "@earendil-works/pi-ai/compat";
-
-// Stub pi-ai's `stream` so runSummarization can be exercised without a network
-// call. `streamImpl` is swapped per test to simulate primary/fallback outcomes.
+import { describe, it, expect } from "bun:test";
 let streamImpl: (model: any, input?: any, opts?: any) => any = () => {
   throw new Error("streamImpl not set");
 };
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  ...actualCompat,
-  stream: (...args: any[]) => streamImpl(...args),
-}));
-
-const { summarizeBatch } = await import("./summarizer.js");
+const { summarizeBatch, summarizeRange } = await import("./summarizer.js");
 const { FallbackController } = await import("./summarizer-fallback.js");
 const { DEFAULT_CONFIG } = await import("./types.js");
 
-const PRIMARY = { id: "primary-model", provider: "provider-a", name: "Primary" };
-const SESSION = { id: "session-model", provider: "provider-b", name: "Session" };
+const PRIMARY = { id: "primary-model", provider: "provider-a", name: "Primary", api: "openai-responses" };
+const SESSION = { id: "session-model", provider: "provider-b", name: "Session", api: "openai-responses" };
+const VIRTUAL = { id: "auto", provider: "router", name: "Auto", api: "pi-virtual" };
 
 const USAGE = {
   input: 1,
@@ -67,6 +59,19 @@ function hangingStream(opts: any) {
   };
 }
 
+// Models a router that never settles and ignores cancellation.
+function deafStream() {
+  const never = new Promise<never>(() => {});
+  return {
+    async *[Symbol.asyncIterator]() {
+      await never;
+    },
+    async result() {
+      return never;
+    },
+  };
+}
+
 // Emits `events` thinking_delta events spaced `gapMs` apart, then completes
 // successfully — UNLESS `opts.signal` aborts mid-drip, in which case the
 // current sleep rejects, exactly like a real provider stream cancelling on
@@ -107,13 +112,19 @@ interface Note {
   level: string;
 }
 
-function makeCtx(notes: Note[], sessionModel: any = SESSION, primaryModel: any = PRIMARY) {
+function makeCtx(notes: Note[], sessionModel: any = SESSION, primaryModel: any = PRIMARY, authOk = true) {
+  const authCalls: any[] = [];
   return {
     model: sessionModel,
+    authCalls,
     modelRegistry: {
       find: () => primaryModel,
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
-      getProviderAuth: async () => undefined,
+      getApiKeyAndHeaders: async (model: any) => {
+        authCalls.push(model);
+        return authOk ? { ok: true, apiKey: "k", headers: {} } : { ok: false, error: "no key for provider-a" };
+      },
+      getProviderAuth: async () => ({ auth: { baseUrl: "https://seat.example" } }),
+      streamSimple: (model: any, input: any, opts: any) => streamImpl(model, input, opts),
     },
     ui: { notify: (msg: string, level: string) => notes.push({ msg, level }) },
   } as any;
@@ -131,6 +142,90 @@ function makeBatch() {
 }
 
 const distinctConfig = { ...DEFAULT_CONFIG, summarizerModel: "provider-a/primary-model" };
+
+describe("virtual models through the registry", () => {
+  for (const operation of ["batch", "range"] as const) {
+    const summarize = (config: any, ctx: any, options: any = {}) => operation === "batch"
+      ? summarizeBatch(makeBatch(), config, ctx, options)
+      : summarizeRange("- step one", config, ctx, options);
+
+    it(`${operation}: virtual session model rescues a transient primary`, async () => {
+      const seen: any[] = [];
+      streamImpl = (model) => {
+        seen.push(model);
+        return model === PRIMARY ? errStream("down") : okStream("- routed summary");
+      };
+      const notes: Note[] = [];
+      const controller = new FallbackController();
+      const result = await summarize(distinctConfig, makeCtx(notes, VIRTUAL), { controller });
+      expect(result?.summaryText).toBe("- routed summary");
+      expect(controller.inFallback).toBe(true);
+      expect(seen[1]).toBe(VIRTUAL);
+      expect(notes.filter(n => n.level === "warning")).toHaveLength(1);
+      expect(notes.filter(n => n.level === "error")).toHaveLength(0);
+    });
+
+    for (const selection of ["default", "router/auto"]) {
+      it(`${operation}: virtual ${selection} skips auth and sends only summarizer context`, async () => {
+        const calls: any[] = [];
+        streamImpl = (model, input, opts) => {
+          calls.push({ model, input, opts });
+          return okStream("- ok");
+        };
+        const notes: Note[] = [];
+        const ctx = makeCtx(notes, VIRTUAL, VIRTUAL);
+        const result = await summarize({ ...DEFAULT_CONFIG, summarizerModel: selection }, ctx);
+        expect(result?.summaryText).toBe("- ok");
+        expect(calls).toHaveLength(1);
+        expect(calls[0].model).toBe(VIRTUAL);
+        expect(ctx.authCalls).toHaveLength(0);
+        expect(Object.keys(calls[0].input)).toEqual(["messages"]);
+        expect(calls[0].input.messages).toHaveLength(1);
+        expect(calls[0].input.messages[0].role).toBe("user");
+        expect(calls[0].opts.apiKey).toBeUndefined();
+        expect(calls[0].opts.headers).toBeUndefined();
+        expect(notes).toHaveLength(0);
+      });
+    }
+  }
+
+  it("passes the physical model unchanged and pre-checks once", async () => {
+    const seen: any[] = [];
+    streamImpl = (model) => {
+      seen.push(model);
+      return okStream("- ok");
+    };
+    const ctx = makeCtx([]);
+    await summarizeBatch(makeBatch(), DEFAULT_CONFIG, ctx);
+    expect(seen[0]).toBe(SESSION);
+    expect(seen[0].baseUrl).toBeUndefined();
+    expect(ctx.authCalls).toEqual([SESSION]);
+  });
+
+  it("missing physical credentials never stream or trip the controller", async () => {
+    let called = 0;
+    streamImpl = () => { called++; return okStream("- never"); };
+    const notes: Note[] = [];
+    const controller = new FallbackController();
+    const result = await summarizeBatch(makeBatch(), distinctConfig, makeCtx(notes, SESSION, PRIMARY, false), { controller });
+    expect(result).toBeNull();
+    expect(called).toBe(0);
+    expect(controller.inFallback).toBe(false);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].level).toBe("error");
+    expect(notes[0].msg).toContain("no key for provider-a");
+  });
+
+  it("virtual stream failure returns null with the existing error notice", async () => {
+    streamImpl = () => errStream("router: no credentials for routed model");
+    const notes: Note[] = [];
+    const result = await summarizeBatch(makeBatch(), DEFAULT_CONFIG, makeCtx(notes, VIRTUAL));
+    expect(result).toBeNull();
+    expect(notes).toHaveLength(1);
+    expect(notes[0].level).toBe("error");
+    expect(notes[0].msg).toContain("router: no credentials for routed model");
+  });
+});
 
 describe("runSummarization wiring — same-model no-op (legacy path)", () => {
   it("summarizerModel=default: transient failure notifies error, returns null, controller untouched", async () => {
@@ -223,6 +318,33 @@ describe("runSummarization wiring — abort", () => {
 });
 
 describe("runSummarization wiring — timeouts", () => {
+  for (const [kind, idleMs, maxMs, message] of [
+    ["idle", 20, 0, /stalled/],
+    ["ceiling", 0, 20, /ceiling/],
+  ] as const) {
+    it(`stream that ignores the signal still times out (${kind})`, async () => {
+      streamImpl = () => deafStream();
+      const notes: Note[] = [];
+      const ctx = makeCtx(notes, VIRTUAL);
+      const cfg = { ...DEFAULT_CONFIG, summarizerModel: "default", summarizerIdleTimeoutMs: idleMs, summarizerMaxTimeoutMs: maxMs };
+      expect(await summarizeBatch(makeBatch(), cfg, ctx, {})).toBeNull();
+      expect(notes).toHaveLength(1);
+      expect(notes[0].level).toBe("warning");
+      expect(notes[0].msg).toMatch(message);
+    });
+  }
+
+  it("caller abort during a stream that ignores the signal throws, no warning", async () => {
+    streamImpl = () => deafStream();
+    const notes: Note[] = [];
+    const ctx = makeCtx(notes, VIRTUAL);
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 20);
+    const cfg = { ...DEFAULT_CONFIG, summarizerModel: "default", summarizerIdleTimeoutMs: 0, summarizerMaxTimeoutMs: 0 };
+    await expect(summarizeBatch(makeBatch(), cfg, ctx, { signal: ac.signal })).rejects.toThrow();
+    expect(notes).toHaveLength(0);
+  });
+
   it("idle timeout (default model): transient warning, returns null", async () => {
     streamImpl = (_m, _i, opts) => hangingStream(opts);
     const notes: Note[] = [];

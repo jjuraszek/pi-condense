@@ -1,8 +1,7 @@
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as actualCompat from "@earendil-works/pi-ai/compat";
 import { supersededStub } from "./supersede.js";
 
 // This must run before any module that transitively reads PI_CODING_AGENT_DIR
@@ -66,11 +65,6 @@ let streamImpl: (model: any, input?: any, opts?: any) => any = () => {
   summarizerCalls++;
   return okStream();
 };
-
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  ...actualCompat,
-  stream: (...args: any[]) => streamImpl(...args),
-}));
 
 type AppendedEntry = { type: string; data: unknown };
 
@@ -305,7 +299,7 @@ function bootExtension(
     modelRegistry: {
       find: () => undefined,
       getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test", headers: {} }),
-      getProviderAuth: async () => undefined,
+      streamSimple: (model: any, input: any, opts: any) => streamImpl(model, input, opts),
     },
     ui: {
       setStatus() {},

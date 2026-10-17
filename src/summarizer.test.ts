@@ -1,25 +1,21 @@
-import { describe, it, expect, mock } from "bun:test";
-import * as actualCompat from "@earendil-works/pi-ai/compat";
+import { describe, it, expect } from "bun:test";
 
 let seenInput: any;
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  ...actualCompat,
-  stream: (_model: any, input: any) => {
-    seenInput = input;
-    return {
-      async *[Symbol.asyncIterator]() {},
-      async result() {
-        return {
-          stopReason: "stop",
-          content: [{ type: "text", text: "- summary" }],
-          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-        };
-      },
-    };
-  },
-}));
+function captureStream(_model: any, input: any) {
+  seenInput = input;
+  return {
+    async *[Symbol.asyncIterator]() {},
+    async result() {
+      return {
+        stopReason: "stop",
+        content: [{ type: "text", text: "- summary" }],
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+    },
+  };
+}
 
-const { isUsableSummary, summarizeBatch } = await import("./summarizer.js");
+const { isUsableSummary, summarizeBatch, summarizerThinkingOptions } = await import("./summarizer.js");
 const { DEFAULT_CONFIG } = await import("./types.js");
 
 describe("isUsableSummary", () => {
@@ -37,6 +33,18 @@ describe("isUsableSummary", () => {
   });
 });
 
+describe("summarizerThinkingOptions", () => {
+  it("omits reasoning for default and off", () => {
+    expect(summarizerThinkingOptions({ ...DEFAULT_CONFIG, summarizerThinking: "default" })).toEqual({});
+    expect(summarizerThinkingOptions({ ...DEFAULT_CONFIG, summarizerThinking: "off" })).toEqual({});
+  });
+  it("forwards every other level as reasoning", () => {
+    for (const level of ["minimal", "low", "medium", "high", "xhigh"] as const) {
+      expect(summarizerThinkingOptions({ ...DEFAULT_CONFIG, summarizerThinking: level })).toEqual({ reasoning: level });
+    }
+  });
+});
+
 describe("summarizer prompt", () => {
   it("tells the model that an image marker is an image it cannot see", async () => {
     const model = { id: "m", provider: "p", name: "M" };
@@ -45,7 +53,7 @@ describe("summarizer prompt", () => {
       modelRegistry: {
         find: () => model,
         getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
-        getProviderAuth: async () => undefined,
+        streamSimple: captureStream,
       },
       ui: { notify() {} },
     } as any;
@@ -66,7 +74,7 @@ describe("summarizer prompt", () => {
       modelRegistry: {
         find: () => model,
         getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
-        getProviderAuth: async () => undefined,
+        streamSimple: captureStream,
       },
       ui: { notify() {} },
     } as any;

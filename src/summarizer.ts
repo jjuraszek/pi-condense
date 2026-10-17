@@ -1,5 +1,4 @@
-import { stream } from "@earendil-works/pi-ai/compat";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
   CapturedBatch,
@@ -32,17 +31,14 @@ const RANGE_SYSTEM_PROMPT = `You are fusing several per-step summaries of one CL
 - Keep any reference tokens like \`t12\` or \`b3\` intact.
 - Be concise: a short narrative or a few grouped bullets, not one bullet per step.`;
 
-export function summarizerThinkingOptions(config: ContextPruneConfig): Record<string, unknown> {
-  const level: SummarizerThinking = config.summarizerThinking;
-  if (level === "default") {
-    return {};
-  }
+// Pi does not export isVirtualModel.
+const VIRTUAL_MODEL_API = "pi-virtual";
 
-  // stream()/complete() accept provider-level options. For reasoning-capable providers,
-  // pi-ai adapters translate reasoningEffort into the provider-specific field.
-  // "off" intentionally sends no effort; adapters that support explicit disable
-  // handle that the same way as an absent effort, while preserving compatibility.
-  return { reasoningEffort: level === "off" ? undefined : level };
+/** "off" is not a ThinkingLevel; omitting the option is how pi-ai and Pi's own compaction express it. */
+export function summarizerThinkingOptions(config: ContextPruneConfig): { reasoning?: ThinkingLevel } {
+  const level: SummarizerThinking = config.summarizerThinking;
+  if (level === "default" || level === "off") return {};
+  return { reasoning: level };
 }
 
 /**
@@ -110,11 +106,23 @@ function combineSignals(...signals: (AbortSignal | undefined)[]): AbortSignal | 
   return AbortSignal.any(present); // Node 20+; host runtime is node 24.5.0
 }
 
+// Virtual routing can ignore the signal, so cancellation must end our wait
+// without depending on the underlying stream settling.
+function untilAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error("summarize: aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("summarize: aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /**
  * One summarization attempt against a specific model. Returns a classified
  * outcome instead of throwing (except aborts, which propagate so flushPending
- * can restore state). Auth failure is detected pre-stream and never reaches
- * the fallback path. `unusable` = empty or length-truncated. Everything else
+ * can restore state). Physical-model auth failure is detected pre-stream and never
+ * reaches the fallback path; virtual models skip the pre-check. `unusable` = empty or length-truncated. Everything else
  * that reaches the catch is `transient` (the outage bucket) — pi-ai surfaces
  * no structured status code on the throw, so classification is coarse by design.
  */
@@ -149,25 +157,21 @@ async function runOnce(
       : `summarizer ${modelLabel(model)} stalled (no output for ${Math.round(idleMs / 1000)}s)`;
 
   try {
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok) {
-      const authMessage = "error" in auth ? auth.error : "authentication failed";
-      return { kind: "auth", message: authMessage };
+    // Preserve auth classification for physical models without pre-checking
+    // a virtual model's provider instead of its routed physical target.
+    if (model.api !== VIRTUAL_MODEL_API) {
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok) {
+        const authMessage = "error" in auth ? auth.error : "authentication failed";
+        return { kind: "auth", message: authMessage };
+      }
     }
-
-    // Mirror the main loop (model-runtime stream): auth resolution can carry a
-    // seat-specific baseUrl (e.g. GitHub Copilot business/enterprise endpoints).
-    // The shipped model data pins the individual host, which 421s other seats,
-    // so the resolved auth baseUrl must win over the static model baseUrl.
-    const providerAuth = await ctx.modelRegistry.getProviderAuth(model.provider);
-    const effectiveModel = providerAuth?.auth.baseUrl
-      ? { ...model, baseUrl: providerAuth.auth.baseUrl }
-      : model;
 
     // Pass the combined signal so the underlying fetch is cancelled immediately
     // either when the user presses Esc, or when an idle/ceiling timeout fires.
-    const responseStream = stream(
-      effectiveModel,
+    const signal = combineSignals(options.signal, timeoutController.signal);
+    const responseStream = ctx.modelRegistry.streamSimple(
+      model,
       {
         messages: [
           {
@@ -178,9 +182,7 @@ async function runOnce(
         ],
       },
       {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        signal: combineSignals(options.signal, timeoutController.signal),
+        signal,
         ...summarizerThinkingOptions(config),
       }
     );
@@ -206,8 +208,12 @@ async function runOnce(
       }
     };
 
-    for await (const event of responseStream) {
-      // Reset idle on ANY event (text_* and thinking_*), not just text — a
+    const events = responseStream[Symbol.asyncIterator]();
+    while (true) {
+      const next = await untilAbort(events.next(), signal);
+      if (next.done) break;
+      const event = next.value;
+      // Reset idle on ANY event (text_* and thinking_*), not just text - a
       // reasoning-heavy model stays alive via thinking_delta and is never
       // false-aborted for being quiet on text while it reasons.
       bumpIdle();
@@ -222,7 +228,7 @@ async function runOnce(
     // flushPending can detect it and restore batches.
     if (options.signal?.aborted) throw new Error("summarize: aborted during stream");
 
-    const response = await responseStream.result();
+    const response = await untilAbort(responseStream.result(), signal);
     reportTextProgress(response);
     // stopReason "aborted" means the provider cut the stream short (e.g. signal
     // fired just before the final chunk). Treat identically to the signal check

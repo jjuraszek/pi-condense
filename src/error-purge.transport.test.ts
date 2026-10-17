@@ -35,6 +35,7 @@ const meta = { api: "openai-completions", provider: "openai", model: "grammar-te
 
 function history(codeArgs: Record<string, unknown>) {
   return [
+    { role: "system", content: "", toolsAdded: [codemode], timestamp: 0 },
     { role: "user", content: "run it", timestamp: 1 },
     { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "codemode", arguments: codeArgs }], ...meta, stopReason: "toolUse", timestamp: 2 },
     { role: "toolResult", toolCallId: "tc1", toolName: "codemode", content: [{ type: "text", text: "Error: boom" }], isError: true, timestamp: 3 },
@@ -60,7 +61,7 @@ describe("error purge x pi-ai grammar tools (#19)", () => {
 
   it("purged codemode args pass getGrammarToolInput (reporter repro)", () => {
     const purged = purgeErroredArgs(history({ code: "x".repeat(1000) }), config);
-    const args = purged[1].content[0].arguments;
+    const args = purged[2].content[0].arguments;
     expect(typeof args.code).toBe("string");
     expect(Object.keys(args)).toEqual(["code"]);
     expect(JSON.stringify(args).length).toBeLessThan(500);
@@ -69,7 +70,7 @@ describe("error purge x pi-ai grammar tools (#19)", () => {
 
   it("request building succeeds on purged history; failure is the connection, not the grammar", async () => {
     const purged = purgeErroredArgs(history({ code: "x".repeat(1000) }), config);
-    expect(purged[1].content[0].arguments.code).toMatch(/^<purged-errored-args size=/);
+    expect(purged[2].content[0].arguments.code).toMatch(/^<purged-errored-args size=/);
     const { result, calls } = await request(purged);
     expect(result.stopReason).toBe("error");
     // The OpenAI SDK wraps fetch rejections in APIConnectionError and drops the cause message.
@@ -80,7 +81,7 @@ describe("error purge x pi-ai grammar tools (#19)", () => {
 
   it("negative control: the old { _purged } shape throws the grammar error before any request", async () => {
     const legacy = history({ code: "x".repeat(1000) });
-    legacy[1].content[0].arguments = { _purged: '<purged-errored-args size="1012"/>' };
+    legacy[2].content[0].arguments = { _purged: '<purged-errored-args size="1012"/>' };
     const { result, calls } = await request(legacy);
     expect(result.stopReason).toBe("error");
     expect(result.errorMessage).toMatch(/Grammar tool call "codemode" requires argument "code" to be a string/);

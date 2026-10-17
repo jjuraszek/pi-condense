@@ -7,6 +7,18 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- Virtual (router-backed) models work as the summarizer - via `summarizerModel: "default"`, an explicit virtual `provider/id`, or as the outage-fallback session model. Summarizer calls now go through `ctx.modelRegistry.streamSimple()` instead of pi-ai's provider table, which had no `pi-virtual` entry and threw `No API provider registered for api: pi-virtual`. (#20)
+- A summarizer stream that ignores the abort signal (a virtual router whose `route()` never resolves) no longer wedges the flush: the idle and ceiling timers now end the wait themselves. (#20)
+
+### Changed
+
+- `summarizerThinking` applies on every provider; it was sent as an OpenAI-specific `reasoningEffort` option that Anthropic-style adapters ignored. `default` and `off` still send no reasoning option, which on Anthropic means `thinkingEnabled: false` as before. (#20)
+- Minimum supported host is pi 1.3.0; dev dependencies on `@earendil-works/pi-ai`, `pi-coding-agent`, and `pi-tui` move from `^0.83.0` to `^1.3.0`. (#20)
+
 ## [2.11.5] - 2026-10-08
 
 ### Changed
