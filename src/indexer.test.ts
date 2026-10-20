@@ -132,6 +132,28 @@ describe("occurrence keying", () => {
     expect(records.map((r) => r.resultTimestamp)).toEqual([1150, 9150]);
   });
 
+  test("isDedupAlias checks exact registered keys without resolving refs or sibling occurrences", () => {
+    const indexer = new ToolCallIndexer();
+    indexer.addBatch(batch(0, 1000, [{ id: "bash_23", ts: 1150, text: "SAME" }]), () => {});
+    indexer.addBatch(batch(1, 2000, [{ id: "bash_23", ts: 2150, text: "OTHER" }]), () => {});
+    indexer.registerSummaryRefs([{ shortId: "t1", toolCallId: "bash_23", resultTimestamp: 1150 }]);
+    indexer.registerDuplicate("bash_23@9150", "bash_23@1150", () => {});
+    indexer.registerDuplicate("bash_legacy", "bash_23@1150", () => {});
+
+    for (const [key, expected] of [
+      ["bash_23@9150", true],
+      ["bash_legacy", true],
+      ["bash_23@1150", false],
+      ["bash_23@2150", false],
+      ["bash_23", false],
+      ["bash_legacy@9150", false],
+      ["unknown", false],
+      ["t1", false],
+    ] as const) {
+      expect(indexer.isDedupAlias(key)).toBe(expected);
+    }
+  });
+
   test("summary body lookups are occurrence-keyed", () => {
     const indexer = new ToolCallIndexer();
     indexer.registerSummaryBody(["bash_23@1150"], "summary of FIRST");
@@ -302,6 +324,10 @@ describe("session rebuild", () => {
     expect(indexer.getRecord("bash_99@4150")?.resultText).toBe("FIRST");
     expect(indexer.getShortRefForToolCallId("bash_99@4150")).toBe("t1");
     expect(indexer.getPerBatchSummaryTextForToolCallIds(["bash_23@2150"])).toBe("summary text");
+    expect(indexer.isDedupAlias("bash_99@4150")).toBe(true);
+    expect(indexer.isDedupAlias("bash_99")).toBe(false);
+    expect(indexer.isDedupAlias("bash_23@1150")).toBe(false);
+    expect(indexer.isDedupAlias("t1")).toBe(false);
   });
 
   test("legacy entries without resultTimestamp keep bare-id keys", () => {
@@ -336,6 +362,8 @@ describe("session rebuild", () => {
     expect(indexer.hasLegacyBareRecord("bash_7")).toBe(true);
     expect(indexer.hasLegacyBareRecord("bash_23")).toBe(false);
     expect(indexer.isSummarized("bash_8")).toBe(true);
+    expect(indexer.isDedupAlias("bash_8")).toBe(true);
+    expect(indexer.isDedupAlias("bash_7")).toBe(false);
   });
 });
 

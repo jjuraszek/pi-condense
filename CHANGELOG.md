@@ -7,6 +7,16 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- Argument purge shrinks long string arguments of indexed, summarized calls in the same render that stubs their results; `context_tree_query` recovers the stored arguments and result. Dedup aliases keep their own arguments because only canonical arguments are indexed. The existing `purgeErrors` toggle and size gate cover both summarized and errored calls; cooldown remains error-only.
+
+### Fixed
+
+- Protected reads now supersede earlier reads of the same normalized path only when their delivered line ranges cover the earlier content. Disjoint chunks and tails outside a capped full read stay verbatim; identical capped reads still supersede the older copy. Supersession keeps its existing cache-rewrite cadence.
+
 ## [2.12.0] - 2026-10-17
 
 ### Fixed

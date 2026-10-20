@@ -12,6 +12,8 @@ import { pruneStatusText, setPruneStatusWidget, registerCommands } from "./comma
 import { settingsPath } from "./config.js";
 import type { ContextPruneConfig, ContextMetricsSnapshot, SummarizerStats } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
+import { Container, SettingsList } from "@earendil-works/pi-tui";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 
 const cfg = (enabled: boolean): ContextPruneConfig => ({ enabled } as ContextPruneConfig);
 const cfgVisible = (enabled: boolean): ContextPruneConfig =>
@@ -41,6 +43,7 @@ function setupPrunerCommand(overrides: {
   let handler: (args: string, ctx: any) => Promise<void>;
   const notifications: { message: string; type?: string }[] = [];
   const flushCalls: any[] = [];
+  let overlay: Container & { handleInput(data: string): void };
 
   const flushPending =
     overrides.flushPending ??
@@ -79,6 +82,9 @@ function setupPrunerCommand(overrides: {
         notifications.push({ message, type });
       },
       setStatus() {},
+      async custom(factory: (...args: any[]) => typeof overlay) {
+        overlay = factory(undefined, undefined, undefined, () => {});
+      },
     },
   };
 
@@ -87,8 +93,48 @@ function setupPrunerCommand(overrides: {
     notifications,
     flushCalls,
     currentConfig,
+    get overlay() { return overlay; },
   };
 }
+
+describe("/pruner settings argument purge", () => {
+  initTheme("dark");
+
+  it.each([
+    ["purgeErrorsEnabled", "Argument purge", "Shrink long strings in summarized calls when their results are stubbed in the same render, and in errored calls after the error cooldown, keeping argument shape."],
+    ["purgeErrorsCooldown", "Error purge cooldown (turns)", "Wait this many turns after a tool error before purging its argument body."],
+    ["purgeErrorsMinArgChars", "Argument purge min arg chars", "Only purge summarized or errored argument bodies at least this many chars."],
+  ])("describes %s through the settings overlay", async (id, label, description) => {
+    const harness = setupPrunerCommand({ save: async () => {} });
+    await harness.run("settings");
+    const list = harness.overlay.children.find((child) => child instanceof SettingsList) as SettingsList;
+    list.selectItem(id);
+
+    const rendered = harness.overlay.render(400).join("\n");
+    expect(rendered).toContain(label);
+    expect(rendered).toContain(description);
+    if (id === "purgeErrorsCooldown") expect(rendered).not.toContain("same render");
+  });
+
+  it("persists the shared disabled toggle and minimum using only existing purgeErrors fields", async () => {
+    const saved: ContextPruneConfig[] = [];
+    const harness = setupPrunerCommand({ save: async (config) => { saved.push(structuredClone(config)); } });
+    const initial = structuredClone(harness.currentConfig.value);
+    await harness.run("settings");
+    const list = harness.overlay.children.find((child) => child instanceof SettingsList) as SettingsList;
+
+    list.selectItem("purgeErrorsEnabled");
+    harness.overlay.handleInput(" ");
+    list.selectItem("purgeErrorsMinArgChars");
+    harness.overlay.handleInput(" ");
+
+    expect(saved).toEqual([
+      { ...initial, purgeErrors: { ...initial.purgeErrors, enabled: false } },
+      { ...initial, purgeErrors: { ...initial.purgeErrors, enabled: false, minArgChars: 1000 } },
+    ]);
+    expect(harness.currentConfig.value).toEqual(saved[1]);
+  });
+});
 
 describe("/pruner now (empty capture)", () => {
   it("invokes flushPending even when nothing is pending, so a flush-metrics entry is recorded", async () => {

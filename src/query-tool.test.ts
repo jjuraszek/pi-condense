@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { pruneWithZeroSweepAssertion, expectNoOrphanToolResults } from "./test-support.js";
 import { registerQueryTool } from "./query-tool.js";
 import { imageDigest } from "./batch-capture.js";
 import { ToolCallIndexer } from "./indexer.js";
@@ -91,6 +92,33 @@ describe("context_tree_query image recovery", () => {
 });
 
 describe("context_tree_query occurrence handling", () => {
+  test("alias ref recovers unclipped canonical arguments after rendering, not alias arguments", async () => {
+    const idx = new ToolCallIndexer();
+    const prompt = "canonical".repeat(80);
+    const aliasPrompt = "alias".repeat(120);
+    idx.addBatch({ turnIndex: 0, timestamp: 0, assistantText: "", toolCalls: [{ toolCallId: "canonical", toolName: "subagent", args: { prompt }, resultText: "shared original output", isError: false, resultTimestamp: 10 }] }, () => {});
+    idx.registerSummaryRefs([{ shortId: "t6", toolCallId: "canonical", resultTimestamp: 10 }]);
+    idx.registerDuplicate("alias@20", "canonical@10", () => {});
+    const raw = [
+      { role: "assistant", content: [{ type: "toolCall", id: "canonical", name: "subagent", arguments: { prompt } }] },
+      { role: "toolResult", toolCallId: "canonical", toolName: "subagent", timestamp: 10, content: [{ type: "text", text: "shared original output" }] },
+      { role: "assistant", content: [{ type: "toolCall", id: "alias", name: "subagent", arguments: { prompt: aliasPrompt } }] },
+      { role: "toolResult", toolCallId: "alias", toolName: "subagent", timestamp: 20, content: [{ type: "text", text: "shared original output" }] },
+    ];
+    expectNoOrphanToolResults(raw);
+    const out = pruneWithZeroSweepAssertion(raw, idx, undefined, { enabled: true, minArgChars: 300, cooldownTurns: 2 }).messages;
+    expectNoOrphanToolResults(out);
+    expect(out[0].content[0].arguments.prompt).toBe(`<purged-args size="${prompt.length}" ref="t6"/>`);
+    expect(out[2].content[0].arguments.prompt).toBe(aliasPrompt);
+    const aliasRef = idx.getShortRefForToolCallId("alias@20");
+    expect(aliasRef).toBe("t6");
+    expect(idx.getRecordsForId(aliasRef!)[0].args).toEqual({ prompt });
+    const text = await runTool(idx, [aliasRef!]);
+    expect(text).toContain(`Args: ${JSON.stringify({ prompt }, null, 2)}`);
+    expect(text).toContain("shared original output");
+    expect(text).not.toContain(aliasPrompt);
+    expect(text).not.toContain("<purged-args");
+  });
   test("a bare id with two occurrences returns both blocks, chronologically", async () => {
     const idx = new ToolCallIndexer();
     capture(idx, "bash_23", 2150, "SECOND", 1);

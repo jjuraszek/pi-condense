@@ -1,17 +1,21 @@
+import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { ErrorPurgeConfig } from "./types.js";
 
-// Keep short paths and commands readable while reclaiming large failed-call bodies.
+// Keep short paths and commands readable while reclaiming large completed-call bodies.
 const PURGE_STRING_MIN_CHARS = 200;
 
-function shrinkStrings(value: unknown): [unknown, boolean] {
+function shrinkStrings(
+  value: unknown,
+  marker: (size: number) => string = (size) => `<purged-errored-args size="${size}"/>`,
+): [unknown, boolean] {
   if (typeof value === "string") {
-    if (value.length > PURGE_STRING_MIN_CHARS) return [`<purged-errored-args size="${value.length}"/>`, true];
+    if (value.length > PURGE_STRING_MIN_CHARS) return [marker(value.length), true];
     return [value, false];
   }
   if (Array.isArray(value)) {
     let out: unknown[] | undefined;
     for (let i = 0; i < value.length; i++) {
-      const [next, changed] = shrinkStrings(value[i]);
+      const [next, changed] = shrinkStrings(value[i], marker);
       if (!changed) continue;
       out ??= value.slice();
       out[i] = next;
@@ -22,7 +26,7 @@ function shrinkStrings(value: unknown): [unknown, boolean] {
     const object = value as Record<string, unknown>;
     let out: Record<string, unknown> | undefined;
     for (const key of Object.keys(object)) {
-      const [next, changed] = shrinkStrings(object[key]);
+      const [next, changed] = shrinkStrings(object[key], marker);
       if (!changed) continue;
       // Spread creates own data properties, including JSON's possible __proto__ key.
       out ??= { ...object };
@@ -34,65 +38,64 @@ function shrinkStrings(value: unknown): [unknown, boolean] {
 }
 
 /**
- * Shrinks long strings in failed toolCall arguments after the cooldown window.
- * Keys and JSON types must survive because pi-ai validates grammar-tool input
- * properties when replaying calls.
- *
- * Why only the arguments, not the whole toolCall or its toolResult:
- *   - The toolResult content (e.g. "Error: file not found") is small and carries
- *     the failure signal the model needs to understand what went wrong.
- *   - The toolCall block itself must remain so the provider can pair it with its
- *     result and avoid injecting a synthetic "No result provided" error.
- *   - The arguments body is what grows large — failed `write` / `edit` calls
- *     embed the full file content that will never be acted on again.
- *
- * Why the cooldown:
- *   - Gives the model 1–2 turns to retry before context is mutated. Purging
- *     immediately would remove the call detail before the model has had a
- *     chance to see the error and adapt.
- *
- * Turn index is computed internally by counting AssistantMessages in the input.
- * This avoids threading a turn counter through index.ts.
+ * Shrinks summarized arguments immediately and errored arguments after cooldown.
+ * Keys and JSON types survive pi-ai grammar validation during replay.
  */
-export function purgeErroredArgs(messages: any[], config: ErrorPurgeConfig): any[] {
-  // Pass 1: collect errored toolCallIds → the turn index at which the error occurred.
-  // Turn index = number of AssistantMessages seen up to and including the one that
-  // issued the tool call (ToolResultMessages follow immediately after).
-  const erroredAtTurn = new Map<string, number>();
+export function purgeErroredArgs(
+  messages: any[],
+  config: ErrorPurgeConfig,
+  summarizedRefs: ReadonlyMap<string, string> = new Map(),
+): any[] {
+  if (!config.enabled) return messages;
+
+  const targets = new Map<number, Map<string, { turn: number; ref?: string }>>();
+  const open = new Map<string, { assistantIndex: number; turn: number }>();
   let turnCount = 0;
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.role === "assistant") {
-      // Count each assistant turn; toolResults referencing the turn come next.
       turnCount++;
-    } else if (msg.role === "toolResult" && msg.isError === true) {
-      // Record the turn this errored call belongs to for cooldown comparison.
-      erroredAtTurn.set(msg.toolCallId, turnCount);
+      open.clear();
+      for (const block of msg.content) {
+        if (block.type === "toolCall") open.set(block.id, { assistantIndex: i, turn: turnCount });
+      }
+    } else if (msg.role === "toolResult") {
+      const paired = open.get(msg.toolCallId);
+      if (!paired) continue;
+      open.delete(msg.toolCallId);
+      const ref = summarizedRefs.get(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)));
+      if (ref === undefined && msg.isError !== true) continue;
+      let blocks = targets.get(paired.assistantIndex);
+      if (!blocks) targets.set(paired.assistantIndex, blocks = new Map());
+      blocks.set(msg.toolCallId, { turn: paired.turn, ref });
+    } else {
+      open.clear();
     }
   }
 
-  if (erroredAtTurn.size === 0) return messages;
-
-  const currentTurnIndex = turnCount;
+  if (targets.size === 0) return messages;
 
   // Pass 2: rewrite AssistantMessages whose toolCall args should be purged.
   let anyModified = false;
-  const result = messages.map((msg) => {
-    if (msg.role !== "assistant") return msg;
+  const result = messages.map((msg, assistantIndex) => {
+    const targetsForTurn = targets.get(assistantIndex);
+    if (!targetsForTurn) return msg;
 
     let contentModified = false;
     const newContent = (msg.content as any[]).map((block) => {
       if (block.type !== "toolCall") return block;
 
-      const errorTurn = erroredAtTurn.get(block.id);
-      if (errorTurn === undefined) return block;
-
-      const age = currentTurnIndex - errorTurn;
-      if (age < config.cooldownTurns) return block;
+      const target = targetsForTurn.get(block.id);
+      if (!target) return block;
+      if (target.ref === undefined && turnCount - target.turn < config.cooldownTurns) return block;
 
       const argBody = JSON.stringify(block.arguments);
       if (argBody.length < config.minArgChars) return block;
 
-      const [shrunk, changed] = shrinkStrings(block.arguments);
+      const [shrunk, changed] = shrinkStrings(
+        block.arguments,
+        target.ref === undefined ? undefined : (size) => `<purged-args size="${size}" ref="${target.ref}"/>`,
+      );
       if (!changed) return block;
 
       contentModified = true;

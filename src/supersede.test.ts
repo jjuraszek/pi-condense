@@ -7,9 +7,9 @@ import {
   findSuperseded,
   lowerFloor,
   supersededStub,
-  type SupersedeState,
 } from "./supersede.js";
 import { isProtected } from "./protected.js";
+import { expectNoOrphanToolResults } from "./test-support.js";
 import { occKey } from "./occurrence-key.js";
 
 const cfg = { protectedTools: ["phase_tracker"], protectedPaths: ["**/skills/**/*.md"] };
@@ -42,9 +42,15 @@ describe("findSuperseded", () => {
     expect(findSuperseded(msgs, prot).map((c) => c.toolCallId)).toEqual(["a", "b"]);
   });
 
-  test("different offset/limit slices of one path -> older is a candidate", () => {
+  test("different offset/limit slices of one path -> neither is a candidate", () => {
     const msgs = [...call("a", 10, { path: SKILL, offset: 1, limit: 400 }), ...call("b", 20, { path: SKILL, offset: 400, limit: 50 })];
-    expect(findSuperseded(msgs, prot).map((c) => c.toolCallId)).toEqual(["a"]);
+    expectNoOrphanToolResults(msgs);
+    expect(findSuperseded(msgs, prot)).toEqual([]);
+    const state = createSupersedeState();
+    state.floor = 0;
+    const out = applySupersede(msgs, state, prot);
+    expect(out).toBe(msgs);
+    expectNoOrphanToolResults(out);
   });
 
   test("two paths interleaved -> per-path winners and candidates", () => {
@@ -150,6 +156,70 @@ describe("findSuperseded", () => {
       const returned = new Set(findSuperseded(msgs, prot).map((c) => c.toolCallId));
       for (const id of lastId.values()) expect(returned.has(id)).toBe(false);
     }
+  });
+});
+
+type RangeRead = { offset?: unknown; limit?: unknown; cap?: string; text?: string; path?: string };
+const oversizedLine = `[Line 1 is 61.2KB, exceeds 50.0KB limit. Use bash: sed -n '1p' ${SKILL} | head -c 51200]`;
+const cap1800 = "[Showing lines 1-1800 of 3000 (50.0KB limit). Use offset=1801 to continue.]";
+const cap2000 = "[Showing lines 1-2000 of 3000. Use offset=2001 to continue.]";
+
+describe("delivered range coverage", () => {
+  const cases: [string, RangeRead[], string[]][] = [
+    ["full/full", [{}, {}], ["r0"]],
+    ["tail then oversized-first-line warning", [{ offset: 2001 }, { text: oversizedLine }], []],
+    ["oversized-first-line warning then full", [{ text: oversizedLine }, {}], ["r0"]],
+    ["disjoint chunks", [{ limit: 2000 }, { offset: 2001 }], []],
+    ["chunk then capped full", [{ limit: 2000 }, { cap: cap2000 }], ["r0"]],
+    ["tail then capped full", [{ offset: 2001, limit: 1000 }, { cap: cap2000 }], []],
+    ["full then chunk", [{}, { limit: 50 }], []],
+    ["chunk1/chunk2/chunk1", [{ limit: 2000 }, { offset: 2001 }, { limit: 2000 }], ["r0"]],
+    ["equal capped full reads", [{ cap: cap2000 }, { cap: cap2000 }], ["r0"]],
+    ["byte-capped limit then capped full", [{ limit: 2500, cap: cap1800 }, { cap: cap2000 }], ["r0"]],
+    ["capped full then byte-capped limit", [{ cap: cap2000 }, { limit: 2500, cap: cap1800 }], []],
+    ["zero offset", [{ offset: 0, limit: 100 }, {}], ["r0"]],
+    ["null offset full then chunk", [{ offset: null }, { limit: 50 }], []],
+    ["null offset limited", [{ limit: 50 }, { offset: null, limit: 50 }], ["r0"]],
+    ["negative offset", [{ offset: -10, limit: 50 }, { limit: 50 }], ["r0"]],
+    ["null limit is open", [{ limit: null }, { limit: 50 }], []],
+    ["string values are open", [{ offset: "2001", limit: "50" }, { limit: 50 }], []],
+    ["later string values cover full", [{}, { offset: "2001", limit: "50" }], ["r0"]],
+    ["later null limit covers full", [{}, { limit: null }], ["r0"]],
+    ["zero limit covers nothing", [{ limit: 50 }, { limit: 0 }], []],
+    ["negative limit covers nothing", [{ limit: 50 }, { limit: -1 }], []],
+    ["empty cannot cover empty", [{ limit: 0 }, { limit: -1 }], []],
+    ["nonempty covers empty", [{ offset: 2001, limit: 0 }, { limit: 50 }], ["r0"]],
+    ["partial overlap", [{ offset: 10, limit: 50 }, { offset: 20, limit: 50 }], []],
+    ["equal end with earlier start", [{ offset: 10, limit: 41 }, { limit: 50 }], ["r0"]],
+    ["different paths", [{ limit: 50 }, { path: OTHER }], []],
+    ["intermediate covering read", [{ limit: 50 }, { limit: 100 }, { offset: 2001 }], ["r0"]],
+    ["offset byte cap", [{ offset: 1001, limit: 2500, cap: "[Showing lines 1001-2800 of 4000 (50.0KB limit). Use offset=2801 to continue.]" }, { offset: 1001, limit: 1800 }], ["r0"]],
+    ["ordinary continuation keeps limit", [{ limit: 50, cap: "[2950 more lines in file. Use offset=51 to continue.]" }, { limit: 50 }], ["r0"]],
+    ["nonterminal notice is body text", [{ cap: cap2000 + "\nmore body" }, { limit: 2000 }], []],
+  ];
+
+  test.each(cases)("%s", (_name, reads, expected) => {
+    const msgs = reads.flatMap(({ cap, text, ...args }, i) => {
+      const pair = call(`r${i}`, i * 10, { path: SKILL, ...args });
+      if (text) pair[1].content[0].text = text;
+      if (cap) pair[1].content[0].text += `\n\n${cap}`;
+      return pair;
+    });
+    expectNoOrphanToolResults(msgs);
+    expect(findSuperseded(msgs, prot).map((c) => c.toolCallId)).toEqual(expected);
+    const state = createSupersedeState();
+    expect(applySupersede(msgs, state, prot)).toBe(msgs);
+    state.floor = 0;
+    const out = applySupersede(msgs, state, prot);
+    expectNoOrphanToolResults(out);
+    if (expected.length === 0) expect(out).toBe(msgs);
+    for (let i = 0; i < reads.length; i++) {
+      if (expected.includes(`r${i}`)) expect(out[i * 2 + 1].content[0].text).toBe(supersededStub(SKILL));
+      else expect(out[i * 2 + 1]).toBe(msgs[i * 2 + 1]);
+    }
+    const sticky = applySupersede(msgs, state, prot);
+    expect(sticky).toEqual(out);
+    expectNoOrphanToolResults(sticky);
   });
 });
 

@@ -183,6 +183,10 @@ export class ToolCallIndexer {
     return this.index.has(occurrenceKey) || this.dedupAliasToOriginal.has(occurrenceKey);
   }
 
+  isDedupAlias(key: string): boolean {
+    return this.dedupAliasToOriginal.has(key);
+  }
+
   /**
    * Returns the full runtime index map.
    */

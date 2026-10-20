@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { purgeErroredArgs } from "./error-purge.js";
+import { occKey } from "./occurrence-key.js";
+import { expectNoOrphanToolResults } from "./test-support.js";
 import type { ErrorPurgeConfig } from "./types.js";
 
 const defaultConfig: ErrorPurgeConfig = {
@@ -11,7 +13,7 @@ const defaultConfig: ErrorPurgeConfig = {
 const LONG = "x".repeat(300);
 const PLACEHOLDER_RE = /^<purged-errored-args size="\d+"\/>$/;
 
-function makeAssistant(toolCallId: string, argsObj: Record<string, any>, turnN?: number) {
+function makeAssistant(toolCallId: string, argsObj: any, turnN?: number) {
   return {
     role: "assistant",
     content: [
@@ -269,5 +271,93 @@ describe("purgeErroredArgs", () => {
     const snapshot = structuredClone(original);
     purgedAfterCooldown(original, "edit", 10);
     expect(original).toEqual(snapshot);
+  });
+});
+
+describe("positional argument purge", () => {
+  const marker = '<purged-args size="600" ref="t6"/>';
+  const body = "x".repeat(600);
+
+  it.each([
+    ["below body threshold", { code: body }, 612, false],
+    ["at body threshold", { code: body }, 611, true],
+    ["200-char string", { code: "x".repeat(200) }, 10, false],
+    ["201-char string", { code: "x".repeat(201) }, 10, true],
+    ["only short strings", { code: Array(20).fill("x".repeat(100)) }, 500, false],
+    ["top-level string", body, 10, true],
+  ])("summarized gates: %s", (_, args, minArgChars, changed) => {
+    const messages = [makeAssistant("tc1", args), makeToolResult("tc1", false)];
+    expectNoOrphanToolResults(messages);
+    const refs = new Map([[occKey("tc1", 2), "t6"]]);
+    const result = purgeErroredArgs(messages, { ...defaultConfig, cooldownTurns: 99, minArgChars }, refs);
+    expectNoOrphanToolResults(result);
+    if (changed) {
+      expect(result).not.toBe(messages);
+      expect((result[0] as any).content[0].arguments).toEqual(
+        typeof args === "string" ? marker : { code: `<purged-args size="${args.code.length}" ref="t6"/>` },
+      );
+    } else expect(result).toBe(messages);
+    expect(purgeErroredArgs(result, { ...defaultConfig, minArgChars }, refs)).toBe(result);
+  });
+
+  it("keeps nested shapes, grammar keys, and own prototype keys without mutation", () => {
+    const args = { code: body, nested: [[body, true, null, 42, "short"]], ...JSON.parse(`{"__proto__":"${body}"}`) };
+    const snapshot = structuredClone(args);
+    const messages = [makeAssistant("tc1", args), makeToolResult("tc1", false)];
+    expectNoOrphanToolResults(messages);
+    const result = purgeErroredArgs(messages, defaultConfig, new Map([[occKey("tc1", 2), "t6"]]));
+    expectNoOrphanToolResults(result);
+    const shrunk = (result[0] as any).content[0].arguments;
+    expect(Object.keys(shrunk)).toEqual(Object.keys(args));
+    expect(shrunk).toEqual({ code: marker, nested: [[marker, true, null, 42, "short"]], ...JSON.parse(`{"__proto__":${JSON.stringify(marker)}}`) });
+    expect(args).toEqual(snapshot);
+    expect(result[1]).toBe(messages[1]);
+  });
+
+  it.each([false, true])("disabled leaves summarized and error sources intact (error=%s)", (isError) => {
+    const messages = [makeAssistant("tc1", { code: body }), makeToolResult("tc1", isError)];
+    expectNoOrphanToolResults(messages);
+    expect(purgeErroredArgs(messages, { ...defaultConfig, enabled: false, cooldownTurns: 0 }, new Map([[occKey("tc1", 2), "t6"]]))).toBe(messages);
+  });
+
+  it("prefers the summarized marker even when the paired result is errored", () => {
+    const messages = [makeAssistant("tc1", { code: body }), makeToolResult("tc1", true)];
+    expectNoOrphanToolResults(messages);
+    const result = purgeErroredArgs(messages, { ...defaultConfig, cooldownTurns: 0 }, new Map([[occKey("tc1", 2), "t6"]]));
+    expectNoOrphanToolResults(result);
+    expect((result[0] as any).content[0].arguments.code).toBe(marker);
+  });
+
+  it.each([
+    ["timestamped summarized", "summarized", true, "paired"],
+    ["timestamp-less summarized", "summarized", false, "paired"],
+    ["error only", "error", true, "paired"],
+    ["summarized after aborted call", "summarized", true, "aborted"],
+    ["timestamp-less after aborted call", "summarized", false, "aborted"],
+    ["error after aborted call", "error", true, "aborted"],
+    ["summarized after user barrier", "summarized", true, "barrier"],
+    ["timestamp-less after user barrier", "summarized", false, "barrier"],
+    ["error after user barrier", "error", true, "barrier"],
+  ])("isolates reused ids: %s", (_, source, timestamped, earlier) => {
+    const first = makeAssistant("reused", { code: body });
+    const lastResult: any = { ...makeToolResult("reused", source === "error"), timestamp: 4 };
+    if (!timestamped) delete lastResult.timestamp;
+    const messages: any[] = [first];
+    if (earlier === "paired") {
+      // A timestamp-less sibling must not resolve the later timestamped key (or vice versa).
+      const sibling: any = makeToolResult("reused", false);
+      if (timestamped) delete sibling.timestamp;
+      messages.push(sibling);
+    }
+    if (earlier === "barrier") messages.push({ role: "user", content: "continue" });
+    messages.push(makeAssistant("reused", { code: body }, 3), lastResult);
+    expectNoOrphanToolResults(messages);
+    const refs = source === "summarized" ? new Map([[occKey("reused", timestamped ? 4 : undefined), "t6"]]) : new Map<string, string>();
+    const result = purgeErroredArgs(messages, { ...defaultConfig, cooldownTurns: 0 }, refs);
+    expectNoOrphanToolResults(result);
+    expect(result[0]).toBe(first);
+    expect((result[result.length - 2] as any).content[0].arguments.code).toBe(
+      source === "summarized" ? marker : '<purged-errored-args size="600"/>',
+    );
   });
 });

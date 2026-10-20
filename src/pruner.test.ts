@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { pruneMessages, sizeMessages } from "./pruner.js";
+import { purgeErroredArgs } from "./error-purge.js";
 import { charsOf } from "./context-metrics.js";
 import { ToolCallIndexer } from "./indexer.js";
 import { CUSTOM_TYPE_INDEX } from "./types.js";
@@ -33,6 +34,7 @@ function makeMockIndexer({
 } = {}) {
   return {
     isSummarized: (id: string) => summarized.has(id),
+    isDedupAlias: (_key: string) => false,
     hasLegacyBareRecord: (id: string) => summarized.has(id),
     getShortRefForToolCallId: (id: string) => shortRefs.get(id),
     getRecord: (id: string) => records.get(id),
@@ -46,6 +48,116 @@ function makeMockIndexer({
     },
   } as any;
 }
+
+describe("summarized argument handoff", () => {
+  const prompt = "p".repeat(600);
+  const config = { enabled: true, minArgChars: 300, cooldownTurns: 2 };
+  const history = (name = "subagent"): any[] => [
+    { role: "assistant", content: [{ type: "toolCall", id: "call", name, arguments: { prompt } }] },
+    { role: "toolResult", toolCallId: "call", toolName: name, timestamp: 10, content: [{ type: "text", text: "original output" }], isError: false },
+  ];
+  const render = (messages: any[], indexer: any, options = config, protection?: any, grace = 0) => {
+    expectNoOrphanToolResults(messages);
+    const result = pruneWithZeroSweepAssertion(messages, indexer, undefined, options, protection, grace);
+    expectNoOrphanToolResults(result.messages);
+    return result.messages;
+  };
+  const indexed = (key = "call@10", record?: any) => makeMockIndexer({
+    summarized: new Set([key]), shortRefs: new Map([[key, "t6"]]),
+    records: new Map([[key, record]]),
+  });
+
+  for (const row of [
+    { label: "summary", record: undefined },
+    { label: "spill", record: { spillPath: "/tmp/output", toolName: "subagent" } },
+    { label: "legacy fallback", key: "call" },
+    { label: "timestamp-less", key: "call" },
+  ]) {
+    it(`stubs and shrinks together: ${row.label}`, () => {
+      const raw = history();
+      if (row.label === "timestamp-less") delete raw[1].timestamp;
+      const out = render(raw, indexed(row.key, row.record));
+      expect(out[1].content[0].text).toContain("`t6`");
+      expect(out[0].content[0].arguments.prompt).toBe(`<purged-args size="${prompt.length}" ref="t6"/>`);
+      expect(raw[0].content[0].arguments.prompt).toBe(prompt);
+      expect(purgeErroredArgs(out, config, new Map([[row.label === "timestamp-less" ? "call" : "call@10", "t6"]]))).toBe(out);
+    });
+  }
+
+  for (const row of [
+    { label: "disabled", options: { ...config, enabled: false } },
+    { label: "body below gate", options: { ...config, minArgChars: 1000 } },
+    { label: "no long strings", args: { a: "a".repeat(180), b: "b".repeat(180) } },
+    { label: "unindexed", unindexed: true },
+    { label: "protected", record: { toolName: "read", args: { path: "keep.md" } }, protection: { protectedTools: [], protectedPaths: ["keep.md"] } },
+  ]) {
+    it(`retains arguments: ${row.label}`, () => {
+      const raw = history();
+      if (row.args) raw[0].content[0].arguments = row.args;
+      const out = render(raw, row.unindexed ? makeMockIndexer() : indexed(undefined, row.record), row.options, row.protection);
+      expect(out[0]).toBe(raw[0]);
+      expect(out[1] === raw[1]).toBe(!!row.unindexed || !!row.protection);
+    });
+  }
+
+  it("pairs timestamp-less handoff positionally without shrinking a reused-id sibling", () => {
+    const indexer = indexed("call");
+    indexer.hasLegacyBareRecord = () => false;
+    const raw = [...history(), { role: "user", content: "next" }, ...history()];
+    delete raw[4].timestamp;
+    const out = render(raw, indexer);
+    expect(out[0]).toBe(raw[0]);
+    expect(out[1]).toBe(raw[1]);
+    expect(out[3].content[0].arguments.prompt).toBe('<purged-args size="600" ref="t6"/>');
+    expect(out[4].content[0].text).toContain("`t6`");
+  });
+
+  it("uses the same raw-id fallback ref in the stub and argument marker", () => {
+    const out = render(history(), makeMockIndexer({ summarized: new Set(["call@10"]) }));
+    expect(out[1].content[0].text).toContain("`call`");
+    expect(out[0].content[0].arguments.prompt).toBe('<purged-args size="600" ref="call"/>');
+  });
+
+  it("advances recovery grace with stub and shrink at the same boundary", () => {
+    const raw = history("context_tree_query");
+    const indexer = indexed();
+    expect(render(raw, indexer, config, undefined, 1)).toBe(raw);
+    raw.push({ role: "user", content: "next" }, { role: "assistant", content: [] }, { role: "user", content: "again" });
+    const out = render(raw, indexer, config, undefined, 1);
+    expect(out[1].content[0].text).toContain("`t6`");
+    expect(out[0].content[0].arguments.prompt).toBe(`<purged-args size="600" ref="t6"/>`);
+  });
+
+  it("switches aged error markers on indexing and keeps fresh-render prefixes stable", () => {
+    const raw = history();
+    raw[1].isError = true;
+    raw.push({ role: "assistant", content: [] }, { role: "user", content: "next" }, { role: "assistant", content: [] });
+    const before = render(structuredClone(raw), makeMockIndexer());
+    expect(before[0].content[0].arguments.prompt).toBe('<purged-errored-args size="600"/>');
+    const indexer = indexed();
+    const first = render(structuredClone(raw), indexer);
+    expect(first[0].content[0].arguments.prompt).toBe('<purged-args size="600" ref="t6"/>');
+    expect(first[1].isError).toBe(false);
+    expect(JSON.stringify(render(structuredClone(raw), indexer))).toBe(JSON.stringify(first));
+    const extended = [...structuredClone(raw), { role: "user", content: "continue" }, { role: "assistant", content: [] }];
+    expect(JSON.stringify(render(extended, indexer).slice(0, raw.length))).toBe(JSON.stringify(first));
+  });
+
+  it("keeps dedup alias prompts while shrinking the recoverable canonical prompt", () => {
+    const indexer = new ToolCallIndexer();
+    const raw = history();
+    indexer.addBatch({ turnIndex: 0, timestamp: 0, assistantText: "", toolCalls: [{ toolCallId: "call", toolName: "subagent", args: raw[0].content[0].arguments, resultText: "original output", isError: false, resultTimestamp: 10 }] }, () => {});
+    indexer.registerSummaryRefs([{ shortId: "t6", toolCallId: "call", resultTimestamp: 10 }]);
+    indexer.registerDuplicate("alias@20", "call@10", () => {});
+    raw.push({ role: "assistant", content: [{ type: "toolCall", id: "alias", name: "subagent", arguments: { prompt: "alias".repeat(120) } }] }, { ...raw[1], toolCallId: "alias", timestamp: 20 });
+    const out = render(raw, indexer);
+    expect(out[0].content[0].arguments.prompt).toBe('<purged-args size="600" ref="t6"/>');
+    expect(out[2]).toBe(raw[2]);
+    expect(out[1].content[0].text).toContain("`t6`");
+    expect(out[3].content[0].text).toContain("`t6`");
+    expect(indexer.getRecord("call@10")?.args).toEqual({ prompt });
+  });
+});
 
 const enabledCC: ChainCompressionConfig = {
   enabled: true,

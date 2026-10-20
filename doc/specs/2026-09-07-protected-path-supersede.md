@@ -1,5 +1,7 @@
 # Protected-path supersession: only the newest read of a protected path stays verbatim
 
+> **Partially superseded by:** [Multi-stage context retention](./2026-10-20-multi-stage-context-retention.md#change-2-range-aware-supersession) replaces decision (a), "identity is `args.path`; offset/limit ignored", with normalized-path identity plus delivered-range containment: a later read supersedes an earlier one only when the lines it actually delivered cover the earlier read's delivered lines. Cap footers bound both ranges; an unread tail stays verbatim. The stub text, floor cadence, and activation stickiness remain in force. The historical body below records the original decision.
+
 Date: 2026-09-07
 Status: approved for planning
 Predecessor: [`doc/specs/2026-06-11-protected-paths.md`](./2026-06-11-protected-paths.md) - partially superseded (the "stays verbatim in context forever" edge case)

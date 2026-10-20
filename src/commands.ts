@@ -672,10 +672,10 @@ export function registerCommands(
             },
             {
               id: "purgeErrorsEnabled",
-              label: "Error purge",
+              label: "Argument purge",
               values: ["true", "false"],
               currentValue: String(config.purgeErrors.enabled),
-              description: `Shrink long strings inside failed toolCall arguments after a cooldown, keeping argument shape. Reclaims context from large write/edit args that will never succeed. Currently ${config.purgeErrors.enabled ? "ON" : "OFF"}.`,
+              description: `Shrink long strings in summarized calls when their results are stubbed in the same render, and in errored calls after the error cooldown, keeping argument shape. Currently ${config.purgeErrors.enabled ? "ON" : "OFF"}.`,
             },
             {
               id: "purgeErrorsCooldown",
@@ -688,12 +688,12 @@ export function registerCommands(
             },
             {
               id: "purgeErrorsMinArgChars",
-              label: "Error purge min arg chars",
+              label: "Argument purge min arg chars",
               values: PURGE_MIN_ARG_PRESETS.map((p) => p.value),
               currentValue: PURGE_MIN_ARG_PRESETS.some((p) => p.value === String(config.purgeErrors.minArgChars))
                 ? String(config.purgeErrors.minArgChars)
                 : PURGE_MIN_ARG_PRESETS[1].value,
-              description: `Only purge arg bodies at least this many chars. Currently ${config.purgeErrors.minArgChars}.`,
+              description: `Only purge summarized or errored argument bodies at least this many chars. Currently ${config.purgeErrors.minArgChars}.`,
             },
             {
               // Read-only display row. Editing goes through `/pruner protected-tools`

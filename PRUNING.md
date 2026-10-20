@@ -30,7 +30,7 @@
 10. [Chain Compression](#chain-compression)
     - [Protected-output relocation](#protected-output-relocation)
 11. [Occurrence Identity](#occurrence-identity)
-12. [Error Purge](#error-purge)
+12. [Argument Purge](#argument-purge)
 13. [Orphan Sweep](#orphan-sweep)
 14. [Diagnostics](#diagnostics)
 15. [Why Summarization Works: Research Evidence](#why-summarization-works-research-evidence)
@@ -184,7 +184,7 @@ graph TB
 
 **Key points:**
 
-- The `AssistantMessage` tool-call blocks are **kept** (they carry the `toolCallId`s the model uses to reference originals via `context_tree_query`).
+- The `AssistantMessage` tool-call blocks are **kept**, preserving their ids and result pairing; eligible long argument strings shrink through [Argument Purge](#argument-purge).
 - `ToolResultMessage` entries for summarized tool calls are **replaced with a small stub** (`[Summarized in pruner summary, ref \`tN\`. Use context_tree_query to retrieve full output.]`) carrying`role: "toolResult"`, the original`toolCallId`/`toolName`/`timestamp`, and`isError: false`. The stub preserves role alternation, so pi-ai's`transformMessages.insertSyntheticToolResults` no longer injects a synthetic `{ isError: true, "No result provided" }` for the (no-longer-)orphaned tool call. See [Stub-replace instead of delete](#stub-replace-instead-of-delete).
 - Every pruned tool call is also copied into the pruner's runtime/session index with its `toolCallId`, tool name, args, status, turn index, timestamp, and full `resultText`.
 - A summary message is injected as a `"steer"` (`pi.sendMessage` runtime path) or appended directly via `sessionManager.appendCustomMessageEntry` (session path, used when Pi may already be shutting down). Both deliver before the next LLM call.
@@ -283,7 +283,7 @@ So after pruning, the model is working with a **two-layer memory**:
 
 | Part of old turn | After pruning | Why |
 |---|---|---|
-| Assistant tool-call block | **Kept in context** | Preserves the `toolCallId` anchors the model uses to reference originals |
+| Assistant tool-call block | **Kept in context; eligible long argument strings shrink** | Preserves `toolCallId` anchors and result pairing; indexed arguments remain recoverable through `context_tree_query` (dedup aliases keep their own arguments) |
 | Tool result message | **Replaced by a short stub in active context** | Saves tokens (typical 50–100× reduction per call) while keeping the `toolCallId` anchor and giving the model an explicit `context_tree_query` breadcrumb. The stub keeps `role: "toolResult"` and `isError: false` so role alternation stays intact |
 | Summary message | **Added to context** | Gives the model a compact description of what happened |
 | Indexed tool-call record | **Stored in pruner index** (`context-prune-index` session entry) | Lets the model re-open the original raw output later via `context_tree_query` |
@@ -584,8 +584,8 @@ graph LR
 captured batches (from turn_end or session scan)
   │
   ├─ 1. Protected-tools/paths filter   (capture-time, see below)
-  │     newest read per protected path stays verbatim; older reads of the same
-  │     path are stubbed at render time once the cache is cold anyway (see § Supersession)
+  │     protected reads stay verbatim unless a later same-path read covers their
+  │     delivered lines; stubbing waits for a shared rewrite or cold cache (see below)
   │     tool calls whose toolName is in protectedTools, OR whose args.path
   │     matches any protectedPaths glob, never enter the batch
   │
@@ -633,7 +633,7 @@ Implementation: `src/pruner.ts` `pruneMessages(messages, indexer)` returns `{ me
 
 ### Protected tools & paths
 
-A tool call is protected if **either** its `toolName` is in `protectedTools` **or** its `args.path` (string) matches any glob in `protectedPaths`. Protected calls are filtered out **at capture time** - they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context until a newer read of the same path supersedes it (below).
+A tool call is protected if **either** its `toolName` is in `protectedTools` **or** its `args.path` (string) matches any glob in `protectedPaths`. Protected calls are filtered out **at capture time** - they never enter the `pendingBatches` queue, so their raw `ToolResultMessage` stays verbatim in future LLM context until a later read of the same path covers its delivered lines and supersedes it (below).
 
 **`protectedTools: string[]`** (default `[]`) - allowlist of tool names. Covers tools whose output is a small handle that must be reused byte-for-byte (e.g. a session-id) or planning tools like `todowrite` / `todoread`.
 
@@ -643,9 +643,30 @@ Glob contract: full-path match against the raw `args.path` string with `\` norma
 
 **Render-time re-check:** stub replacement runs in-flight on every turn (`pruneMessages`). If a tool call's persisted `args` now satisfy `isProtected` (e.g. a pattern was added mid-session), the stub is skipped and the raw result is left verbatim - this repairs already-summarized records in existing sessions with no schema change. Declared limitation: records inside already-compressed chains (`context-prune-chain` entries) are NOT repaired - their `protectedToolCallIds` set is fixed at compression time (forward-only). Dedup-alias edge: an alias resolving to an unprotected original stays stubbed.
 
-**Supersession (phase 1b, `src/supersede.ts`):** protected calls are never indexed, so content-hash dedup never sees them. Instead, at render time only the **newest** protected occurrence per normalized `args.path` (backslash -> slash; `offset`/`limit` ignored) stays verbatim; every earlier occurrence with a paired result becomes the one-line stub `[Superseded: <path> was read again later in this conversation - see the newer read. Re-read the file if this earlier content is needed.]`. The stub keeps `toolCallId`/`toolName`/`timestamp`, so pi-ai's orphan repair never fires; the assistant `toolCall` block is untouched. A call without a paired result never participates (an aborted call cannot steal the win). Recovery is "re-read the file" - no `t<N>` ref. Provider tool-call ids repeat across turns and an aborted call has no result, so a result is paired only with the same-id call in the immediately preceding assistant message (the per-turn open-set model orphan-sweep uses) - never by a global per-id cursor.
+**Supersession (phase 1b, `src/supersede.ts`):** protected calls are never indexed, so content-hash dedup never sees them. A paired occurrence participates only when `isProtected(toolName, args)` is true and `typeof args.path === "string"`. Occurrences group by normalized `args.path` (backslash -> slash). An earlier occurrence is a supersession candidate only when **any later occurrence** of that path covers its delivered line range, not just when the last occurrence covers it. Different paths never interact; disjoint chunks stay verbatim.
 
-**Cadence (prompt-cache economics):** a superseded read is stubbed only when the pruner is already rewriting at or before its position - `floor` is the earliest result timestamp phase 1 will stub on the next render (indexed batches, plus dedup aliases registered in the pre-flush pass - those are stubbed by phase 1 whatever their batch's outcome; a `skipped-trivial`/`skipped-oversized` batch's own calls set none) or the `startUserTimestamp` of a chain compressed this turn - or on a guaranteed-cold event: `session_start`, `session_tree`, `model_select`, `session_compact`, `thinking_level_select` (`floor = 0`, activate all). Activation is session-sticky (in-memory `occKey` set, cleared on `session_start`/`session_tree`); between those moments a freshly superseded copy stays verbatim on purpose, since a mid-prefix rewrite re-bills the whole tail once. `isProtected` is evaluated live, so a path that stops matching `protectedPaths` drops out of supersession and rejoins the normal pipeline. No config key: supersession is on whenever protection is. Spec: `doc/specs/2026-09-07-protected-path-supersede.md`.
+**Requested and delivered ranges:** numeric `offset` normalizes to `max(1, offset)`; absent, `null`, or non-numeric offsets start at line 1. Numeric `limit > 0` requests `[start, start + limit - 1]`; absent, `null`, or non-numeric limits give `[start, inf)`. A `limit <= 0` delivers no lines: it supersedes nothing and is covered by any later nonempty read of the path. A read that returns pi's oversized-first-line warning instead of content delivers no lines, so it covers nothing. Otherwise, without a cap footer, the delivered range is the requested range. A pi footer such as `[Showing lines 1-1800 of 3000 (50.0KB limit). Use offset=1801 to continue.]` bounds the delivered end at 1800. The footer parser also accepts the line-cap form without the parenthetical and any `(<size> limit)` form. This bound applies to both earlier and later reads: a capped full read never covers a tail it did not deliver. Coverage requires the later delivered start to be at or below the earlier start and its end at or above the earlier end.
+
+For a file of 3000 lines, "capped" means pi truncated the output:
+
+| Sequence on one path | Superseded |
+|---|---|
+| full, full | first |
+| chunk `1-2000`, chunk `2001-` | none |
+| chunk `1-2000`, full capped at line 2000 | chunk (delivered ranges equal) |
+| chunk `2001-3000`, full capped at line 2000 | none (the later read never delivered the tail) |
+| full, chunk | none |
+| chunk 1, chunk 2, chunk 1 again | first chunk 1 |
+| full capped at line 2000, full capped again | first (same delivered lines) |
+| `limit: 2500` byte-capped at line 1800, full capped at line 2000 | first (`[1, 1800]` is inside `[1, 2000]`) |
+| full capped at line 2000, `limit: 2500` byte-capped at line 1800 | none |
+| `offset: 0, limit: 100`, full | first (offset 0 is line 1) |
+| `offset: null` no limit, chunk `1-50` | none (`[1, inf)` is not covered by `[1, 50]`) |
+| chunk `1-50`, `offset: null, limit: 50` | first (`[1, 50]` covers `[1, 50]`) |
+
+Once activated by the cadence gate below, a candidate becomes the one-line stub `[Superseded: <path> was read again later in this conversation - see the newer read. Re-read the file if this earlier content is needed.]`. The stub keeps `toolCallId`/`toolName`/`timestamp`, so pi-ai's orphan repair never fires; the assistant `toolCall` block is untouched. A call without a paired result never participates. Recovery is "re-read the file" - no `t<N>` ref. Results pair only with an open same-id call in the preceding assistant turn; each assistant turn resets the open set, and any non-assistant/non-toolResult message clears it. A paired result consumes its call, so reused provider ids never pair through a global per-id cursor.
+
+**Cadence (prompt-cache economics):** a superseded read is stubbed only when the pruner is already rewriting at or before its position - `state.floor` is the earliest result timestamp phase 1 will stub on the next render (indexed batches, plus dedup aliases registered in the pre-flush pass - those are stubbed by phase 1 whatever their batch's outcome; a `skipped-trivial`/`skipped-oversized` batch's own calls set none) or the `startUserTimestamp` of a chain compressed this turn - or on a guaranteed-cold event: `session_start`, `session_tree`, `model_select`, `session_compact`, `thinking_level_select` (`state.floor = 0`, activate all). Activation is session-sticky (`state.activated`, an in-memory `occKey` set cleared on `session_start`/`session_tree`); between those moments a freshly superseded copy stays verbatim on purpose, since a mid-prefix rewrite re-bills the whole tail once. `isProtected` is evaluated live, so a path that stops matching `protectedPaths` drops out of supersession and rejoins the normal pipeline. No config key: supersession is on whenever protection is. Specs: [delivered-range coverage](doc/specs/2026-10-20-multi-stage-context-retention.md#change-2-range-aware-supersession) and [cadence and stub contract](doc/specs/2026-09-07-protected-path-supersede.md).
 
 Names and patterns that don't match any captured tool call are silently ignored.
 
@@ -724,7 +745,7 @@ The frontier's `lastAttemptedTurnIndex` uses a session-wide numbering domain: it
 - **Tree browser (`/pruner tree`):** interactive, foldable tree of pruned tool calls grouped under their summaries. `Ctrl-O` on a summary node opens the full markdown summary in a bordered overlay.
 - **Configurable summarizer thinking (`summarizerThinking`):** trade summary cost / latency for quality (`off` / `minimal` / `low` / `medium` / `high` / `xhigh`). `default` omits the option entirely so the provider chooses.
 - **Cumulative stats:** `context-prune-stats` entries track input/output tokens and cost of every summarizer call; full detail surfaces in `/pruner stats`. Cost is also emitted on the `cost:external` pi.events channel for external aggregators (cumulative per session, live only).
-- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages)` = the sum of `charsOf(message)` (`src/context-metrics.ts`): whole-message JSON chars with each image block priced at a flat 1,600 tokens (6,400 chars) instead of its base64 length, the same estimate the frontier-gap trigger uses. This compares the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all five phases in a single point (stub-replace, supersede, error-purge, chain-range-prune, orphan-sweep); appears on the status line as `│ prune: ON · 92.0k->14.0k (-85%)` once at least one prune has occurred (the leading `│` keeps the segment visually isolated in the shared footer, load-order independent - there is no trailing divider, since the footer's own space-join between segments already provides one).
+- **Live reclaim ratio:** measured once per `pruneMessages` call via `sizeMessages(messages)` = the sum of `charsOf(message)` (`src/context-metrics.ts`): whole-message JSON chars with each image block priced at a flat 1,600 tokens (6,400 chars) instead of its base64 length, the same estimate the frontier-gap trigger uses. This compares the input array before pruning to the result after. Estimated tokens = chars / 4. The measurement covers all five phases in a single point (stub-replace, supersede, argument-purge, chain-range-prune, orphan-sweep); appears on the status line as `│ prune: ON · 92.0k->14.0k (-85%)` once at least one prune has occurred (the leading `│` keeps the segment visually isolated in the shared footer, load-order independent - there is no trailing divider, since the footer's own space-join between segments already provides one).
 - **Live progress for `/pruner now`:** an `aboveEditor` widget shows one row per pending batch with braille spinner, streamed summary-char count, and ✓ / ⚠ status.
 
 ### Summarizer outage fallback
@@ -918,7 +939,7 @@ raw messages from session
   │
   ├─ [1] tool-result stub-replace   (per-batch; existing)
   ├─ [1b] supersede                (older protected reads of a re-read path -> stub; see § Supersession)
-  ├─ [2] error-purge                (phase 2)
+  ├─ [2] argument-purge             (phase 2)
   ├─ [3] chain-range-prune          (runs AFTER stubs)
   │        resolve each entry to a positional index range
   │        drop assistant / toolResult / per-batch-summary inside the range
@@ -1099,45 +1120,42 @@ Short refs (`tN`) always resolve 1:1 - one ref, one record - and are the primary
 
 ---
 
-## Error Purge
+## Argument Purge
 
-Failed tool calls often embed large argument bodies in the assistant message — a `write` call with a 30 KB file body, an `edit` call with a multiline diff. The error result is small (e.g. `"Error: file not found"`), but the original `arguments` stay in the assistant turn indefinitely.
+An indexed call whose result has been summarized loses its long string arguments in the same render its result is stubbed; `context_tree_query` returns both the arguments and the result.
 
-Error purge shrinks the large string values inside those argument bodies after the error has cooled down. Every key, JSON type, and array length survives; only strings longer than 200 characters (`PURGE_STRING_MIN_CHARS` in `src/error-purge.ts`, not configurable) become a placeholder carrying the original length:
+Two exceptions stay separate: an errored call waits `purgeErrors.cooldownTurns` assistant turns (default 2), whether or not it was indexed, so recovery through `context_tree_query` is available only when it was also indexed. A dedup alias is never shrunk: the index stores only the canonical call's arguments, and recovery on the shared ref returns those arguments, not the alias's own prompt.
 
-```
-{ "path": "src/foo.ts", "content": "<purged-errored-args size=\"30000\"/>" }
-```
+**Shared gates and shape:** `purgeErrors.enabled` controls both sources. The JSON-stringified `block.arguments` body must be at least `purgeErrors.minArgChars` characters (default 500). Only strings longer than 200 characters (`PURGE_STRING_MIN_CHARS` in `src/error-purge.ts`, not configurable) shrink. Keys, JSON types, array lengths, non-string values, and strings of 200 characters or fewer survive. A qualifying body with no long string stays unchanged. Keeping the shape preserves provider schema validation while leaving short paths and commands readable.
 
-Providers validate replayed tool calls against the declared schema - pi-ai's grammar-constrained tools (`codemode`) require the input property to be a string - so the shape must stay intact. The 200-character floor keeps `path`, a short `command`, or a small `newText` readable; it is a constant because nobody has a reason to tune a readability guard.
-
-**What triggers a purge:**
-
-- The matching `ToolResultMessage` has `isError: true`.
-- The error occurred at least `purgeErrors.cooldownTurns` assistant turns ago (default 2). The cooldown gives the model 1–2 turns to retry before context is mutated.
-- The JSON-stringified argument body is at least `purgeErrors.minArgChars` characters long (default 500). Small args are not worth the substitution. A body that qualifies but holds no string over 200 characters is returned unchanged.
-
-**What error purge does NOT touch:**
-
-- The `ToolResultMessage` content — the error message stays visible so the model can see what went wrong.
-- Non-errored `toolCall` argument bodies.
-- Argument bodies below `minArgChars`.
-- Keys, non-string values, array lengths, and strings of 200 characters or fewer inside a purged body.
-- Anything when `purgeErrors.enabled` is `false`.
-
-**Transform position:** Error purge runs in Phase 2, after stub-replace and before chain range prune.
+Both markers carry the original string length; summarized calls also carry the short ref from the result stub:
 
 ```
-[stub-replace] → [supersede] → [error-purge] → [chain-range-prune] → [orphan-sweep]
+<purged-args size="30000" ref="t6"/>
+<purged-errored-args size="30000"/>
 ```
 
-**Config keys:**
+**Pairing and source selection:** phase 1 hands phase 2 a map from each stubbed result's resolved occurrence key to its short ref, excluding dedup aliases. Phase 2 pairs results positionally with open same-id tool-call blocks in the preceding assistant turn. Each assistant turn resets the open set, a result consumes its paired call, and any non-assistant/non-toolResult message clears the set. Rewrites target the exact assistant position and block id, so a reused provider id cannot authorize shrinking a sibling call in another turn. Timestamped results use `id@resultTimestamp`; timestamp-less results use the bare id for the handoff lookup, not for selecting a rewrite position.
+
+A result phase 1 stubs has `isError: false`, so its arguments get `<purged-args>` even if the original result errored. Before that stub render, an expired error cooldown can produce `<purged-errored-args>`. Argument purge does not rewrite result content; unsummarized error messages stay visible.
+
+**Cadence and identity:** summarized calls have no separate cooldown. Shrinking coincides with the result-stub rewrite; delaying it would invalidate the prefix again on a later turn. Each context render starts from raw history and reapplies the same transformation: for fixed index and recovery-grace state, the emitted prefix bytes are deterministic across fresh-history renders. The input array is returned by identity only when nothing changes, including an already-shrunk input whose markers fall below the string floor.
+
+Protected calls and trivial batches have no phase 1 stub and do not qualify through the summarized source. Calls in the recovery grace window keep both their raw result and arguments until the window expires; stubbing and shrinking then happen together. Dedup alias results still get stubs, but their arguments stay intact. The separate errored source retains its cooldown behavior for calls with `isError: true`.
+
+**Transform position:** argument purge runs in Phase 2, after stub-replace and supersession and before chain range prune.
+
+```
+[stub-replace] → [supersede] → [argument-purge] → [chain-range-prune] → [orphan-sweep]
+```
+
+**Config keys:** persisted names stay `purgeErrors.*`; the settings overlay labels the shared toggle and size gate as argument purge and the cooldown as error-only.
 
 | Key | Default | Description |
 |---|---|---|
-| `purgeErrors.enabled` | `true` | Master toggle |
-| `purgeErrors.cooldownTurns` | `2` | Turns to wait after error before purging |
-| `purgeErrors.minArgChars` | `500` | Minimum JSON body size for a failed call to be scanned; only strings over 200 chars inside it are replaced |
+| `purgeErrors.enabled` | `true` | Toggle for summarized and errored argument purge |
+| `purgeErrors.cooldownTurns` | `2` | Assistant turns to wait after an error; applies only to the errored source |
+| `purgeErrors.minArgChars` | `500` | Minimum JSON body size for either source; only strings over 200 chars inside it are replaced |
 
 ---
 

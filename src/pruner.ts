@@ -46,9 +46,9 @@ export function sizeMessages(messages: any[]): number {
  * See src/supersede.ts. Runs before phase 3 so a superseded read inside a
  * compressed chain relocates as the stub, not the verbatim body.
  *
- * Phase 2 — error purge: replaces failed toolCall arg bodies with stubs after a
- * cooldown, reclaiming context from large `write`/`edit` arguments that will
- * never succeed. The toolResult error message stays visible.
+ * Phase 2 - argument purge: shrinks summarized toolCall arguments in the
+ * stub render and failed toolCall arguments after cooldown. Unsummarized
+ * toolResult error messages stay visible.
  *
  * Phase 3 — chain range prune: closed chains older than the rolling window
  * are dropped (middle assistant + toolResult messages) and replaced with a
@@ -75,9 +75,8 @@ export function sizeMessages(messages: any[]): number {
  *     the only consumer (`index.ts` live-reclaim) reads them solely under
  *     `if (result.pruned)`.
  *
- * AssistantMessage tool-call blocks (which carry the IDs) are kept
- * unchanged so the model can still reference them by id when calling
- * `context_tree_query`.
+ * Tool-call ids, names, and result pairing stay unchanged; eligible argument
+ * strings shrink with a ref for recovery through `context_tree_query`.
  */
 export function pruneMessages(
   messages: any[],
@@ -91,6 +90,7 @@ export function pruneMessages(
 ): { messages: any[]; pruned: boolean; beforeChars: number; afterChars: number } {
   // Phase 1: stub-replace summarized tool results
   let pruned = false;
+  const summarizedRefs = new Map<string, string>();
   const inGrace = inGraceRecoveryToolCallIds(messages, recoveryGraceTurns);
   const next = messages.map((msg) => {
     if (msg.role !== "toolResult") return msg;
@@ -124,6 +124,7 @@ export function pruneMessages(
     }
     pruned = true;
     const ref = indexer.getShortRefForToolCallId(lookupKey) ?? msg.toolCallId;
+    if (!indexer.isDedupAlias(lookupKey)) summarizedRefs.set(key, ref);
     const text = record?.spillPath
       ? [
           `[Oversized output spilled to file — ${record.spillBytes ?? "?"} bytes.]`,
@@ -155,9 +156,9 @@ export function pruneMessages(
     }
   }
 
-  // Phase 2: error purge - shrink long strings in failed toolCall args after cooldown
+  // Phase 2: argument purge - summarized now, errored after cooldown
   if (errorPurge?.enabled) {
-    const afterPurge = purgeErroredArgs(current, errorPurge);
+    const afterPurge = purgeErroredArgs(current, errorPurge, summarizedRefs);
     if (afterPurge !== current) {
       current = afterPurge;
       pruned = true;

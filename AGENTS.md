@@ -107,7 +107,7 @@ Field names matter (`id` vs `toolCallId`, `arguments` vs `input`); the type file
 
 ```
 index.ts                  # extension entry point, wires all events
-src/pruner.ts             # pruneMessages: stub-replace -> supersede -> error-purge -> chain-range-prune -> orphan-sweep
+src/pruner.ts             # pruneMessages: stub-replace -> supersede -> argument-purge -> chain-range-prune -> orphan-sweep
 src/chain-*.ts            # closed-chain detection, positional range prune, compression orchestrator
 src/indexer.ts            # tool-call index + chain registry + summary body tracking (occurrence-keyed)
 src/summarizer*.ts        # LLM summarization + sticky outage fallback

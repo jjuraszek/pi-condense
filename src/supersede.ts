@@ -1,11 +1,7 @@
 import { normalizePath } from "./protected.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 
-/**
- * Protected reads are never indexed, so nothing else in the pipeline ever
- * collapses a re-read of the same skill file. This module keeps only the
- * newest protected read per `args.path` verbatim (spec 2026-09-07).
- */
+/** Protected reads stay verbatim until a later same-path read covers their delivered lines. */
 export interface SupersededCandidate {
   toolCallId: string;
   path: string;
@@ -49,11 +45,34 @@ export function supersededStub(path: string): string {
 
 export type IsProtectedFn = (toolName: string, args: unknown) => boolean;
 
+interface DeliveredRange {
+  start: number;
+  end: number;
+}
+
+function deliveredRange(args: Record<string, unknown>, result: any): DeliveredRange {
+  const start = typeof args.offset === "number" ? Math.max(1, args.offset) : 1;
+  const limit = args.limit;
+  let end = typeof limit === "number" ? (limit <= 0 ? start - 1 : start + limit - 1) : Infinity;
+  for (const block of result.content ?? []) {
+    if (block?.type !== "text" || typeof block.text !== "string") continue;
+    if (/^\[Line \d+ is [^,]+, exceeds [^ ]+ limit\. Use bash: .*\]$/.test(block.text)) return { start, end: start - 1 };
+    const cap = block.text.match(/(?:^|\n)\[Showing lines \d+-(\d+) of \d+(?: \([^)]*limit\))?\. Use offset=\d+ to continue\.\]$/);
+    if (cap) end = Math.min(end, Number(cap[1]));
+  }
+  return { start, end };
+}
+
+function covers(later: DeliveredRange, earlier: DeliveredRange): boolean {
+  if (later.end < later.start) return false;
+  return earlier.end < earlier.start || (later.start <= earlier.start && later.end >= earlier.end);
+}
+
 export function findSuperseded(messages: any[], isProtected: IsProtectedFn): SupersededCandidate[] {
   // Provider ids repeat across turns and an aborted call has no result, so pairing
   // uses the same per-turn open-set model as orphan-sweep, not a global per-id cursor.
   let open = new Map<string, any>();
-  const byPath = new Map<string, SupersededCandidate[]>();
+  const byPath = new Map<string, { candidate: SupersededCandidate; range: DeliveredRange }[]>();
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
@@ -77,16 +96,25 @@ export function findSuperseded(messages: any[], isProtected: IsProtectedFn): Sup
         timestamp: resultTimestampOf(m.timestamp),
         resultIndex: i,
       };
+      const occurrence = { candidate: cand, range: deliveredRange(args, m) };
       const list = byPath.get(path);
-      if (list) list.push(cand);
-      else byPath.set(path, [cand]);
+      if (list) list.push(occurrence);
+      else byPath.set(path, [occurrence]);
       continue;
     }
     open = new Map();
   }
 
   const out: SupersededCandidate[] = [];
-  for (const list of byPath.values()) for (let i = 0; i < list.length - 1; i++) out.push(list[i]);
+  for (const list of byPath.values()) {
+    for (let i = 0; i < list.length - 1; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (!covers(list[j].range, list[i].range)) continue;
+        out.push(list[i].candidate);
+        break;
+      }
+    }
+  }
   out.sort((a, b) => a.resultIndex - b.resultIndex);
   return out;
 }
