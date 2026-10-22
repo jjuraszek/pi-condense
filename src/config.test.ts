@@ -99,8 +99,15 @@ describe("loadConfig summarizer timeout normalization", () => {
   it("defaults both timeouts when absent", async () => {
     await writeContextPrune({});
     const config = await loadConfig();
-    expect(config.summarizerIdleTimeoutMs).toBe(DEFAULT_CONFIG.summarizerIdleTimeoutMs);
+    expect(config.summarizerIdleTimeoutMs).toBe(45000);
     expect(config.summarizerMaxTimeoutMs).toBe(DEFAULT_CONFIG.summarizerMaxTimeoutMs);
+    expect(config.summarizerMaxTimeoutMs).toBe(180000);
+  });
+
+  it("preserves an explicit legacy 20s idle timeout", async () => {
+    await writeContextPrune({ summarizerIdleTimeoutMs: 20000 });
+    const config = await loadConfig();
+    expect(config.summarizerIdleTimeoutMs).toBe(20000);
   });
 
   it("preserves explicit 0 (disabled) for both", async () => {

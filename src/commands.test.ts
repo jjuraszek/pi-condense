@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ import { join } from "node:path";
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-condense-commands-test-"));
 
 import { pruneStatusText, setPruneStatusWidget, registerCommands } from "./commands.js";
-import { settingsPath } from "./config.js";
+import { settingsPath, loadConfig } from "./config.js";
 import type { ContextPruneConfig, ContextMetricsSnapshot, SummarizerStats } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { Container, SettingsList } from "@earendil-works/pi-tui";
@@ -148,6 +148,23 @@ describe("/pruner now (empty capture)", () => {
 });
 
 describe("/pruner status context block", () => {
+  it("reports the resolved 45s idle default when the setting is absent", async () => {
+    const scratchDir = mkdtempSync(join(tmpdir(), "pi-condense-idle-status-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    try {
+      process.env.PI_CODING_AGENT_DIR = scratchDir;
+      writeFileSync(settingsPath(), JSON.stringify({ contextPrune: { enabled: true } }));
+      const harness = setupPrunerCommand();
+      harness.currentConfig.value = await loadConfig();
+      await harness.run("status");
+      expect(harness.notifications[0]?.message).toContain("idle to:  45s");
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      rmSync(scratchDir, { recursive: true, force: true });
+    }
+  });
+
   const metrics: ContextMetricsSnapshot = {
     openCycleThinkingTokens: 12000,
     largestChainSharePct: 62,

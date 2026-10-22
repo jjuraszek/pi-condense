@@ -16,7 +16,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "showPruneStatusLine": true,
     "summarizerModel": "default",
     "summarizerThinking": "default",
-    "summarizerIdleTimeoutMs": 20000,
+    "summarizerIdleTimeoutMs": 45000,
     "summarizerMaxTimeoutMs": 180000,
     "pruneOn": "agent-message",
     "batchingMode": "turn",
@@ -55,7 +55,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard - batches smaller than this skip the LLM entirely |
 | `recoveryGraceTurns` | non-negative integer (user-turn-groups), `0` disables | `3` | After a `context_tree_query` recovery, render that tool's output verbatim for this many user-turn-groups before re-stubbing it. Enforced at render time (Phase 1 + chain-compression eligibility), not at capture time. See [PRUNING.md § What Pruning Does](../PRUNING.md#what-pruning-does) |
-| `summarizerIdleTimeoutMs` | non-negative integer (ms), `0` disables | `20000` | Abort a summarizer stream call after this much silence (no stream event). Resets on every event, so it never false-aborts a flowing generation; catches a stalled connection fast. A timeout feeds the same outage-fallback retry as a provider error. `0` = no idle bound. |
+| `summarizerIdleTimeoutMs` | non-negative integer (ms), `0` disables | `45000` | Abort a summarizer stream call after this much silence (no stream event). Resets on every event, so it never false-aborts a flowing generation; catches a stalled connection fast. A timeout feeds the same outage-fallback retry as a provider error. `0` = no idle bound. |
 | `summarizerMaxTimeoutMs` | non-negative integer (ms), `0` disables | `180000` | Hard ceiling on total duration of a single summarizer stream call. Backstop for a stream that dribbles forever without going idle. Generous by design (clears the observed p99). `0` = no ceiling. |
 | `protectedTools` | `string[]` | `[]` | Never-pruned tool names (e.g. `["todowrite","todoread"]`). When a protected tool's chain is range-compressed, its output is preserved verbatim inside the `<compressed-chain>` block as `<protected-output>` - protected outputs are never lost. |
 | `protectedPaths` | `string[]` | `["**/skills/**/*.md", "**/gauntlet-overrides.md"]` | Globs matched against a tool call's `args.path`; matching outputs are never pruned (same semantics as `protectedTools`, including `<protected-output>` relocation in compressed chains). Already-summarized matching reads are repaired on the next turn; chain-compressed ones are not. Set `[]` to disable. |
@@ -132,10 +132,10 @@ Set it from the slash command (saves immediately):
 Every summarizer call is bounded by two independent timers, so a stalled
 provider connection can never hang the agent turn:
 
-- **Idle timeout** (`summarizerIdleTimeoutMs`, default 20s) - resets on every
+- **Idle timeout** (`summarizerIdleTimeoutMs`, default 45s) - resets on every
   stream event, including reasoning/`thinking` events, so a long-but-flowing
   generation is never cut off. It also bounds time-to-first-token. This is
-  the primary guard against a silent hang.
+  the primary guard against a silent hang. The 45s default covers queueing providers at the cost of a 45s silent-primary wait on initial detection and on each failed 10-minute probe, with intervening calls routed to the session model.
 - **Total-duration ceiling** (`summarizerMaxTimeoutMs`, default 180s) - a hard
   upper bound that catches a stream which keeps dribbling events but never
   finishes. Generous by design; a pure backstop.
@@ -143,6 +143,9 @@ provider connection can never hang the agent turn:
 A timeout is treated exactly like a transient provider error: it feeds the
 outage-fallback retry, so if a distinct `summarizerModel` is configured the
 stalled call is retried once on the session model (itself timeout-bounded).
+The immediate rescue notice includes the primary failure reason (idle or ceiling
+timeout, or provider error text); deferred fallback notices remain unchanged.
+The ceiling applies per call/attempt, not to the complete flush.
 Both timers can be set to `0` to disable them independently.
 
 ## Commands

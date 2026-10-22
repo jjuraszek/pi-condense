@@ -153,8 +153,8 @@ async function runOnce(
   };
   const timeoutMessage = () =>
     timeoutKind === "ceiling"
-      ? `summarizer ${modelLabel(model)} exceeded ${Math.round(maxMs / 1000)}s ceiling`
-      : `summarizer ${modelLabel(model)} stalled (no output for ${Math.round(idleMs / 1000)}s)`;
+      ? `exceeded ${Math.round(maxMs / 1000)}s ceiling`
+      : `stalled (no output for ${Math.round(idleMs / 1000)}s)`;
 
   try {
     // Preserve auth classification for physical models without pre-checking
@@ -286,10 +286,10 @@ async function runSummarization(
   const controller = options.controller;
   const sessionModel = ctx.model;
 
-  const notifyFailure = (o: { message: string; timedOut?: boolean }) =>
+  const notifyFailure = (model: any, o: { message: string; timedOut?: boolean }) =>
     ctx.ui.notify(
       o.timedOut
-        ? `pi-condense: ${o.message}; summarizer call abandoned`
+        ? `pi-condense: summarizer ${modelLabel(model)} ${o.message}; summarizer call abandoned`
         : `pruner: summarization failed: ${o.message}`,
       o.timedOut ? "warning" : "error",
     );
@@ -302,17 +302,18 @@ async function runSummarization(
         return r.result;
       case "auth":
       case "transient":
-        notifyFailure(r);
+        notifyFailure(primary, r);
         return null;
       case "unusable":
         return null;
     }
   }
 
-  const emit = (t: FallbackTransition) => {
+  const emit = (t: FallbackTransition, reason?: string) => {
     if (t === "enter") {
+      const failureReason = typeof reason === "string" && reason.length > 0 ? ` (${reason})` : "";
       ctx.ui.notify(
-        `pi-condense: summarizer model ${modelLabel(primary)} failing, using session model ${modelLabel(sessionModel)} until it recovers`,
+        `pi-condense: summarizer model ${modelLabel(primary)} failing${failureReason}, using session model ${modelLabel(sessionModel)} until it recovers`,
         "warning"
       );
     } else if (t === "recover") {
@@ -330,24 +331,29 @@ async function runSummarization(
       else emit(controller.onFallbackSuccess());
       return r.result;
     case "auth":
-      notifyFailure(r); // auth never trips the controller
+      notifyFailure(model, r); // auth never trips the controller
       return null;
     case "unusable":
       return null; // probe unusable => stay (no state change)
     case "transient": {
       if (decision.target === "fallback") {
         controller.onFallbackOnlyFail();
-        notifyFailure(r);
+        notifyFailure(model, r);
         return null;
       }
       // target was primary (initial detection or probe): retry once on the session model.
       const r2 = await runOnce(sessionModel, userMessage, config, ctx, options);
       if (r2.kind === "ok") {
-        emit(controller.onPrimaryFailFallbackOk(decision.wasProbe));
+        const wasInFallback = controller.inFallback;
+        emit(controller.onPrimaryFailFallbackOk(decision.wasProbe), wasInFallback ? undefined : r.message);
         return r2.result; // suppress the legacy error notify — fallback rescued the call
       }
       controller.onBothDown();
-      notifyFailure(r2.kind === "transient" || r2.kind === "auth" ? r2 : r);
+      if (r2.kind === "transient" || r2.kind === "auth") {
+        notifyFailure(sessionModel, r2);
+      } else {
+        notifyFailure(model, r);
+      }
       return null;
     }
   }

@@ -4,7 +4,7 @@ let streamImpl: (model: any, input?: any, opts?: any) => any = () => {
 };
 const { summarizeBatch, summarizeRange } = await import("./summarizer.js");
 const { FallbackController } = await import("./summarizer-fallback.js");
-const { DEFAULT_CONFIG } = await import("./types.js");
+const { DEFAULT_CONFIG, SUMMARIZER_IDLE_TIMEOUT_PRESETS } = await import("./types.js");
 
 const PRIMARY = { id: "primary-model", provider: "provider-a", name: "Primary", api: "openai-responses" };
 const SESSION = { id: "session-model", provider: "provider-b", name: "Session", api: "openai-responses" };
@@ -161,6 +161,7 @@ describe("virtual models through the registry", () => {
       expect(result?.summaryText).toBe("- routed summary");
       expect(controller.inFallback).toBe(true);
       expect(seen[1]).toBe(VIRTUAL);
+      expect(notes[0]).toEqual({ msg: "pi-condense: summarizer model Primary failing (down), using session model Auto until it recovers", level: "warning" });
       expect(notes.filter(n => n.level === "warning")).toHaveLength(1);
       expect(notes.filter(n => n.level === "error")).toHaveLength(0);
     });
@@ -300,6 +301,7 @@ describe("runSummarization wiring — both-down + deferred warning", () => {
     const r2 = await summarizeBatch(makeBatch(), distinctConfig, ctx, { controller });
     expect(r2?.summaryText).toBe("- rescued");
     expect(notes.filter((n) => n.level === "warning")).toHaveLength(1);
+    expect(notes[0].msg).toBe("pi-condense: summarizer model Primary failing, using session model Session until it recovers");
   });
 });
 
@@ -319,6 +321,7 @@ describe("runSummarization wiring — abort", () => {
 
 describe("runSummarization wiring — timeouts", () => {
   for (const [kind, idleMs, maxMs, message] of [
+    // Millisecond-scale overrides exercise timer behavior, not the default.
     ["idle", 20, 0, /stalled/],
     ["ceiling", 0, 20, /ceiling/],
   ] as const) {
@@ -379,7 +382,7 @@ describe("runSummarization wiring — timeouts", () => {
     const r = await summarizeBatch(makeBatch(), cfg, ctx, { controller });
     expect(r?.summaryText).toBe("- rescued");
     expect(controller.inFallback).toBe(true);
-    expect(notes.filter((n) => n.level === "warning")).toHaveLength(1); // generic "enter" fallback warning
+    expect(notes.filter((n) => n.level === "warning")).toHaveLength(1);
     expect(notes.filter((n) => n.level === "error")).toHaveLength(0);
   });
 
@@ -428,5 +431,237 @@ describe("runSummarization wiring — idle reset keeps a flowing stream alive", 
     const r = await summarizeBatch(makeBatch(), cfg, ctx, {});
     expect(r?.summaryText).toBe("- flowing summary");
     expect(notes.filter((n) => n.level === "warning")).toHaveLength(0);
+  });
+});
+
+async function withTimerClock(
+  run: (clock: { advance(ms: number): Promise<void>; now(): number }) => Promise<void>,
+) {
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = new Map<number, { at: number; fire(): void }>();
+  let now = 0;
+  let nextId = 0;
+  const drain = () => new Promise<void>((resolve) => realSetTimeout(resolve, 0));
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay = 0, ...args: any[]) => {
+    const id = ++nextId;
+    timers.set(id, { at: now + Number(delay), fire: () => callback(...args) });
+    return id;
+  }) as unknown as typeof globalThis.setTimeout;
+  globalThis.clearTimeout = ((id: any) => { timers.delete(Number(id)); }) as unknown as typeof globalThis.clearTimeout;
+  try {
+    await run({
+      now: () => now,
+      async advance(ms) {
+        await drain();
+        const end = now + ms;
+        while (true) {
+          const next = [...timers.entries()]
+            .filter(([, timer]) => timer.at <= end)
+            .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+          if (!next) break;
+          now = next[1].at;
+          timers.delete(next[0]);
+          next[1].fire();
+          await drain();
+        }
+        now = end;
+        await drain();
+      },
+    });
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+    timers.clear();
+  }
+}
+
+const genericEnter = "pi-condense: summarizer model Primary failing, using session model Session until it recovers";
+
+describe("immediate fallback reasons", () => {
+  it("marks only the 45s preset as default", () => {
+    expect(DEFAULT_CONFIG.summarizerIdleTimeoutMs).toBe(45000);
+    expect(SUMMARIZER_IDLE_TIMEOUT_PRESETS.filter(p => p.label.includes("(default)")))
+      .toEqual([{ value: "45000", label: "45s (default)" }]);
+  });
+
+  for (const raw of [
+    { summarizerModel: "provider-a/primary-model" },
+    { summarizerModel: "provider-a/primary-model", summarizerIdleTimeoutMs: 20000 },
+  ]) {
+    it(`delayed first event with ${raw.summarizerIdleTimeoutMs ?? "resolved default"}`, async () => {
+      await withTimerClock(async clock => {
+        const config = { ...DEFAULT_CONFIG, ...raw };
+        const notes: Note[] = [];
+        const attempts: any[] = [];
+        let primarySignal: AbortSignal;
+        streamImpl = (model, _input, opts) => {
+          attempts.push(model);
+          if (model === PRIMARY) {
+            primarySignal = opts.signal;
+            return drippingStream(opts, "- primary summary", 1, 25000);
+          }
+          return okStream("- rescued");
+        };
+        const controller = new FallbackController(clock.now);
+        let settled = false;
+        const pending = summarizeBatch(makeBatch(), config, makeCtx(notes), { controller });
+        void pending.then(() => { settled = true; });
+        await clock.advance(19999);
+        expect(settled).toBe(false);
+        await clock.advance(1);
+        if (raw.summarizerIdleTimeoutMs === 20000) {
+          expect(primarySignal!.aborted).toBe(true);
+          expect((await pending)?.summaryText).toBe("- rescued");
+          expect(attempts).toEqual([PRIMARY, SESSION]);
+          expect(notes).toEqual([{ msg: genericEnter.replace("failing,", "failing (stalled (no output for 20s)),"), level: "warning" }]);
+        } else {
+          expect(config.summarizerIdleTimeoutMs).toBe(45000);
+          expect(settled).toBe(false);
+          expect(primarySignal!.aborted).toBe(false);
+          await clock.advance(5000);
+          expect((await pending)?.summaryText).toBe("- primary summary");
+          expect(attempts).toEqual([PRIMARY]);
+          expect(controller.inFallback).toBe(false);
+          expect(notes).toEqual([]);
+        }
+      });
+    });
+  }
+
+  for (const kind of ["idle", "ceiling"] as const) {
+    it(`${kind} rescue carries the prefix-free reason`, async () => {
+      await withTimerClock(async clock => {
+        const notes: Note[] = [];
+        streamImpl = (model, _input, opts) => {
+          if (model === SESSION) return okStream("- rescued");
+          if (kind === "ceiling") return hangingStream(opts);
+          const drip = drippingStream(opts, "- partial", 1, 1000);
+          const hang = hangingStream(opts);
+          return {
+            async *[Symbol.asyncIterator]() { yield* drip; yield* hang; },
+            result: () => hang.result(),
+          };
+        };
+        let settled = false;
+        const pending = summarizeBatch(makeBatch(), {
+          ...distinctConfig, summarizerIdleTimeoutMs: kind === "idle" ? 45000 : 0,
+          summarizerMaxTimeoutMs: 180000,
+        }, makeCtx(notes), { controller: new FallbackController(clock.now) });
+        void pending.then(() => { settled = true; });
+        await clock.advance(kind === "idle" ? 45000 : 179999);
+        expect(settled).toBe(false);
+        await clock.advance(kind === "idle" ? 1000 : 1);
+        expect((await pending)?.summaryText).toBe("- rescued");
+        const reason = kind === "idle" ? "stalled (no output for 45s)" : "exceeded 180s ceiling";
+        expect(notes).toEqual([{ msg: genericEnter.replace("failing,", `failing (${reason}),`), level: "warning" }]);
+        if (kind === "idle") expect(notes[0].msg).toMatch(/summarizer model .* failing \(stalled \(no output for \d+s\)\), using session model/);
+      });
+    });
+  }
+
+  for (const path of ["response", "throw"] as const) {
+    for (const [name, message] of [
+      ["non-empty", "boom"],
+      ["multiline", "  long provider message\n" + "detail ".repeat(60) + "\n  "],
+      ["empty", ""],
+    ]) {
+      it(`${path} preserves ${name} message verbatim`, async () => {
+        streamImpl = model => {
+          if (model === SESSION) return okStream("- rescued");
+          if (path === "throw") throw new Error(message);
+          return errStream(message);
+        };
+        const notes: Note[] = [];
+        const result = await summarizeBatch(makeBatch(), distinctConfig, makeCtx(notes), { controller: new FallbackController() });
+        expect(result?.summaryText).toBe("- rescued");
+        expect(notes).toEqual([{ msg: message ? genericEnter.replace("failing,", `failing (${message}),`) : genericEnter, level: "warning" }]);
+      });
+    }
+  }
+});
+
+describe("terminal timeout labels", () => {
+  for (const kind of ["idle", "ceiling"] as const) {
+    for (const mode of ["legacy", "fallback-only", "both-down", "unusable-retry"] as const) {
+      it(`${kind}: ${mode} labels the selected outcome`, async () => {
+        await withTimerClock(async clock => {
+          const notes: Note[] = [];
+          streamImpl = (model, _input, opts) => mode === "unusable-retry" && model === SESSION
+            ? okStream(" ") : hangingStream(opts);
+          const controller = new FallbackController(clock.now);
+          if (mode === "fallback-only") controller.onBothDown();
+          const pending = summarizeBatch(makeBatch(), {
+            ...distinctConfig,
+            summarizerModel: mode === "legacy" ? "default" : distinctConfig.summarizerModel,
+            summarizerIdleTimeoutMs: kind === "idle" ? 20 : 0,
+            summarizerMaxTimeoutMs: kind === "ceiling" ? 20 : 0,
+          }, makeCtx(notes), mode === "legacy" ? {} : { controller });
+          await clock.advance(40);
+          expect(await pending).toBeNull();
+          const label = mode === "unusable-retry" ? "Primary" : "Session";
+          const reason = kind === "idle" ? "stalled (no output for 0s)" : "exceeded 0s ceiling";
+          expect(notes).toEqual([{ msg: `pi-condense: summarizer ${label} ${reason}; summarizer call abandoned`, level: "warning" }]);
+        });
+      });
+    }
+  }
+
+  it("session-only auth failure after transient primary keeps its error text", async () => {
+    streamImpl = () => errStream("down");
+    const notes: Note[] = [];
+    const ctx = makeCtx(notes);
+    ctx.modelRegistry.getApiKeyAndHeaders = async (model: any) => model === PRIMARY
+      ? { ok: true, apiKey: "k", headers: {} } : { ok: false, error: "session key missing" };
+    expect(await summarizeBatch(makeBatch(), distinctConfig, ctx, { controller: new FallbackController() })).toBeNull();
+    expect(notes).toEqual([{ msg: "pruner: summarization failed: session key missing", level: "error" }]);
+  });
+});
+
+describe("deferred entry and probe notices", () => {
+  for (const initial of ["both-down", "rescued"] as const) {
+    it(`${initial}: failed probe rescue then recovery`, async () => {
+      let now = 0;
+      const controller = new FallbackController(() => now);
+      const notes: Note[] = [];
+      const ctx = makeCtx(notes);
+      streamImpl = model => model === PRIMARY || initial === "both-down" ? errStream("down") : okStream("- ok");
+      await summarizeBatch(makeBatch(), distinctConfig, ctx, { controller });
+      notes.length = 0;
+      now += 600001;
+      streamImpl = model => model === PRIMARY ? errStream("probe failed") : okStream("- rescued");
+      expect((await summarizeBatch(makeBatch(), distinctConfig, ctx, { controller }))?.summaryText).toBe("- rescued");
+      expect(notes).toEqual(initial === "both-down" ? [{ msg: genericEnter, level: "warning" }] : []);
+      notes.length = 0;
+      now += 600001;
+      streamImpl = () => okStream("- recovered");
+      await summarizeBatch(makeBatch(), distinctConfig, ctx, { controller });
+      expect(notes).toEqual([{ msg: "pi-condense: summarizer model Primary recovered", level: "info" }]);
+    });
+  }
+
+  it("blank primary never retries or enters fallback", async () => {
+    const attempts: any[] = [];
+    streamImpl = model => { attempts.push(model); return okStream(" "); };
+    const controller = new FallbackController();
+    const notes: Note[] = [];
+    expect(await summarizeBatch(makeBatch(), distinctConfig, makeCtx(notes), { controller })).toBeNull();
+    expect(attempts).toEqual([PRIMARY]);
+    expect(controller.inFallback).toBe(false);
+    expect(notes).toEqual([]);
+  });
+
+  it("abort during pending stream rejects without notices", async () => {
+    await withTimerClock(async clock => {
+      streamImpl = (_model, _input, opts) => hangingStream(opts);
+      const notes: Note[] = [];
+      const ac = new AbortController();
+      const pending = summarizeBatch(makeBatch(), distinctConfig, makeCtx(notes), { controller: new FallbackController(clock.now), signal: ac.signal });
+      const rejected = pending.then(() => null, error => error);
+      await clock.advance(1);
+      ac.abort();
+      expect(await rejected).toBeInstanceOf(Error);
+      expect(notes).toEqual([]);
+    });
   });
 });

@@ -219,8 +219,8 @@ export const RECOVERY_GRACE_PRESETS: { value: string; label: string }[] = [
 export const SUMMARIZER_IDLE_TIMEOUT_PRESETS: { value: string; label: string }[] = [
   { value: "0", label: "0 (disabled)" },
   { value: "10000", label: "10s" },
-  { value: "20000", label: "20s (default)" },
-  { value: "45000", label: "45s" },
+  { value: "20000", label: "20s" },
+  { value: "45000", label: "45s (default)" },
   { value: "90000", label: "90s" },
 ];
 
@@ -321,7 +321,7 @@ export interface ContextPruneConfig {
    * Reset on every received stream event; armed before the first event so it
    * also bounds time-to-first-token. If no event arrives within this window
    * the call is aborted and classified transient (feeds the outage-fallback
-   * retry). 0 disables the idle timer. Default 20000.
+   * retry). 0 disables the idle timer. Default 45000.
    */
   summarizerIdleTimeoutMs: number;
   /**
@@ -569,7 +569,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   quietOversizedSkips: false,
   minBatchChars: 2000,
   recoveryGraceTurns: 3,
-  summarizerIdleTimeoutMs: 20000,
+  summarizerIdleTimeoutMs: 45000,
   summarizerMaxTimeoutMs: 180000,
   protectedTools: [],
   protectedPaths: ["**/skills/**/*.md", "**/gauntlet-overrides.md"],

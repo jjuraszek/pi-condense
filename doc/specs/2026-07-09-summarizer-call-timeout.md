@@ -1,5 +1,7 @@
 # Summarizer call timeout (idle + ceiling)
 
+> **Superseded by:** [doc/specs/2026-10-22-gh-21-summarizer-idle-timeout-notice-reason.md](./2026-10-22-gh-21-summarizer-idle-timeout-notice-reason.md) - the 20s idle default in the Defaults table and the "Fallback rescue" scope note (a rescued timeout reported solely as the generic fallback-entry warning)
+
 Date: 2026-07-09
 Status: proposed
 Area: `src/summarizer.ts`, `src/types.ts`, `src/config.ts`, `src/commands.ts`, docs

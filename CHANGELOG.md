@@ -7,6 +7,13 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- The summarizer idle default is 45s instead of 20s, allowing queued providers longer before session-model takeover; the silent-primary wait is 45s on initial detection and each failed 10-minute probe. Explicit settings keep their values. (#21)
+- Immediate session-model rescue notices include the primary failure reason, including idle/ceiling timeout or provider error text; deferred fallback notices remain unchanged. (#21)
+
 ## [2.13.0] - 2026-10-20
 
 ### Changed
