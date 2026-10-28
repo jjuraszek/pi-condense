@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
+import { streamSimple as streamCompletions } from "@earendil-works/pi-ai/api/openai-completions";
+import { retryJob } from "./run";
 import { observe, classifySummarizer, sumMeasurements } from "./observer.js";
 
 const model = { provider: "anthropic", id: "summary", api: "anthropic-messages", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } };
@@ -9,6 +13,137 @@ const context = () => ({ messages: [{ role: "user", content: "synthetic", timest
 const evidence = { type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 2 } } };
 
 describe("observe", () => {
+  test.each(["google-generative-ai", "google-vertex", "unknown"])("%s preserves options and original stream/result without injected fetch", async api => {
+    const answer = message({ api });
+    const stream = { result: () => Promise.resolve(answer) };
+    let expected: any;
+    const check = (options: any) => {
+      expect(options).toBe(expected);
+      expect(options?.fetch).toBe(expected?.fetch);
+    };
+    const observed = observe({
+      streamSimple(_m: any, _c: any, options: any) { check(options); return stream; },
+      async completeSimple(_m: any, _c: any, options: any) { check(options); return answer; },
+    });
+    for (const options of [undefined, { apiKey: "synthetic" }, { fetch: globalThis.fetch }]) {
+      expected = options;
+      expect(observed.runtime.streamSimple({ ...model, api }, context(), options)).toBe(stream);
+      expect(await stream.result()).toBe(answer);
+      expect(await observed.runtime.completeSimple({ ...model, api }, context(), options)).toBe(answer);
+    }
+    expect(observed.records).toHaveLength(6);
+  });
+  test.each([429, 401, "transport", "transport-cause"] as const)("real adapter terminal %s reaches fresh-job retry policy offline", async kind => {
+    const delays: number[] = [];
+    const dirs: string[] = [];
+    const result = await retryJob("offline", async dir => {
+      dirs.push(dir);
+      const observed = observe({ streamSimple, completeSimple: async (...args: any[]) => (streamSimple as any)(...args).result() });
+      const answer = await observed.runtime.streamSimple({ ...model, name: "Offline", baseUrl: "https://invalid.invalid", input: ["text"], maxTokens: 100, contextWindow: 1000 } as any, context(), {
+        apiKey: "synthetic-offline", maxRetries: 0,
+        fetch: async () => {
+          if (kind === "transport") throw Object.assign(new Error("SECRET transport"), { code: "ECONNRESET" });
+          if (kind === "transport-cause") throw new TypeError("SECRET transport", { cause: Object.assign(new Error("SECRET cause"), { code: "ECONNRESET" }) });
+          return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "SECRET provider body" } }), { status: kind });
+        },
+      }).result();
+      expect(answer.stopReason).toBe("error");
+      await Promise.resolve();
+      expect(observed.records[0].retry).toEqual(typeof kind === "string" ? { kind: "transport", retryable: true } : { kind: "http", httpStatus: kind, retryable: kind === 429 });
+      expect(JSON.stringify(observed.records)).not.toContain("SECRET");
+      expect(JSON.stringify(observed.records)).not.toContain("synthetic-offline");
+      return { status: "error", errorReason: "error:subject", records: observed.records, elapsedMs: { total: 1 } };
+    }, async ms => { delays.push(ms); });
+    expect(delays).toEqual(kind === 401 ? [] : [2000, 8000]);
+    expect(new Set(dirs).size).toBe(kind === 401 ? 1 : 3);
+    expect(result.attempts).toBe(dirs.length);
+  });
+
+  test.each([
+    ["anthropic-messages", streamSimple, "streamSimple"],
+    ["anthropic-messages", streamSimple, "completeSimple"],
+    ["openai-responses", streamResponses, "streamSimple"],
+    ["openai-responses", streamResponses, "completeSimple"],
+    ["openai-completions", streamCompletions, "streamSimple"],
+    ["openai-completions", streamCompletions, "completeSimple"],
+  ] as const)("%s HTTP 200 body reset through %s retries fresh jobs offline", async (api, adapter, method) => {
+    const delays: number[] = [];
+    const dirs: string[] = [];
+    const result = await retryJob("offline-body", async dir => {
+      dirs.push(dir);
+      const observed = observe({ streamSimple: adapter, completeSimple: async (...args: any[]) => (adapter as any)(...args).result() });
+      const requested = { ...model, api, name: "Offline", baseUrl: "https://invalid.invalid", input: ["text"], maxTokens: 100, contextWindow: 1000 } as any;
+      const pending = observed.runtime[method](requested, context(), {
+        apiKey: "synthetic-offline", maxRetries: 0,
+        fetch: async () => new Response(new ReadableStream({
+          pull(controller) { controller.error(Object.assign(new Error("SECRET body"), { code: "ECONNRESET" })); },
+        }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      });
+      const answer = await (method === "streamSimple" ? (pending as any).result() : pending);
+      expect(answer.stopReason).toBe("error");
+      await Promise.resolve();
+      expect(observed.records[0].status).toBe("error:transport");
+      expect(observed.records[0].retry).toEqual({ kind: "transport", retryable: true });
+      expect(JSON.stringify(observed.records)).not.toContain("SECRET");
+      expect(JSON.stringify(observed.records)).not.toContain("synthetic-offline");
+      return { status: "error", errorReason: "error:subject", records: observed.records, elapsedMs: { total: 1 } };
+    }, async ms => { delays.push(ms); });
+    expect(delays).toEqual([2000, 8000]);
+    expect(new Set(dirs).size).toBe(3);
+    expect(result.attempts).toBe(3);
+  });
+
+  test.each(["error", "cancel", "cancel-error"] as const)("body reader preserves %s and response identity", async operation => {
+      const error = Object.assign(new Error("SECRET body"), { code: "ECONNRESET" });
+      const reason = { cancel: true };
+      const expectedCancelError = operation === "cancel-error" ? error : undefined;
+      let pulls = 0;
+      let cancelCalls = 0;
+      let canceled: unknown;
+      const body = new ReadableStream({
+        pull(controller) { pulls++; if (operation === "error") controller.error(error); else controller.enqueue(new Uint8Array([1])); },
+        cancel(value) { cancelCalls++; canceled = value; if (operation === "cancel-error") throw error; },
+      }, { highWaterMark: 0 });
+      const response = new Response(body);
+      const observed = observe({ streamSimple() { throw Error(); }, async completeSimple(_m: any, _c: any, options: any) {
+        expect(await options.fetch("https://invalid.invalid")).toBe(response);
+        expect(response.body).toBe(body);
+        expect(body.locked).toBe(false);
+        expect(pulls).toBe(0);
+        const consumer = body.getReader();
+        if (operation === "error") {
+          try { await consumer.read(); throw Error("did not reject"); }
+          catch (caught) { expect(caught).toBe(error); }
+        } else {
+          await consumer.read();
+          const cancel = consumer.cancel(reason);
+          let cancelError: unknown;
+          try { await cancel; } catch (caught) { cancelError = caught; }
+          expect(cancelError).toBe(expectedCancelError);
+          expect(cancelCalls).toBe(1);
+          expect(canceled).toBe(reason);
+        }
+        consumer.releaseLock();
+        expect(body.locked).toBe(false);
+        return message({ stopReason: operation === "error" ? "error" : "aborted" });
+      } });
+      await observed.runtime.completeSimple(model, context(), { fetch: async () => response });
+      expect(observed.records[0].retry).toEqual(operation === "error" ? { kind: "transport", retryable: true } : { retryable: false });
+  });
+
+  test("fetch results and errors remain original and eventual success clears retry evidence", async () => {
+    const response = new Response("", { status: 429 });
+    const error = Object.assign(new Error("SECRET"), { code: "ECONNRESET" });
+    const observed = observe({ streamSimple() { throw Error(); }, async completeSimple(_m: any, _c: any, options: any) {
+      expect(await options.fetch("https://invalid.invalid")).toBe(response);
+      try { await options.fetch("https://invalid.invalid"); } catch (caught) { expect(caught).toBe(error); }
+      return message();
+    } });
+    let calls = 0;
+    const answer = await observed.runtime.completeSimple(model, context(), { fetch: async () => { if (calls++) throw error; return response; } });
+    expect(answer.stopReason).toBe("stop");
+    expect(observed.records[0].retry).toEqual({ retryable: false });
+  });
   test("stream iteration and result remain original; snapshots phase/context and binds private methods", async () => {
     const stream = new AssistantMessageEventStream();
     class Runtime {
@@ -105,7 +240,7 @@ describe("observe", () => {
     ["negative finite cost", { ...usage, cost: { total: -0.1 } }, model, true, "estimated"],
     ...[NaN, Infinity, -Infinity].map(total => [`non-finite cost ${total}`, { ...usage, cost: { total } }, model, true, "unavailable"]),
   ])("%s preserves missing measurements", async (_name, raw, requested, emit, costProvenance) => {
-    const observed = observe({ streamSimple() { throw new Error(); }, async completeSimple(_m: any, _c: any, options: any) { if (emit) await options.onProviderStreamEvent(evidence, requested); return message({ usage: raw }); } });
+    const observed = observe({ streamSimple() { throw new Error(); }, async completeSimple(_m: any, _c: any, options: any) { if (emit) await options?.onProviderStreamEvent?.(evidence, requested); return message({ usage: raw }); } });
     await observed.runtime.completeSimple(requested, context());
     const record = observed.records[0];
     expect(record.usage).toBe(raw);

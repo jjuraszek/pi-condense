@@ -143,11 +143,13 @@ export async function runJob(options: JobOptions) {
   const judgeRecords = records.filter(r => r.phase === "judge");
   const result = {
     scenario: options.scenario.id, summarizer: options.summarizer, runIndex: options.runIndex,
-    reply, toolCalls, recovery, usage, costProvenance: { subject: usage.subject.cost.provenance, summarizer: usage.summarizer.cost.provenance },
+    reply, toolCalls, recovery, usage,
+    callCounts: { subject: records.filter(r => r.phase === "subject").length, summarizer: records.filter(r => r.phase === "summarizer").length, judge: judgeRecords.length },
+    costProvenance: { subject: usage.subject.cost.provenance, summarizer: usage.summarizer.cost.provenance },
     elapsedMs: { flush, probe, total: performance.now() - started }, attempts: 1,
     status: errorReason ? "error" : "ok", ...(errorReason ? { errorReason } : {}),
     finalAssistantIndex, verdict: verdict ?? "error", check: check ?? errorReason, reason: reason ?? errorReason,
-    judgeOverhead: { usage: sumMeasurements(judgeRecords.map(r => r.measurements)), elapsedMs: judgeRecords.reduce((sum, r) => sum + r.elapsedMs, 0) },
+    judgeOverhead: { calls: judgeRecords.length, usage: sumMeasurements(judgeRecords.map(r => r.measurements)), elapsedMs: judgeRecords.reduce((sum, r) => sum + r.elapsedMs, 0) },
     summaries, shortRefs, flushMetrics, records,
   };
   await mkdir(jobPath, { recursive: true });

@@ -2,7 +2,7 @@
 
 **Ticket:** [jjuraszek/pi-condense#22](https://github.com/jjuraszek/pi-condense/issues/22)
 **Goal:** Add a hands-free, paid behavioral eval (`npm run eval`) that drives the real extension through the pi SDK on a synthetic seven-scenario corpus, scores downstream behavior with mechanical checks plus a frozen LLM judge, and commit a baseline report per pinned summarizer so every later summarization change is measured against it.
-**Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.
+**Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.; fund 2 fix rounds
 **Engine:** waves
 **Date:** 2026-10-28
 **Status:** draft

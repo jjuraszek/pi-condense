@@ -1,4 +1,4 @@
-import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, FetchFunction } from "@earendil-works/pi-ai";
 
 export type Phase = "summarizer" | "subject" | "judge";
 export type Identity = { provider: string; id: string };
@@ -22,12 +22,12 @@ const unavailable = (): Measurement => ({ provenance: "unavailable" });
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
 
 function failure(error: unknown): Pick<CallRecord, "status" | "retry"> {
-  const e = error as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown } | undefined;
+  const e = error as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown; cause?: { code?: unknown } } | undefined;
   const status = e?.status ?? e?.statusCode;
   if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
     return { status: "error:http", retry: { kind: "http", httpStatus: status, retryable: status === 429 } };
   }
-  if (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(String(e?.code))) {
+  if (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(String(e?.code ?? e?.cause?.code))) {
     return { status: "error:transport", retry: { kind: "transport", retryable: true } };
   }
   return { status: e?.name === "AbortError" ? "error:aborted" : "error:exception", retry: { retryable: false } };
@@ -37,6 +37,7 @@ export function observe<T extends Runtime>(original: T) {
   let phase: Phase = "subject";
   const records: CallRecord[] = [];
   function invoke(method: "streamSimple" | "completeSimple", model: any, context: Context, options?: any) {
+    const known = ["anthropic-messages", "openai-responses", "openai-completions"].includes(model.api);
     const started = performance.now();
     const record: CallRecord = {
       phase, requested: { provider: model.provider, id: model.id }, context: structuredClone(context),
@@ -69,6 +70,38 @@ export function observe<T extends Runtime>(original: T) {
       }
       return options?.onProviderStreamEvent?.(event, eventModel);
     };
+    let transportFailure: Pick<CallRecord, "status" | "retry"> | undefined;
+    const underlyingFetch: FetchFunction = options?.fetch ?? globalThis.fetch;
+    const fetch: FetchFunction = async (...args) => {
+      try {
+        const response = await underlyingFetch(...args);
+        transportFailure = response.ok ? undefined : failure({ status: response.status });
+        const body = response.body;
+        if (response.ok && body) {
+          // Both pinned adapters consume successful response bodies through getReader().
+          const getReader = body.getReader;
+          body.getReader = function (...args: any[]) {
+            const consumer = getReader.apply(this, args as []);
+            const read = consumer.read;
+            consumer.read = function (...args: any[]) {
+              try {
+                const pending = read.apply(this, args as []);
+                pending.then(undefined, (error: unknown) => { transportFailure = failure(error); });
+                return pending;
+              } catch (error) {
+                transportFailure = failure(error);
+                throw error;
+              }
+            };
+            return consumer;
+          };
+        }
+        return response;
+      } catch (error) {
+        transportFailure = failure(error);
+        throw error;
+      }
+    };
     let finished = false;
     const finish = (answer?: AssistantMessage, error?: unknown, rejected = false) => {
       if (finished) return;
@@ -78,12 +111,14 @@ export function observe<T extends Runtime>(original: T) {
       if (answer) {
         record.answered = { provider: answer.provider, id: answer.responseModel ?? answer.model };
         record.usage = answer.usage;
-        if (answer.stopReason === "error" || answer.stopReason === "aborted") record.status = `error:${answer.stopReason}`;
+        if (answer.stopReason === "error" || answer.stopReason === "aborted") {
+          record.status = `error:${answer.stopReason}`;
+          if (answer.stopReason === "error" && transportFailure) Object.assign(record, transportFailure);
+        }
         for (const f of fields) {
           if (f !== "cost" && present.has(f) && finite(answer.usage?.[f])) record.measurements[f] = { value: answer.usage[f], provenance: "measured" };
         }
         // These adapters calculate cost from catalog rates, including Copilot's adapters.
-        const known = ["anthropic-messages", "openai-responses", "openai-completions"].includes(model.api);
         const priced = model.cost && Object.values(model.cost).some(v => finite(v) && v > 0);
         if (known && priced && Number.isFinite(answer.usage?.cost?.total)) {
           record.measurements.cost = { value: answer.usage.cost.total, provenance: "estimated" };
@@ -93,7 +128,7 @@ export function observe<T extends Runtime>(original: T) {
     };
     let result: any;
     try {
-      result = original[method].call(original, model, context, { ...options, onProviderStreamEvent });
+      result = original[method].call(original, model, context, known ? { ...options, fetch, onProviderStreamEvent } : options);
     } catch (error) {
       finish(undefined, error, true);
       throw error;

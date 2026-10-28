@@ -115,6 +115,8 @@ if (process.argv[2] === "--child") {
       expect(call.resultIndex).toBeGreaterThan(call.index);
       expect(call.resultIndex).toBeLessThan(result.finalAssistantIndex);
     }
+    expect(result.callCounts).toEqual(Object.fromEntries(["subject", "summarizer", "judge"].map(phase => [phase, result.records.filter((r: any) => r.phase === phase).length])));
+    expect(result.judgeOverhead.calls).toBe(result.callCounts.judge);
     expect(result.usage.subject.input.provenance).toBe("measured");
     expect(result.elapsedMs.total).toBeGreaterThanOrEqual(result.elapsedMs.flush + result.elapsedMs.probe);
   }, 30000);
