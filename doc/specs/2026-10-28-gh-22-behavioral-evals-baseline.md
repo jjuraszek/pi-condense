@@ -89,7 +89,7 @@ Add: everything under `eval/`; `package.json` scripts `eval` (`bun eval/run.ts`)
 | `SUBJECT_MODEL` | `anthropic/claude-sonnet-5-5` |
 | `SUBJECT_SYSTEM_PROMPT` | fixed string in `config.ts` (a short synthetic coding-assistant prompt; no repo material) |
 | `SUBJECT_THINKING_LEVEL` | `medium`, passed explicitly |
-| `SUMMARIZER_MODELS` | `anthropic/claude-haiku-5-5`, `github-copilot/gpt-6-luna` |
+| `SUMMARIZER_MODELS` | `anthropic/claude-haiku-5-5`, `github-copilot/gpt-6-luna` (the user asked for "luna 6.1"; `pi --list-models` has no such id, and the user chose `github-copilot/gpt-6-luna` from the available ids during the questionary) |
 | `JUDGE_MODEL` | `anthropic/claude-opus-5-5` |
 | `JUDGE_PROMPT` | fixed system prompt + rubric in `judge.ts`; its sha256 is `judgePromptHash` |
 | `RUNS_PER_CASE` | 3 |
@@ -201,7 +201,7 @@ Sequence: commit the harness and corpus; with a clean tree, run `npm run eval --
 - `--baseline --summarizer <id>`: overwrites only that file.
 - `--baseline --runs <n != 3>`: rejected.
 - Mid-result-fact fixture must exceed 8000 chars with the fact outside head and tail; a unit test asserts the position.
-- Every write outside `eval/baseline/` lands under one `mktemp -d`; credentials are read from the operator's agent dir and never copied, logged, or written.
+- Every write outside `eval/baseline/` lands under one `mktemp -d`; credentials are read from the operator's agent dir and never copied into job dirs, logged, or written into any eval artifact. The runtime's own OAuth refresh of the operator's `auth.json` (pi's standard `DefaultAuthStorage` behavior, required for Copilot tokens) is unchanged and is not an eval write.
 
 ## Tests
 
