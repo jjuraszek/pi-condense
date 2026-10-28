@@ -46,7 +46,7 @@ The frozen Opus judge scores judged cases only after mechanical gates pass. It r
 
 ## Baselines and comparisons
 
-The committed [Haiku baseline](baseline/claude-haiku-5-5.md) and [Luna baseline](baseline/gpt-6-luna.md) were captured on source/corpus revision `8797e2a42bee6eba6b3b92e4dadf02405074fcd8` and committed in `07143994ce7bea359456c9adc09c0efff06215e6`. They record genuine behavioral failures: Haiku passed 16/21 and Luna 11/21, with no execution errors.
+The committed [Haiku baseline](baseline/claude-haiku-5-5.md) and [Luna baseline](baseline/gpt-6-luna.md) record source/corpus revision `6e2bbdd503a04424f1999ad3f968e06009374acf`. They record genuine behavioral failures: Haiku passed 16/21 and Luna 15/21, with no execution errors.
 
 Comparison identity includes corpus bytes, subject prompt hash, subject model and thinking level, summarizer, judge model and prompt/rubric hash, pipeline settings hash, and repetition count. Key mismatch blocks comparison before paid jobs. Reports also record both installed Pi SDK versions; the runner warns rather than refuses on version mismatch. Treat that warning as a workflow blocker: align versions or intentionally recapture a baseline before claiming a controlled comparison.
 
