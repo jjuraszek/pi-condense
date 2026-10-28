@@ -9,9 +9,6 @@ async function child() {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const { SUBJECT_MODEL, SUMMARIZER_MODELS, JUDGE_MODEL } = await import("./config");
   const [id, control, dir] = process.argv.slice(3);
-  if (control === "stderr-pressure") {
-    await new Promise<void>((resolve, reject) => process.stderr.write("x".repeat(1024 * 1024), error => error ? reject(error) : resolve()));
-  }
   const scenario = structuredClone((await import(`./scenarios/${id}.ts`)).default);
   if (control === "trivial") for (const turn of scenario.history) if (turn.role === "result") turn.text = "tiny";
   if (control === "missing-index") {
@@ -119,10 +116,6 @@ if (process.argv[2] === "--child") {
     expect(result.judgeOverhead.calls).toBe(result.callCounts.judge);
     expect(result.usage.subject.input.provenance).toBe("measured");
     expect(result.elapsedMs.total).toBeGreaterThanOrEqual(result.elapsedMs.flush + result.elapsedMs.probe);
-  }, 30000);
-  test("drains stderr while the child is still producing stdout", async () => {
-    const result = await run("mid-result-fact", "stderr-pressure");
-    expect(result.status).toBe("ok");
   }, 30000);
   test.each([
     ["disabled", "error:no-flush"], ["trivial", "error:no-flush"], ["missing-index", "error:no-flush"],

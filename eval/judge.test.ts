@@ -71,6 +71,19 @@ test("correction reaches frozen judge without raw history or temperature", async
   expect(judgePromptHash()).toBe(createHash("sha256").update(JUDGE_PROMPT).digest("hex"));
   for (const word of ["assertion", "quotation", "negation", "correction", "approval", "unsupported"]) expect(JUDGE_PROMPT).toContain(word);
 });
+test.each([
+  ["summarized evidence", "42, from the summary of t1; I did not retrieve or re-read the original file.", true],
+  ["unsupported domain claim", "42 because of aliens", false],
+])("sends provenance-aware instructions and evidence: %s", async (_name, reply, pass) => {
+  const mock = stub([JSON.stringify({ pass, reason: "Stub verdict." })]);
+  expect((await run([], reply, judged, mock.runtime)).status).toBe(pass ? "pass" : "fail");
+  const [, context] = mock.calls[0];
+  expect(context.systemPrompt).toContain("Statements about currently seeing a summary, not retrieving or re-reading the original, or using a stub reference are provenance statements about the subject's own context, not factual claims to check against the oracle.");
+  expect(context.systemPrompt).toContain("Earlier tool results were replaced by LLM summaries and short-reference stubs such as t1 before the probe; originals can be recovered via context_tree_query.");
+  expect(context.systemPrompt).toContain("The oracle describes what historical tool calls returned, not what the subject had in view at the probe.");
+  expect(JSON.parse(context.messages[0].content).reply).toBe(reply);
+  expect(judgePromptHash()).toBe(createHash("sha256").update(JUDGE_PROMPT).digest("hex"));
+});
 test("unsupported claims use judge verdict; mechanical failure skips judge", async () => {
   const mock = stub(['{"pass":false,"reason":"Unsupported cause asserted."}']);
   expect(await run([], "42 because of aliens", judged, mock.runtime)).toMatchObject({ status: "fail", check: "judge", reason: "Unsupported cause asserted." });
