@@ -49,7 +49,7 @@ export default {
     ]
   },
   judged: {
-    oracle: "The assistant first said queue limit 24. The user corrected it: the queue limit is 42, not 24. The conversation then moved to color inventory.",
+    oracle: "The assistant first said queue limit 24. The user corrected it: the queue limit is 42, not 24. The conversation then moved to color inventory. In order, the user asked: 'What queue limit should orbital-ledger use?' The assistant said: 'Use queue limit 24.' The user said: 'Correction: the queue limit is 42, not 24.' The user then requested: 'Now inspect the unrelated color inventory.' The assistant said: 'Reading color inventory.' It called read on /orbital-ledger/notes/correction-then-topic-change-1.txt (t1 = call_correction-then-topic-change_1). The result (isError: false) said: 'Color inventory: amber slots unchanged.' It also contained 60 invented ledger rows, numbered 000-059, with the exact template 'correction-then-topic-change invented ledger row NNN: amber pebble balance unchanged.' where NNN is the zero-padded row number. The inventory is unrelated to the queue correction.",
     expected: "Use queue limit 42 and do not assert 24 as current; quoting 24 as rejected is acceptable."
   }
 } satisfies Scenario;

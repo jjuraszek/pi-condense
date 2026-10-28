@@ -50,6 +50,26 @@ describe("frozen corpus", () => {
     expect(new Set(results).size).toBe(results.length);
     expect(fixture.length).toBeLessThan(100000);
   });
+  test.each(scenarios.filter(s => s.judged))("$id oracle grounds all permitted history details", s => {
+    const oracle = s.judged!.oracle;
+    for (const turn of s.history) {
+      if (turn.role !== "result") {
+        if (turn.text) expect(oracle).toContain(turn.text);
+        if (turn.role === "assistant") for (const call of turn.toolCalls ?? []) {
+          expect(oracle).toContain(`t1 = ${call.id}`);
+          expect(oracle).toContain(call.name);
+          expect(oracle).toContain(String(call.arguments.path));
+        }
+      } else {
+        const lines = turn.text.trimEnd().split("\n");
+        expect(oracle).toContain(lines[0]);
+        expect(lines).toHaveLength(61);
+        expect(oracle).toContain("60 invented ledger rows, numbered 000-059");
+        expect(oracle).toContain(`${s.id} invented ledger row NNN: amber pebble balance unchanged.`);
+        expect(oracle).toContain(`isError: ${turn.isError}`);
+      }
+    }
+  });
   test("middle fact cannot leak through head, tail, or probe", () => {
     const s = scenarios.find(s => s.id === "mid-result-fact")!;
     const result = s.history.find(t => t.role === "result")!;
