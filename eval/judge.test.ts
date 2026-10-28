@@ -67,7 +67,7 @@ test("correction reaches frozen judge without raw history or temperature", async
   expect(context.systemPrompt).toBe(JUDGE_PROMPT);
   expect(JSON.parse(context.messages[0].content)).toEqual({ ...judged.judged, probe: judged.probe, reply, toolCalls: [] });
   expect(JSON.stringify(context)).not.toContain("SECRET RAW HISTORY");
-  expect(options.temperature).toBeUndefined();
+  expect(options?.temperature).toBeUndefined();
   expect(judgePromptHash()).toBe(createHash("sha256").update(JUDGE_PROMPT).digest("hex"));
   for (const word of ["assertion", "quotation", "negation", "correction", "approval", "unsupported"]) expect(JUDGE_PROMPT).toContain(word);
 });
@@ -77,10 +77,26 @@ test("unsupported claims use judge verdict; mechanical failure skips judge", asy
   expect((await run([], "24", judged, mock.runtime)).check).toBe("contains:42");
   expect(mock.calls).toHaveLength(1);
 });
-test.each(["not json", '{"pass":"yes","reason":"ok"}', '{"pass":true,"reason":4}', '{"pass":true,"reason":"  "}'])("invalid judge response retries only once: %s", async bad => {
+test.each(["not json", '{"pass":"yes","reason":"ok"}', '{"pass":true,"reason":4}', '{"pass":true,"reason":"  "}',
+  'Prose {"pass":true,"reason":"ok"}',
+  '```json\n{"pass":true,"reason":"ok"}\n``` trailing',
+  '```json\n{"pass":true,"reason":"ok"}\n```\n```json\n{}\n```',
+  '```json\n{"pass":true,"reason":"  "}\n```',
+  '```json\n{"pass":"yes","reason":"ok"}\n```',
+])("invalid judge response retries only once: %s", async bad => {
   const mock = stub([bad, bad, '{"pass":true,"reason":"unused"}']);
   expect(await run([], "42", judged, mock.runtime)).toMatchObject({ status: "error", check: "judge", reason: "error: judge" });
   expect(mock.calls).toHaveLength(2);
+});
+test.each([
+  ["plain", '{"pass":false,"reason":"Unsupported claim."}'],
+  ["json fence", '```json\n{"pass":false,"reason":"Unsupported claim."}\n```'],
+  ["bare fence", '```\n{"pass":false,"reason":"Unsupported claim."}\n```'],
+  ["CRLF and whitespace", ' \r\n```json\r\n  {"pass":false,"reason":"Unsupported claim."}\r\n```\r\n '],
+])("accepts entire verdict: %s", async (_name, text) => {
+  const mock = stub([text]);
+  expect(await run([], "42", judged, mock.runtime)).toMatchObject({ status: "fail", reason: "Unsupported claim." });
+  expect(mock.calls).toHaveLength(1);
 });
 test("mechanical-only success never resolves or invokes judge", async () => {
   const mock = stub();

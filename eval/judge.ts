@@ -96,7 +96,9 @@ export async function score(input: ScoreInput): Promise<Score> {
     }
     if (answer.stopReason === "error" || answer.stopReason === "aborted") return { status: "error", check: "judge", reason: `error: provider:${answer.stopReason}`, recovery };
     try {
-      const verdict = JSON.parse(answer.content.filter(block => block.type === "text").map(block => block.text).join(""));
+      const text = answer.content.filter(block => block.type === "text").map(block => block.text).join("").trim();
+      const fenced = /^```(?:json)?[\t ]*\r?\n([\s\S]*?)\r?\n```$/.exec(text);
+      const verdict = JSON.parse(fenced ? fenced[1] : text);
       if (typeof verdict?.pass === "boolean" && typeof verdict.reason === "string" && verdict.reason.trim()) {
         return { status: verdict.pass ? "pass" : "fail", check: "judge", reason: verdict.reason, recovery };
       }

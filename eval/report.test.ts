@@ -132,7 +132,7 @@ describe("reports", () => {
     expect(measurement({ value: 2, provenance: "estimated" })).toBe("2 (estimated)");
   });
   test("ordered tool outcomes and safe metadata exclude raw logs and full replies", () => {
-    const j = { ...job(), records: [{ context: "secret raw context" }], summaries: ["raw summary"], toolCalls: [
+    const j = { ...job(), records: [{ context: "secret raw context", judgeResponse: { text: "RAW_JUDGE_DIAGNOSTIC_MARKER", stopReason: "stop" } }], summaries: ["raw summary"], toolCalls: [
       { name: "context_tree_query", arguments: { toolCallIds: ["t2"] }, index: 2, result: "## toolRef: t2\n(not found in index)" },
       { name: "context_tree_query", arguments: { toolCallIds: ["t1"] }, index: 1, result: "## toolRef: t1\nTool: read\nanswer" },
     ] };
@@ -140,6 +140,8 @@ describe("reports", () => {
     expect(md).toContain("-> returned-source"); expect(md).toContain("-> not-found");
     const safe = readReport(md).jobs[0];
     expect(safe.records).toBeUndefined(); expect(safe.summaries).toBeUndefined();
+    expect(md).not.toContain("RAW_JUDGE_DIAGNOSTIC_MARKER");
+    expect(JSON.stringify(safe)).not.toContain("RAW_JUDGE_DIAGNOSTIC_MARKER");
     expect(safe.toolCalls[0].index).toBe(1); expect(safe.toolCalls[0].result).toBeUndefined();
   });
   test("all identity differences abort, versions only warn", () => {

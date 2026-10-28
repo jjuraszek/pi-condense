@@ -13,6 +13,26 @@ const context = () => ({ messages: [{ role: "user", content: "synthetic", timest
 const evidence = { type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 2 } } };
 
 describe("observe", () => {
+  test.each(["streamSimple", "completeSimple"] as const)("%s records only judge text and stop reason", async method => {
+    const answer = message({ content: [{ type: "text", text: "```json\n" }, { type: "thinking", thinking: "SECRET thinking", thinkingSignature: "SECRET signature" }, { type: "text", text: "{}\n```" }], errorMessage: "SECRET provider error" });
+    const stream = { result: () => Promise.resolve(answer) };
+    const observed = observe({ streamSimple: () => stream, completeSimple: async () => answer });
+    for (const phase of ["subject", "summarizer", "judge"] as const) {
+      observed.setPhase(phase);
+      const returned = observed.runtime[method](model, context(), { apiKey: "SECRET credential", headers: { authorization: "SECRET auth" } });
+      observed.setPhase("subject");
+      if (method === "streamSimple") {
+        expect(returned).toBe(stream);
+        expect(await (returned as typeof stream).result()).toBe(answer);
+      } else expect(await returned).toBe(answer);
+      await Promise.resolve();
+      const record = observed.records.at(-1)!;
+      expect(record.judgeResponse).toEqual(phase === "judge" ? { text: "```json\n{}\n```", stopReason: "stop" } : undefined);
+    }
+    expect(JSON.stringify(observed.records)).not.toContain("SECRET");
+    expect(JSON.stringify(observed.records)).not.toContain("apiKey");
+    expect(JSON.stringify(observed.records)).not.toContain("authorization");
+  });
   test.each(["google-generative-ai", "google-vertex", "unknown"])("%s preserves options and original stream/result without injected fetch", async api => {
     const answer = message({ api });
     const stream = { result: () => Promise.resolve(answer) };

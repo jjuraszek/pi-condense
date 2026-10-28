@@ -12,6 +12,7 @@ export interface CallRecord {
   context: Context;
   status: "ok" | `error:${string}`;
   usage?: AssistantMessage["usage"];
+  judgeResponse?: { text: string; stopReason: AssistantMessage["stopReason"] };
   elapsedMs: number;
   measurements: Measurements;
   retry: { retryable: boolean; kind?: "http" | "transport"; httpStatus?: number };
@@ -111,6 +112,9 @@ export function observe<T extends Runtime>(original: T) {
       if (answer) {
         record.answered = { provider: answer.provider, id: answer.responseModel ?? answer.model };
         record.usage = answer.usage;
+        if (record.phase === "judge") {
+          record.judgeResponse = { text: answer.content.filter(block => block.type === "text").map(block => block.text).join(""), stopReason: answer.stopReason };
+        }
         if (answer.stopReason === "error" || answer.stopReason === "aborted") {
           record.status = `error:${answer.stopReason}`;
           if (answer.stopReason === "error" && transportFailure) Object.assign(record, transportFailure);
