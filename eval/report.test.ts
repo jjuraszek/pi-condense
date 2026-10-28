@@ -1,10 +1,11 @@
 import { describe, test, expect, mock, spyOn } from "bun:test";
 import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
-import { parseArgs, pool, retryJob, preflight, main, baselineName, type MainSeams } from "./run";
+import { parseArgs, pool, retryJob, preflight, main, baselineName, installedVersions, type MainSeams } from "./run";
 import { renderReport, compareReports, readReport, assertCompatible, measurement, header, jobTotal, baselineEstimate } from "./report";
 import { SUBJECT_MODEL, JUDGE_MODEL, SUMMARIZER_MODELS } from "./config";
 import { sumMeasurements } from "./observer";
@@ -95,6 +96,17 @@ describe("paid CLI safety", () => {
 });
 
 describe("reports", () => {
+  test("default version discovery reads both installed ESM-only SDK packages", async () => {
+    const expected: Record<string, string> = {};
+    for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"]) {
+      const metadata = JSON.parse(await readFile(resolve(dirname(fileURLToPath(import.meta.resolve(name))), "../package.json"), "utf8"));
+      expect(metadata.name).toBe(name);
+      expect(metadata.version).toBeString();
+      expect(metadata.version.length).toBeGreaterThan(0);
+      expected[name] = metadata.version;
+    }
+    expect(installedVersions()).toEqual(expected);
+  });
   test.each([null, false, {}, { key: {} }])("rejects malformed decoded baseline shape %j", value => {
     const md = `<!-- pi-condense-eval:v1:${Buffer.from(JSON.stringify(value)).toString("base64")} -->`;
     expect(() => readReport(md)).toThrow("Invalid baseline");

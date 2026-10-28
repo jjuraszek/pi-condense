@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { ModelRuntime, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { InMemoryModelsStore, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { SUBJECT_MODEL, SUBJECT_THINKING_LEVEL, SUMMARIZER_MODELS, JUDGE_MODEL, RUNS_PER_CASE, PIPELINE_SETTINGS, RETRY_POLICY, concurrency, settingsHash, subjectPromptHash, corpusHash } from "./config";
@@ -83,7 +82,9 @@ export async function retryJob(base: string, run: (dir: string) => Promise<any>,
   }
 }
 const repoDefault = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const require = createRequire(import.meta.url);
+export function installedVersions(): Record<string, string> {
+  return Object.fromEntries(["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"].map(name => [name, JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.resolve(name))), "../package.json"), "utf8")).version]));
+}
 export interface MainSeams extends PreflightSeams {
   repo: string;
   env: Record<string, string | undefined>;
@@ -118,7 +119,7 @@ const defaults: MainSeams = {
     try { const p = Bun.spawn(args, { env, cwd, stdout: "pipe", stderr: "pipe" }); await Promise.all([new Response(p.stdout).arrayBuffer().then(b => log.write(b)), new Response(p.stderr).arrayBuffer().then(b => log.write(b)), p.exited]); } finally { await log.end(); }
   },
   sleep: ms => new Promise(r => setTimeout(r, ms)),
-  versions: () => Object.fromEntries(["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"].map(name => [name, JSON.parse(readFileSync(resolve(dirname(require.resolve(name)), "../package.json"), "utf8")).version])),
+  versions: installedVersions,
   print: console.log,
 };
 export const baselineName = (summarizer: string) => {
