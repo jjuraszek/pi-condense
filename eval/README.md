@@ -56,14 +56,14 @@ Any per-case pass-count drop prints `REGRESSION CANDIDATE` and exits 1; executio
 
 ## Costs, reports, and retained evidence
 
-The initial capture ran 42 jobs in 90.661 seconds wall time (about 91 seconds), with total estimated cost USD 1.281427385:
+The committed baseline reports cover 42 jobs with total estimated cost USD 1.223723080 (Haiku USD 0.618264205; Luna USD 0.605458875). Their totals record summed job time per summarizer: Haiku 299165.101208 ms and Luna 364666.609412 ms, not parallel wall time:
 
 | Phase | Haiku jobs (USD estimated) | Luna jobs (USD estimated) |
 |---|---|---|
-| Summarizer | 0.01597459 | 0.004872595 |
-| Subject | 0.3452865 | 0.3258437 |
-| Judge overhead | 0.287695 | 0.301755 |
-| Retry overhead | 0 (no retries) | 0 (no retries) |
+| Summarizer | 0.016132805 | 0.004974175 |
+| Subject | 0.3390014 | 0.3247697 |
+| Judge overhead | 0.263130 | 0.275715 |
+| Retry overhead | unavailable (no retries) | unavailable (no retries) |
 
 These are historical catalog-rate estimates, not billed charges, a quota allowance, or a future cost/duration promise. The original report headers say `unavailable (no baseline yet)` because no estimate existed before that capture. Later headers estimate from retained baseline measurements; their duration is summed job time, not parallel wall time.
 
