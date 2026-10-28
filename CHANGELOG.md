@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Added
+
+- Paid synthetic behavioral evals measure downstream context quality after summarization and pruning, with frozen committed baselines for both summarizers and an eval-needed decision gate for every repository change. Offline harness tests remain separate from paid runs. (#22)
+
 ## [2.13.1] - 2026-10-22
 
 ### Changed

@@ -115,6 +115,7 @@ src/commands.ts           # /pruner subcommands, settings overlay, status widget
 src/diagnostics.ts        # context-prune-diagnostic sink, never in LLM context
 src/types.ts              # shared types, constants, DEFAULT_CONFIG
 src/test-support.ts       # shared test helpers (expectNoOrphanToolResults)
+eval/                     # paid behavioral eval, offline harness tests, frozen baselines
 PRUNING.md                # algorithm, session entry types, design rationale, research refs
 doc/specs/                # durable specs; reach main
 doc/plans/                # ephemeral plans; git rm before ship, never on main
@@ -129,7 +130,13 @@ Session entry `customType`s and what each carries: [`PRUNING.md`](PRUNING.md#ses
 
 ## Testing
 
-`bun test src/` (also `npm test`; the CI and release gate). No typecheck script is wired: `bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --allowJs --esModuleInterop --resolveJsonModule --lib es2022 --types node index.ts` (transient `@types/node` add/remove is fine - don't commit it).
+`bun test src/` (also `npm test`; the CI and release gate). Run `npm run test:eval` separately for offline eval harness tests (no paid calls); it is outside that gate. No typecheck script is wired: `bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --allowJs --esModuleInterop --resolveJsonModule --lib es2022 --types node index.ts` (transient `@types/node` add/remove is fine - don't commit it).
+
+## Behavioral eval
+
+Decide whether an eval is needed for every repository change, including docs-only changes. Run `npm run eval -- --change "why this candidate exists"` for production behavior changes affecting context quality: `src/summarizer*.ts`, `src/batch-capture.ts`, `src/chain-*.ts`, `src/pruner.ts`, stub text, recovery/indexer paths, and `index.ts` capture/prune hooks. Trace indirect dependencies too: runtime providers, configuration, prompts, and shared helpers belong to the same decision; these paths describe ownership, not a closed allowlist.
+
+Recapture with `npm run eval -- --baseline` for eval harness, fixture, key, checks, or report-semantic changes under the correct comparison key. Establish a compatible baseline before select-classify-summarize or recent-dialogue enrichment. Every change's commit body must record `eval: run - <comparison result>` or `eval: not needed - <paths touched>`, for direct commits and PRs alike; the PR body may repeat it. For skipped evals, include the touched paths even for docs-only changes; a brief reason may follow the paths. Read [eval/README.md](eval/README.md) for paid prerequisites, comparison controls, baseline rules, and report interpretation.
 
 ## Release
 
