@@ -57,6 +57,15 @@ export function observe<T extends Runtime>(original: T) {
         const raw = event.response?.usage;
         mark(raw, { input_tokens: "input", output_tokens: "output", total_tokens: "totalTokens" });
         mark(raw?.input_tokens_details, { cached_tokens: "cacheRead", cache_write_tokens: "cacheWrite" });
+      } else if (model.api === "openai-completions") {
+        const raw = event?.usage || (Array.isArray(event?.choices) ? event.choices[0]?.usage : undefined);
+        if (raw) present.clear();
+        mark(raw, { prompt_tokens: "input", completion_tokens: "output" });
+        mark(raw?.prompt_tokens_details, { cache_write_tokens: "cacheWrite" });
+        const cacheRead = raw?.prompt_tokens_details?.cached_tokens ?? raw?.prompt_cache_hit_tokens ?? raw?.cached_tokens;
+        if (finite(cacheRead)) present.add("cacheRead");
+        // The adapter derives total from prompt and completion counts, not total_tokens.
+        if (finite(raw?.prompt_tokens) && finite(raw?.completion_tokens)) present.add("totalTokens");
       }
       return options?.onProviderStreamEvent?.(event, eventModel);
     };
@@ -76,7 +85,7 @@ export function observe<T extends Runtime>(original: T) {
         // These adapters calculate cost from catalog rates, including Copilot's adapters.
         const known = ["anthropic-messages", "openai-responses", "openai-completions"].includes(model.api);
         const priced = model.cost && Object.values(model.cost).some(v => finite(v) && v > 0);
-        if (known && priced && present.size > 0 && finite(answer.usage?.cost?.total)) {
+        if (known && priced && Number.isFinite(answer.usage?.cost?.total)) {
           record.measurements.cost = { value: answer.usage.cost.total, provenance: "estimated" };
         }
       }
@@ -109,7 +118,7 @@ export function observe<T extends Runtime>(original: T) {
       return bound.get(key);
     },
   });
-  return { runtime: runtime as T & Runtime, records, setPhase(next: Phase) { phase = next; } };
+  return { runtime: runtime as T, records, setPhase(next: Phase) { phase = next; } };
 }
 
 export function sumMeasurements(calls: readonly Measurements[]): Measurements {

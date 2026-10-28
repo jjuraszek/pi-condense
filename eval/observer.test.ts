@@ -101,7 +101,9 @@ describe("observe", () => {
     ["priced Copilot", usage, { ...model, provider: "github-copilot" }, true, "estimated"],
     ["unpriced", usage, { ...model, cost: { input: 0, output: 0 } }, true, "unavailable"],
     ["unknown adapter", usage, { ...model, api: "unknown" }, true, "unavailable"],
-    ["no evidence", usage, model, false, "unavailable"],
+    ["no evidence", usage, model, false, "estimated"],
+    ["negative finite cost", { ...usage, cost: { total: -0.1 } }, model, true, "estimated"],
+    ...[NaN, Infinity, -Infinity].map(total => [`non-finite cost ${total}`, { ...usage, cost: { total } }, model, true, "unavailable"]),
   ])("%s preserves missing measurements", async (_name, raw, requested, emit, costProvenance) => {
     const observed = observe({ streamSimple() { throw new Error(); }, async completeSimple(_m: any, _c: any, options: any) { if (emit) await options.onProviderStreamEvent(evidence, requested); return message({ usage: raw }); } });
     await observed.runtime.completeSimple(requested, context());
@@ -120,8 +122,75 @@ describe("observe", () => {
     await observed.runtime.completeSimple(requested, context());
     const m = observed.records[0].measurements;
     expect(m.output).toEqual({ value: 0, provenance: "measured" });
+    expect(m.cost).toEqual({ value: 0.1, provenance: "estimated" });
     expect(sumMeasurements([m, m]).input.value).toBe(0);
     expect(sumMeasurements([m, { ...m, input: { provenance: "unavailable" } }]).input.provenance).toBe("unavailable");
+  });
+
+  test.each([
+    ["chunk", { usage: { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }, ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]],
+    ["first choice", { choices: [{ usage: { completion_tokens: 0 } }] }, ["output"]],
+    ["DeepSeek cache", { usage: { prompt_cache_hit_tokens: 0 } }, ["cacheRead"]],
+    ["Kimi cache", { usage: { cached_tokens: 0 } }, ["cacheRead"]],
+    ["chunk takes precedence", { usage: { completion_tokens: 0 }, choices: [{ usage: { prompt_tokens: 0 } }] }, ["output"]],
+    ["absent fields", { usage: {} }, []],
+    ["absent usage", { choices: [] }, []],
+  ])("Completions %s preserves provider availability despite normalized zeros", async (_name, event, available) => {
+    const requested = { ...model, api: "openai-completions" };
+    const answer = message({ usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } } });
+    const observed = observe({ streamSimple() { throw new Error(); }, async completeSimple(_m: any, _c: any, options: any) {
+      await options.onProviderStreamEvent(event, requested);
+      return answer;
+    } });
+    expect(await observed.runtime.completeSimple(requested, context())).toBe(answer);
+    expect(observed.records).toHaveLength(1);
+    const measurements = observed.records[0].measurements;
+    for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+      expect(measurements[field]).toEqual(available.includes(field) ? { value: 0, provenance: "measured" } : { provenance: "unavailable" });
+    }
+    expect(measurements.cost).toEqual({ value: 0, provenance: "estimated" });
+  });
+
+  test.each([
+    ["chunk replacement", { usage: { completion_tokens: 4 } }, 0, 4, 4, ["output"]],
+    ["first-choice replacement", { choices: [{ usage: { completion_tokens: 4 } }] }, 0, 4, 4, ["output"]],
+    ["empty replacement", { usage: {} }, 0, 0, 0, []],
+    ["no usage", { choices: [] }, 12, 3, 15, ["input", "output", "totalTokens"]],
+  ] as const)("Completions %s tracks final usage availability", async (_name, event, input, output, totalTokens, available) => {
+    const requested = { ...model, api: "openai-completions" };
+    const answer = message({ usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens, cost: { total: 0 } } });
+    const observed = observe({ streamSimple() { throw new Error(); }, async completeSimple(_m: any, _c: any, options: any) {
+      await options.onProviderStreamEvent({ usage: { prompt_tokens: 12, completion_tokens: 3 } }, requested);
+      await options.onProviderStreamEvent(event, requested);
+      return answer;
+    } });
+    expect(await observed.runtime.completeSimple(requested, context())).toBe(answer);
+    expect(observed.records[0].usage).toBe(answer.usage);
+    for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+      expect(observed.records[0].measurements[field]).toEqual((available as readonly string[]).includes(field)
+        ? { value: answer.usage[field], provenance: "measured" }
+        : { provenance: "unavailable" });
+    }
+  });
+
+  test.each(["streamSimple", "completeSimple"] as const)("%s estimates finite cost without token evidence on every known API", async method => {
+    for (const [api, total] of [["anthropic-messages", -0.1], ["openai-responses", 0], ["openai-completions", 0.1]] as const) {
+      const answer = message({ usage: { cost: { total } } });
+      const stream = { result: () => Promise.resolve(answer) };
+      const observed = observe({ streamSimple: () => stream, completeSimple: async () => answer });
+      const result = observed.runtime[method]({ ...model, api }, context());
+      if (method === "streamSimple") {
+        expect(result).toBe(stream);
+        expect(await (result as typeof stream).result()).toBe(answer);
+      } else expect(await result).toBe(answer);
+      await Promise.resolve();
+      expect(observed.records).toHaveLength(1);
+      const measurements = observed.records[0].measurements;
+      expect(measurements.cost).toEqual({ value: total, provenance: "estimated" });
+      for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+        expect(measurements[field]).toEqual({ provenance: "unavailable" });
+      }
+    }
   });
 
   test("fallback wins over terminal errors and missing flush; requested and response identities checked", async () => {
