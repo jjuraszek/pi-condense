@@ -191,6 +191,8 @@ No committed roadmap beyond what's already tracked in [CHANGELOG.md](CHANGELOG.m
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) - issues follow a Context / Problem / Idea / Acceptance Criteria template; PRs run the [pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet) workflow (one-liners exempt from ceremony, never from keeping docs truthful).
 
+For paid synthetic context-quality checks and retained behavioral baselines, see the [behavioral eval guide](eval/README.md).
+
 ## Support
 
 If this saves you tokens, [buy me a coffee](https://buymeacoffee.com/jjurasszek).
