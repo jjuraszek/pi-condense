@@ -206,7 +206,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, replayA
   }
   const incomplete = rows.some(r => r.current.outcome === "error" || r.candidate.outcome === "error" || r.judge.verdict === "error");
   const regressions = rows.some(r => r.scores.some(s => s.retainedCurrent && !s.retainedCandidate));
-  return { rows, incomplete, exitCode: incomplete ? 1 : regressions ? 2 : 0 };
+  return { rows, incomplete, exitCode: regressions ? 2 : incomplete ? 1 : 0 };
 }
 
 async function storedRuntime(models: string[]): Promise<Runtime> {

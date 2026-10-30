@@ -157,6 +157,14 @@ test("only 429/transport retry per call, malformed judge retry is independent", 
   expect(result.rows[0].current.attempts).toHaveLength(3);
 });
 
+test("regression takes precedence over judge error in incomplete results", async () => {
+  const result = await executeReplay(planReplay(corpus(), [model]), runtime([answer("7319"), answer("nothing")], [new Error("broken")]), arms, async () => {});
+  expect(result.rows[0].scores.some(s => s.retainedCurrent && !s.retainedCandidate)).toBe(true);
+  expect(result.rows[0].judge.verdict).toBe("error");
+  expect(result.incomplete).toBe(true);
+  expect(result.exitCode).toBe(2);
+});
+
 test("provider exhaustion and malformed judge error produce incomplete results", async () => {
   const error = () => Object.assign(new Error("busy"), { status: 429 });
   const result = await executeReplay(planReplay(corpus(), [model]), runtime([error(), error(), error(), answer("7319")]), arms, async () => {});
