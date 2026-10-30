@@ -196,7 +196,7 @@ async function storedRuntime(models: string[]): Promise<Runtime> {
     const credential = readStoredCredential(provider, join(dir, "auth.json"));
     if (credential) await credentials.modify(provider, async () => credential);
   }
-  return ModelRuntime.create({ credentials, modelsPath: join(dir, "models.json"), modelsStore: new InMemoryModelsStore(), allowModelNetwork: false });
+  return ModelRuntime.create({ credentials, modelsPath: join(dir, "models.json"), modelsStore: new InMemoryModelsStore(), allowModelNetwork: true });
 }
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export async function replayMain(args: string[], seams: { runtime?: () => Promise<Runtime>; print?: (text: string) => void; sleep?: Sleep } = {}): Promise<number> {
