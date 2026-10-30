@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { oracleCandidates, oracleStrings, selectionStats } from "./oracle.js";
+import { oracleCandidates, oracleStrings } from "./oracle.js";
 import type { ReplaySession } from "./extract.js";
 
 export function session(text = "retry_window_ms=7319 src/foo.ts getBranch pi-condense v1.2.3\nerror: \"connection refused\""): ReplaySession {
@@ -41,11 +41,4 @@ test("first occurrence and multi-result branch boundaries use positions, not tim
   const entries = oracleCandidates(s).get(0)!;
   expect(entries.filter(c => c.text === "7319").map(c => [c.resultIndex, c.offset, c.inMiddle])).toEqual([[0, 0, false], [1, 0, false]]);
   expect(entries.find(c => c.text === "middle_key" && c.resultIndex === 0)?.inMiddle).toBe(true);
-});
-
-test("ordered selector saturation counts only results with excerpts", () => {
-  const middle = Array.from({ length: 30 }, (_, i) => `key_${i}: ${"a".repeat(175)}`).join("\n") + "\ndecisive_key: 7319\n";
-  const s = session("x".repeat(4000) + "\n" + middle + "x".repeat(4000));
-  expect(selectionStats(s.batches[0])[0]).toMatchObject({ budgetExhausted: true });
-  expect(selectionStats(session("x".repeat(9000)).batches[0])).toEqual([]);
 });

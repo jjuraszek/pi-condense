@@ -11,7 +11,7 @@ import type {
 import { serializeBatchForSummarizer } from "./batch-capture.js";
 import { FallbackController, type FallbackTransition } from "./summarizer-fallback.js";
 
-const SYSTEM_PROMPT = `You are summarizing a batch of tool calls made by an AI coding assistant.
+export const SYSTEM_PROMPT = `You are summarizing a batch of tool calls made by an AI coding assistant.
 For each tool call provide:
 - Tool name and a one-sentence description of what it did
 - Key outcome, plus any file paths, identifiers, signatures, or error strings copied verbatim - never reword these
@@ -273,7 +273,7 @@ async function runOnce(
  * session model, and the controller stays sticky in fallback until a
  * per-cooldown probe of the primary succeeds.
  */
-async function runSummarization(
+export async function runSummarization(
   userMessage: string,
   config: ContextPruneConfig,
   ctx: ExtensionContext,

@@ -3,26 +3,25 @@ import { InMemoryModelsStore, InMemoryCredentialStore } from "@earendil-works/pi
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
-import { serializeBatchForSummarizer } from "../../src/batch-capture.js";
-import { runSummarization, SYSTEM_PROMPT } from "../../src/summarizer.js";
+import { runSummarization } from "../../src/summarizer.js";
 import { ToolCallIndexer } from "../../src/indexer.js";
 import { substituteInlineRefs, formatSummaryToolCallRefs } from "../../src/summary-refs.js";
 import type { CapturedBatch } from "../../src/types.js";
 import { observe, type CallRecord } from "../observer.js";
 import { SUMMARIZER_MODELS, JUDGE_MODEL, PIPELINE_SETTINGS, RETRY_POLICY } from "../config.js";
-import { CURRENT_SYSTEM_PROMPT } from "./current-prompt.js";
+import { loadCandidate, productionArm, type ReplayArm } from "./candidate.js";
 import { REPLAY_JUDGE_PROMPT } from "./judge-prompt.js";
 import { assertOutsideRepo } from "./paths.js";
 import { extractSessions, type ReplayCounts, type ReplaySession } from "./extract.js";
-import { oracleCandidates, selectionStats, type OracleCandidate, type SelectionStat } from "./oracle.js";
+import { oracleCandidates, type OracleCandidate } from "./oracle.js";
 import { replayMatrix, type ReplayJobs } from "./matrix.js";
 import { renderReplayReport } from "./report.js";
 
 export type Thinking = "default" | "off" | "low" | "medium" | "high";
-export interface Options { corpus: string; out: string; limit?: number; models: string[]; thinking: Thinking; dryRun: boolean }
+export interface Options { corpus: string; out: string; limit?: number; models: string[]; thinking: Thinking; dryRun: boolean; candidate?: string }
 export function parseArgs(args: string[]): Options {
-  if (args[0] !== "run") throw Error("Usage: eval:replay run --corpus <dir> [--limit N] [--models a,b] [--thinking off|low|medium|high] [--out <dir>] [--dry-run]");
-  let out: string | undefined;
+  if (args[0] !== "run") throw Error("Usage: eval:replay run --corpus <dir> [--limit N] [--models a,b] [--thinking off|low|medium|high] [--out <dir>] [--candidate <module>] [--dry-run]");
+  let out: string | undefined, candidate: string | undefined;
   let thinking: Thinking = PIPELINE_SETTINGS.summarizerThinking;
   let corpus = "", limit: number | undefined, models: string[] = [...SUMMARIZER_MODELS], dryRun = false;
   const seen = new Set<string>();
@@ -31,11 +30,12 @@ export function parseArgs(args: string[]): Options {
     if (seen.has(flag)) throw Error(`Duplicate flag ${flag}`);
     seen.add(flag);
     if (flag === "--dry-run") { dryRun = true; continue; }
-    if (!["--corpus", "--limit", "--models", "--thinking", "--out"].includes(flag)) throw Error(`Unknown flag ${flag}`);
+    if (!["--corpus", "--limit", "--models", "--thinking", "--out", "--candidate"].includes(flag)) throw Error(`Unknown flag ${flag}`);
     const value = args[++i];
     if (!value || value.startsWith("--")) throw Error(`Missing value for ${flag}`);
     if (flag === "--corpus") corpus = value;
     if (flag === "--out") out = value;
+    if (flag === "--candidate") candidate = value;
     if (flag === "--thinking") {
       if (!["off", "low", "medium", "high"].includes(value)) throw Error("Invalid --thinking level");
       thinking = value as Thinking;
@@ -50,7 +50,7 @@ export function parseArgs(args: string[]): Options {
     }
   }
   if (!corpus) throw Error("--corpus is required");
-  return { corpus, out: out ?? corpus, limit, models, thinking: thinking as Thinking, dryRun };
+  return { corpus, out: out ?? corpus, limit, models, thinking: thinking as Thinking, dryRun, candidate };
 }
 
 export interface SelectedBatch { stem: string; session: ReplaySession; batch: CapturedBatch; batchIndex: number; rawChars: number }
@@ -75,9 +75,9 @@ export function planReplay(sessions: { stem: string; session: ReplaySession }[],
 export type Outcome = "retained" | "rejected-oversized" | "unusable:empty" | "unusable:length" | "unusable:timeout" | "error";
 export interface Attempt { records: CallRecord[]; notifications: string[]; elapsedMs: number }
 export interface Arm { outcome: Outcome; text?: string; attempts: Attempt[] }
-export interface EvidenceScore extends OracleCandidate { inCurrentInput: boolean; inCandidateInput: boolean; retainedCurrent: boolean; retainedCandidate: boolean; attribution?: "scanner-missed" | "model-dropped"; resultIndexes: number[] }
+export interface EvidenceScore extends OracleCandidate { inCurrentInput: boolean; inCandidateInput: boolean; retainedCurrent: boolean; retainedCandidate: boolean; attribution?: "not-in-input" | "model-dropped"; resultIndexes: number[] }
 export interface Judge { verdict: "candidate better" | "same" | "current better" | "skipped" | "error"; reason?: string; attempts: Attempt[] }
-export interface ReplayRow { stem: string; batchIndex: number; model: string; assignment: "candidate=A" | "candidate=B"; current: Arm; candidate: Arm; scores: EvidenceScore[]; selection: SelectionStat[]; judge: Judge }
+export interface ReplayRow { stem: string; batchIndex: number; model: string; assignment: "candidate=A" | "candidate=B"; current: Arm; candidate: Arm; scores: EvidenceScore[]; judge: Judge }
 export interface ReplayResult { rows: ReplayRow[]; incomplete: boolean; exitCode: 0 | 1 | 2 }
 type Runtime = Pick<ModelRuntime, "getModel" | "hasConfiguredAuth" | "getAuth" | "streamSimple" | "completeSimple">;
 type Sleep = (ms: number) => Promise<void>;
@@ -87,7 +87,7 @@ const retryable = (records: CallRecord[]) => {
   return last?.status !== "ok" && last?.retry.retryable && (last.retry.kind === "transport" || (last.retry.kind === "http" && last.retry.httpStatus === 429));
 };
 
-export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: Sleep = sleepDefault): Promise<ReplayResult> {
+export async function executeReplay(plan: ReplayPlan, original: Runtime, replayArms: { current: ReplayArm; candidate: ReplayArm }, sleep: Sleep = sleepDefault): Promise<ReplayResult> {
   const runtime = original;
   const candidatesBySession = new Map<ReplaySession, ReturnType<typeof oracleCandidates>>();
   const modelRegistry = new ModelRegistry(runtime as ModelRuntime);
@@ -106,7 +106,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: 
     const { session, stem, batchIndex, rawChars } = selected;
     // Persisted spill metadata is authoritative, even for hand-built envelopes.
     const batch = { ...selected.batch, toolCalls: selected.batch.toolCalls.map((c, i) => c.spillPath || session.batchPositions[batchIndex].results[i]?.spilled ? { ...c, resultText: "" } : c) };
-    const inputs = { current: serializeBatchForSummarizer(batch, { middleChars: 0 }), candidate: serializeBatchForSummarizer(batch) };
+    const inputs = { current: replayArms.current.serialize(batch), candidate: replayArms.candidate.serialize(batch) };
     if (!candidatesBySession.has(session)) candidatesBySession.set(session, oracleCandidates(session));
     const candidates = candidatesBySession.get(session)!.get(batchIndex)!;
     const strings = new Set(candidates.map(c => c.text));
@@ -122,7 +122,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: 
           const started = performance.now(), notifications: string[] = [];
           let result = null;
           try {
-            result = await runSummarization(`${arm === "current" ? CURRENT_SYSTEM_PROMPT : SYSTEM_PROMPT}\n\n<tool-call-batch>\n${inputs[arm]}\n</tool-call-batch>`, { ...PIPELINE_SETTINGS, summarizerModel: name, summarizerThinking: plan.thinking, protectedTools: [...PIPELINE_SETTINGS.protectedTools], protectedPaths: [...PIPELINE_SETTINGS.protectedPaths] }, { model: models.get(name), modelRegistry: attemptRegistry, ui: { notify: (message: string) => notifications.push(message) } } as any, { signal: new AbortController().signal });
+            result = await runSummarization(`${replayArms[arm].systemPrompt}\n\n<tool-call-batch>\n${inputs[arm]}\n</tool-call-batch>`, { ...PIPELINE_SETTINGS, summarizerModel: name, summarizerThinking: plan.thinking, protectedTools: [...PIPELINE_SETTINGS.protectedTools], protectedPaths: [...PIPELINE_SETTINGS.protectedPaths] }, { model: models.get(name), modelRegistry: attemptRegistry, ui: { notify: (message: string) => notifications.push(message) } } as any, { signal: new AbortController().signal });
           } catch {
             // Observer metadata, not the thrown message, owns provider attribution.
           }
@@ -148,7 +148,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: 
         const first = provenance[0];
         const retainedCandidate = arms.candidate.outcome === "retained" && arms.candidate.text!.includes(text);
         const inCandidateInput = inputs.candidate.includes(text);
-        return { ...first, inMiddle: provenance.every(c => c.inMiddle), resultIndexes: provenance.map(c => c.resultIndex), inCurrentInput: inputs.current.includes(text), inCandidateInput, retainedCurrent: arms.current.outcome === "retained" && arms.current.text!.includes(text), retainedCandidate, ...(!retainedCandidate ? { attribution: inCandidateInput ? "model-dropped" as const : "scanner-missed" as const } : {}) };
+        return { ...first, inMiddle: provenance.every(c => c.inMiddle), resultIndexes: provenance.map(c => c.resultIndex), inCurrentInput: inputs.current.includes(text), inCandidateInput, retainedCurrent: arms.current.outcome === "retained" && arms.current.text!.includes(text), retainedCandidate, ...(!retainedCandidate ? { attribution: inCandidateInput ? "model-dropped" as const : "not-in-input" as const } : {}) };
       });
       const assignment = rows.length % 2 === 0 ? "candidate=A" as const : "candidate=B" as const;
       const judge: Judge = { verdict: "skipped", attempts: [] };
@@ -182,7 +182,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: 
           } catch { /* Re-ask a malformed verdict once, independently of provider retries. */ }
         }
       }
-      rows.push({ stem, batchIndex, model: name, assignment, ...arms, scores, selection: selectionStats(batch), judge });
+      rows.push({ stem, batchIndex, model: name, assignment, ...arms, scores, judge });
     }
   }
   const incomplete = rows.some(r => r.current.outcome === "error" || r.candidate.outcome === "error" || r.judge.verdict === "error");
@@ -214,6 +214,10 @@ export async function replayMain(args: string[], seams: { runtime?: () => Promis
     return 0;
   }
   const options = parseArgs(args), corpus = assertOutsideRepo(options.corpus), out = assertOutsideRepo(options.out);
+  let loaded;
+  try { loaded = await loadCandidate(options.candidate, process.cwd()); }
+  catch (error) { print(error instanceof Error ? error.message : String(error)); return 1; }
+  const { name: candidateName, arm: candidate } = loaded;
   mkdirSync(out, { recursive: true });
   const sessions: { stem: string; session: ReplaySession }[] = [];
   const counts: ReplayCounts = { sessionsRead: 0, sessionsSkipped: 0, batches: 0, longResults: 0, spillPresent: 0, spillMissing: 0, protectedExclusions: 0 };
@@ -225,12 +229,12 @@ export async function replayMain(args: string[], seams: { runtime?: () => Promis
     for (const key of Object.keys(counts) as (keyof ReplayCounts)[]) counts[key] += value.counts[key] ?? 0;
   }
   const plan = planReplay(sessions, options.models, options.thinking, options.limit);
-  print(JSON.stringify({ ...counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, thinking: plan.thinking, summarizerCalls: plan.summarizerCalls, judgeCalls: plan.judgeCalls }));
+  print(JSON.stringify({ ...counts, candidate: candidateName, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, thinking: plan.thinking, summarizerCalls: plan.summarizerCalls, judgeCalls: plan.judgeCalls }));
   if (options.dryRun) return 0;
   let result: ReplayResult;
-  try { result = await executeReplay(plan, await (seams.runtime ? seams.runtime() : storedRuntime(options.models)), seams.sleep); }
+  try { result = await executeReplay(plan, await (seams.runtime ? seams.runtime() : storedRuntime(options.models)), { current: productionArm, candidate }, seams.sleep); }
   catch { result = { rows: [], incomplete: true, exitCode: 1 }; }
-  const metadata = { corpus, counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, thinking: plan.thinking, hashes: { current: hash(CURRENT_SYSTEM_PROMPT), candidate: hash(SYSTEM_PROMPT), rubric: hash(REPLAY_JUDGE_PROMPT) } };
+  const metadata = { corpus, counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, thinking: plan.thinking, candidate: candidateName, hashes: { current: hash(productionArm.systemPrompt), candidate: hash(candidate.systemPrompt), rubric: hash(REPLAY_JUDGE_PROMPT) } };
   writeFileSync(assertOutsideRepo(join(out, "jobs.json")), JSON.stringify({ ...metadata, ...result }, null, 2));
   writeFileSync(assertOutsideRepo(join(out, "report.md")), renderReplayReport(result, metadata));
   return result.exitCode;

@@ -1,5 +1,7 @@
-import { TOKEN_CLASS, isIdentifierShaped, selectMiddleLines } from "../../src/batch-capture.js";
-import type { CapturedBatch } from "../../src/types.js";
+// Mirror the serializer's clip geometry and the identifier shape the oracle keys on.
+const TOKEN_CLASS = /[A-Za-z0-9_./-]+/g;
+const isIdentifierShaped = (token: string) => token.length >= 4 && (/[0-9_./-]/.test(token) || /[a-zA-Z][A-Z]/.test(token));
+const HEAD_CHARS = 4000, TAIL_CHARS = 4000;
 import type { ReplaySession } from "./extract.js";
 
 export interface OracleCandidate {
@@ -8,20 +10,6 @@ export interface OracleCandidate {
   resultLength: number;
   offset: number;
   inMiddle: boolean;
-}
-export interface SelectionStat { resultIndex: number; k: number; budgetExhausted: boolean }
-
-export function selectionStats(batch: CapturedBatch): SelectionStat[] {
-  const anchors = new Set<string>();
-  for (const text of [batch.assistantText, ...batch.toolCalls.map(c => JSON.stringify(c.args, null, 2))]) {
-    for (const token of text.matchAll(TOKEN_CLASS)) if (isIdentifierShaped(token[0])) anchors.add(token[0]);
-  }
-  return batch.toolCalls.flatMap((call, resultIndex) => {
-    if (call.spillPath || call.resultText.length <= 8000) return [];
-    const middle = call.resultText.slice(4000, -4000);
-    const k = selectMiddleLines(middle, anchors, 2000).length;
-    return k > 0 ? [{ resultIndex, k, budgetExhausted: selectMiddleLines(middle, anchors, Number.MAX_SAFE_INTEGER).length > k }] : [];
-  });
 }
 
 // Keep provenance per result; the public oracle Set deduplicates batch strings.
@@ -46,7 +34,7 @@ export function oracleCandidates(session: ReplaySession): Map<number, OracleCand
       for (const error of text.matchAll(/\b(?:error|exception|failed|traceback|panic)\b[:\s-]+([^\r\n]+)/gi)) strings.add(error[1].slice(0, 200));
       return [...strings].filter(s => later.some(t => t.includes(s)) && !earlier.some(t => t.includes(s))).map(s => {
         const offset = text.indexOf(s);
-        return { text: s, resultIndex, resultLength: text.length, offset, inMiddle: text.length > 8000 && offset >= 4000 && offset < text.length - 4000 };
+        return { text: s, resultIndex, resultLength: text.length, offset, inMiddle: text.length > HEAD_CHARS + TAIL_CHARS && offset >= HEAD_CHARS && offset < text.length - TAIL_CHARS };
       });
     });
     return [batchIndex, candidates];

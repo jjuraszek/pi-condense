@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { parseArgs, planReplay, executeReplay, replayMain } from "./run.js";
 import { session } from "./oracle.test.js";
 import { SUMMARIZER_MODELS, JUDGE_MODEL, PIPELINE_SETTINGS } from "../config.js";
-import { CURRENT_SYSTEM_PROMPT } from "./current-prompt.js";
-import { SYSTEM_PROMPT, runSummarization } from "../../src/summarizer.js";
+import { productionArm } from "./candidate.js";
+const arms = { current: productionArm, candidate: { systemPrompt: "Test candidate prompt", serialize: (batch: Parameters<typeof serializeBatchForSummarizer>[0]) => serializeBatchForSummarizer(batch) + "\nselected_key: 9911" } };
+import { runSummarization } from "../../src/summarizer.js";
 import { serializeBatchForSummarizer } from "../../src/batch-capture.js";
 import { ToolCallIndexer } from "../../src/indexer.js";
 import { substituteInlineRefs, formatSummaryToolCallRefs } from "../../src/summary-refs.js";
@@ -37,6 +38,17 @@ test("parse limits, arbitrary model shapes, thinking and output", () => {
   expect(() => parseArgs(["run", "--corpus", "/tmp", "--thinking", "invalid"])).toThrow();
 });
 
+test("invalid candidate stops before runtime creation even in dry run", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "replay-invalid-"));
+  const file = join(dir, "invalid.mjs");
+  writeFileSync(file, 'export default { systemPrompt: "invalid" };');
+  const logs: string[] = [];
+  let calls = 0;
+  expect(await replayMain(["run", "--corpus", dir, "--candidate", file, "--dry-run"], { runtime: async () => { calls++; return runtime(); }, print: text => logs.push(text) })).toBe(1);
+  expect(calls).toBe(0);
+  expect(logs).toEqual([`candidate module must export { serialize, systemPrompt }: ${file}`]);
+});
+
 test("stable file/turn ordering, specific skips and exact planned calls", () => {
   const a = session(text); a.batches[0].turnIndex = 5;
   a.batches.push({ ...a.batches[0], turnIndex: 2 }); a.batchPositions.push(a.batchPositions[0]);
@@ -55,16 +67,18 @@ test("dry run guards corpus and makes no runtime or model calls, ignores jobs me
   writeFileSync(join(dir, "jobs.json"), "{}"); writeFileSync(join(dir, "counts.json"), "{}");
   let calls = 0; const logs: string[] = [];
   expect(await replayMain(["run", "--corpus", dir, "--dry-run"], { runtime: async () => { calls++; throw Error("No runtime in dry-run"); }, print: t => logs.push(t) })).toBe(0);
+  expect(logs.join(" ")).toContain('"candidate":"production"');
   expect(calls).toBe(0); expect(logs.join(" ")).toContain('"summarizerCalls":4'); expect(logs.join(" ")).toContain('"judgeCalls":2');
 });
 
-test("production arms use frozen/current serializer, pinned context and decorated retention", async () => {
+test("configured arms use their serializer, pinned context and decorated retention", async () => {
   const s = session("x".repeat(4000) + "\nretry_window_ms: 7319\n" + "x".repeat(4000));
   const rt = runtime();
-  const result = await executeReplay(planReplay([{ stem: "one", session: s }], [model]), rt, async () => {});
+  const result = await executeReplay(planReplay([{ stem: "one", session: s }], [model]), rt, arms, async () => {});
   expect(result.exitCode).toBe(0);
-  for (const [i, prompt] of [CURRENT_SYSTEM_PROMPT, SYSTEM_PROMPT].entries()) {
-    const serialization = serializeBatchForSummarizer(s.batches[0], i === 0 ? { middleChars: 0 } : undefined);
+  for (const [i, arm] of [arms.current, arms.candidate].entries()) {
+    const prompt = arm.systemPrompt;
+    const serialization = arm.serialize(s.batches[0]);
     expect(rt.requests[i].ctx.messages[0].content[0].text).toBe(prompt + "\n\n<tool-call-batch>\n" + serialization + "\n</tool-call-batch>");
     expect(`${rt.requests[i].m.provider}/${rt.requests[i].m.id}`).toBe(model);
   }
@@ -90,7 +104,7 @@ test("production arms use frozen/current serializer, pinned context and decorate
 
 test.each([["oversized", "rejected-oversized"], ["empty", "unusable:empty"], ["length", "unusable:length"], ["error", "error"]])("%s receives no retention or characters but preserves attempts", async (kind, outcome) => {
   const value = kind === "oversized" ? answer("z".repeat(text.length - 1)) : kind === "error" ? new Error("broken") : answer(kind === "length" ? "7319" : "", kind === "length" ? "length" : "stop");
-  const result = await executeReplay(planReplay(corpus(), [model]), runtime([value, answer("7319")]), async () => {});
+  const result = await executeReplay(planReplay(corpus(), [model]), runtime([value, answer("7319")]), arms, async () => {});
   expect(result.rows[0].current.outcome).toBe(outcome);
   expect(result.rows[0].current.text).toBeUndefined();
   expect(result.rows[0].current.attempts).toHaveLength(1);
@@ -98,11 +112,11 @@ test.each([["oversized", "rejected-oversized"], ["empty", "unusable:empty"], ["l
   expect(result.rows[0].judge.verdict).toBe("skipped");
 });
 
-test("every string is scored including both-arm misses with scanner/model attribution", async () => {
+test("every string is scored including both-arm misses with input/model attribution", async () => {
   const s = session("x".repeat(4000) + "\nplain missing_key\nselected_key: 9911\n" + "x".repeat(4000));
-  const result = await executeReplay(planReplay([{ stem: "one", session: s }], [model]), runtime([answer("plain 9911"), answer("nothing")]), async () => {});
+  const result = await executeReplay(planReplay([{ stem: "one", session: s }], [model]), runtime([answer("plain 9911"), answer("nothing")]), arms, async () => {});
   const scores = result.rows[0].scores;
-  expect(scores.find(s => s.text === "missing_key")).toMatchObject({ retainedCurrent: false, retainedCandidate: false, attribution: "scanner-missed", inMiddle: true });
+  expect(scores.find(s => s.text === "missing_key")).toMatchObject({ retainedCurrent: false, retainedCandidate: false, attribution: "not-in-input", inMiddle: true });
   expect(scores.find(s => s.text === "9911")).toMatchObject({ retainedCurrent: true, retainedCandidate: false, attribution: "model-dropped" });
   expect(result.exitCode).toBe(2);
 });
@@ -113,7 +127,11 @@ test("gate writes regression report; advisory preference alone passes; blind ass
   const fail = runtime([answer("7319"), answer("nothing")]);
   expect(await replayMain(["run", "--corpus", dir, "--models", model, "--thinking", "high", "--out", out], { runtime: async () => fail, print() {} })).toBe(2);
   expect(readFileSync(join(out, "report.md"), "utf8")).toContain("Gate: FAIL (1 regressions)");
-  expect(JSON.parse(readFileSync(join(out, "jobs.json"), "utf8")).thinking).toBe("high");
+  const metadata = JSON.parse(readFileSync(join(out, "jobs.json"), "utf8"));
+  expect(metadata.thinking).toBe("high");
+  expect(metadata.candidate).toBe("production");
+  expect(metadata.hashes.current).toBe(metadata.hashes.candidate);
+  expect(fail.requests[0].ctx.messages[0].content).toEqual(fail.requests[1].ctx.messages[0].content);
   expect(fail.requests.map(r => r.options.reasoning)).toEqual(["high", "high"]);
   expect(fail.requests[0].options.reasoning).toBe("high");
   const logs: string[] = [];
@@ -121,7 +139,7 @@ test("gate writes regression report; advisory preference alone passes; blind ass
   expect(logs.join("")).toContain("high");
   await expect(replayMain(["run", "--corpus", dir, "--out", process.cwd(), "--dry-run"])).rejects.toThrow();
   const rt = runtime(undefined, [answer('{"verdict":"B better","reason":"Clearer uncertainty."}'), answer('{"verdict":"A better","reason":"Clearer uncertainty."}')]);
-  const result = await executeReplay(planReplay([...corpus(), { stem: "two", session: session(text) }], [model]), rt, async () => {});
+  const result = await executeReplay(planReplay([...corpus(), { stem: "two", session: session(text) }], [model]), rt, arms, async () => {});
   expect(result.exitCode).toBe(0);
   expect(result.rows.map(r => r.assignment)).toEqual(["candidate=A", "candidate=B"]);
   expect(result.rows.map(r => r.judge.verdict)).toEqual(["current better", "current better"]);
@@ -133,7 +151,7 @@ test("only 429/transport retry per call, malformed judge retry is independent", 
   const http = Object.assign(new Error("busy"), { status: 429 });
   const rt = runtime([transport, http, answer("7319"), answer("7319")], [transport, answer("invalid"), http, answer('{"verdict":"same","reason":"Evidence equal."}')]);
   const sleeps: number[] = [];
-  const result = await executeReplay(planReplay(corpus(), [model]), rt, async ms => { sleeps.push(ms); });
+  const result = await executeReplay(planReplay(corpus(), [model]), rt, arms, async ms => { sleeps.push(ms); });
   expect(result.exitCode).toBe(0); expect(sleeps).toEqual([2000, 8000, 2000, 2000]);
   expect(rt.requests).toHaveLength(4); expect(rt.judges).toHaveLength(4);
   expect(result.rows[0].current.attempts).toHaveLength(3);
@@ -141,9 +159,9 @@ test("only 429/transport retry per call, malformed judge retry is independent", 
 
 test("provider exhaustion and malformed judge error produce incomplete results", async () => {
   const error = () => Object.assign(new Error("busy"), { status: 429 });
-  const result = await executeReplay(planReplay(corpus(), [model]), runtime([error(), error(), error(), answer("7319")]), async () => {});
+  const result = await executeReplay(planReplay(corpus(), [model]), runtime([error(), error(), error(), answer("7319")]), arms, async () => {});
   expect(result.exitCode).toBe(1); expect(result.incomplete).toBe(true);
-  const malformed = await executeReplay(planReplay(corpus(), [model]), runtime(undefined, [answer("invalid"), answer("invalid")]), async () => {});
+  const malformed = await executeReplay(planReplay(corpus(), [model]), runtime(undefined, [answer("invalid"), answer("invalid")]), arms, async () => {});
   expect(malformed.exitCode).toBe(1); expect(malformed.rows[0].judge.verdict).toBe("error");
 });
 
@@ -157,7 +175,7 @@ test("production timeout notifications classify abandoned arms without retention
   const idle = PIPELINE_SETTINGS.summarizerIdleTimeoutMs;
   PIPELINE_SETTINGS.summarizerIdleTimeoutMs = 1;
   try {
-    const result = await executeReplay(planReplay(corpus(), [model]), rt, async () => {});
+    const result = await executeReplay(planReplay(corpus(), [model]), rt, arms, async () => {});
     expect(result.exitCode).toBe(0);
     for (const arm of [result.rows[0].current, result.rows[0].candidate]) {
       expect(arm.outcome).toBe("unusable:timeout");
@@ -171,7 +189,7 @@ test("production timeout notifications classify abandoned arms without retention
 
 test("preflight stops missing auth before any paid call", async () => {
   const rt = runtime(); rt.hasConfiguredAuth = () => false;
-  await expect(executeReplay(planReplay(corpus(), [model]), rt, async () => {})).rejects.toThrow("unauthenticated");
+  await expect(executeReplay(planReplay(corpus(), [model]), rt, arms, async () => {})).rejects.toThrow("unauthenticated");
   expect(rt.requests).toHaveLength(0); expect(rt.judges).toHaveLength(0);
 });
 
@@ -194,7 +212,7 @@ test.each(["delayed", "never"])("abandoned %s provider stays owned by its attemp
   const idle = PIPELINE_SETTINGS.summarizerIdleTimeoutMs;
   PIPELINE_SETTINGS.summarizerIdleTimeoutMs = 10;
   try {
-    const result = await executeReplay(planReplay(corpus(), [model]), rt, async () => {});
+    const result = await executeReplay(planReplay(corpus(), [model]), rt, arms, async () => {});
     const { current, candidate } = result.rows[0];
     expect(current.outcome).toBe("unusable:timeout");
     expect(current.attempts[0].records).toEqual([]);
