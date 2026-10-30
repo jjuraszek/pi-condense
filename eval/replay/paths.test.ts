@@ -1,18 +1,27 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertOutsideRepo } from "./paths";
 
 test("rejects an unrelated git checkout and accepts a plain temporary directory", () => {
   const dir = mkdtempSync(join(tmpdir(), "replay-paths-"));
+  const aliases = mkdtempSync(join(tmpdir(), "replay-paths-aliases-"));
   try {
     expect(assertOutsideRepo(join(dir, "corpus"))).toBe(join(realpathSync(dir), "corpus"));
     execFileSync("git", ["init", "-q", dir], { stdio: "ignore" });
     expect(() => assertOutsideRepo(join(dir, "corpus"))).toThrow("Replay destination must be outside all checkouts");
+    const file = join(dir, "jobs.json");
+    writeFileSync(file, "{}");
+    const alias = join(aliases, "jobs.json");
+    symlinkSync(file, alias);
+    for (const path of [file, alias]) {
+      expect(() => assertOutsideRepo(path)).toThrow("Replay destination must be outside all checkouts");
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(aliases, { recursive: true, force: true });
   }
 });
 

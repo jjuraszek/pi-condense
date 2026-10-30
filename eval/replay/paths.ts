@@ -41,7 +41,7 @@ export function assertOutsideRepo(dir: string, discovery: GitDiscovery = {}): st
     const roots = [resolve(cwd, top), dirname(resolve(cwd, common)), ...trees.map(tree => resolve(cwd, tree))].map(root => realpathSync(root));
     const destination = resolvedDestination(dir);
     let ancestor = destination;
-    while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+    while (!existsSync(ancestor) || !lstatSync(ancestor).isDirectory()) ancestor = dirname(ancestor);
     let enclosingTop = "";
     try {
       enclosingTop = execFileSync("git", ["-C", ancestor, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
