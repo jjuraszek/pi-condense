@@ -12,6 +12,7 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 ### Added
 
 - Paid synthetic behavioral evals measure downstream context quality after summarization and pruning, with frozen committed baselines for both summarizers and an eval-needed decision gate for every repository change. Offline harness tests remain separate from paid runs. (#22)
+- A private-session replay harness (`npm run eval:replay`) rebuilds real tool-call batches from session files into a corpus outside every checkout, summarizes each with production and a `--candidate` module, scores both against strings the assistant later reused, and fails on regressions; `matrix` compares model x thinking cells on retention, latency and cost. Synthetic eval reports now count evidence retained in the summary separately from evidence recovered on demand. (#23)
 
 ## [2.13.1] - 2026-10-22
 

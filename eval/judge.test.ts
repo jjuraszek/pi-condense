@@ -42,7 +42,7 @@ describe("recovery source and completion gates", () => {
   ] as const)("%s", async (_name, calls, reply, outcome, status) => {
     const result = await run([...calls], reply);
     expect(result.status).toBe(status);
-    expect(result.recovery).toEqual([{ id: "call_a", outcome }]);
+    expect(result.recovery).toEqual([{ id: "call_a", outcome, summaryRetained: false }]);
     if (status === "fail") expect(result.check).toBe(outcome === "hit" ? "contains:42" : `recovers:call_a:${outcome}`);
   });
   test("requires every recovery and resolves real summary metadata", async () => {
@@ -126,4 +126,19 @@ test("provider errors expose a safe class, not credentials", async () => {
   const mock = stub();
   mock.runtime.completeSimple = async () => { throw Object.assign(new Error("secret token"), { status: 429 }); };
   expect(await run([], "42", judged, mock.runtime)).toMatchObject({ status: "error", check: "judge", reason: "error: provider:http-429" });
+});
+
+test.each([
+  ["absent summary", undefined, false],
+  ["skipped or rejected, not stored", [], false],
+  ["covering summary without exact evidence", [{ content: "value = 42", details: { toolCallRefs: [{ shortId: "t1", toolCallId: "call_a" }] } }], false],
+  ["another tool's summary", [{ content: "value=42", details: { toolCallRefs: [{ shortId: "t2", toolCallId: "call_b" }] } }], false],
+  ["covering retained summary", [{ content: "value=42", details: { toolCallRefs: [{ shortId: "t1", toolCallId: "call_a" }] } }], true],
+  ["legacy covering summary", [{ content: "value=42", details: { toolCallIds: ["call_a"] } }], true],
+] as const)("retention separate from recovery: %s", async (_name, summaries, summaryRetained) => {
+  for (const reply of ["42", "unknown"]) {
+    const result = await score({ scenario, reply, toolCalls: [hit()], finalAssistantIndex: 5, shortRefMap: refs, runtime: stub().runtime, summaries });
+    expect(result.recovery).toEqual([{ id: "call_a", outcome: "hit", summaryRetained }]);
+    expect(result.status).toBe(reply === "42" ? "pass" : "fail");
+  }
 });

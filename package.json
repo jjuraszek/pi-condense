@@ -40,6 +40,7 @@
     "check:agents-core": "node scripts/check-agents-core.mjs",
     "test": "bun test src/",
     "eval": "bun eval/run.ts",
+    "eval:replay": "bun eval/replay/run.ts",
     "test:eval": "bun test eval/"
   },
   "pi": {
