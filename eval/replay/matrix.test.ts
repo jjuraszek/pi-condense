@@ -14,8 +14,13 @@ test("matrix renders only aggregate cells across model and thinking settings", (
   });
   const table = replayMatrix([{ label: "a/model low", jobs: jobs("a/model", "low", false) }, { label: "b/model high", jobs: jobs("b/model", "high", true) }]);
   expect(table.split("\n").filter(line => line.startsWith("|"))).toHaveLength(6);
-  expect(table).toContain("| a/model | low | current | 1 / 2 | 1 / 2 | - | - | - | 0 | 10 | 90 | 0.5 | 14 |");
-  expect(table).toContain("| a/model | low | candidate | 1 / 2 | 1 / 2 | 1 | 1 | 1 / 0 / 0 | 1 | 20 | 80 | 0.5 | 2 |");
+  expect(table).toContain("| a/model | low | current | 1 / 2 | 1 / 2 | - | - | - | 0 | 10 | 90 | 0.5 (measured) | 14 |");
+  expect(table).toContain("| a/model | low | candidate | 1 / 2 | 1 / 2 | 1 | 1 | 1 / 0 / 0 | 1 | 20 | 80 | 0.5 (measured) | 2 |");
   expect(table).toContain("| b/model (INCOMPLETE) | high | candidate |");
+  for (const [provenance, expected] of [["estimated", "0.5 (estimated)"], ["unavailable", "unavailable"]] as const) {
+    const mixed = jobs("a/model", "low", false);
+    mixed.rows[1].current.attempts[0].records[0].measurements.cost = provenance === "unavailable" ? { provenance } : { value: 0.25, provenance };
+    expect(replayMatrix([{ label: "mixed", jobs: mixed }])).toContain(`| 10 | 90 | ${expected} |`);
+  }
   for (const secret of ["SECRET_ORACLE", "SECRET_STEM", "SECRET_REASON", "SECRET_SUMMARY"]) expect(table).not.toContain(secret);
 });

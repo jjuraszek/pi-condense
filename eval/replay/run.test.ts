@@ -187,6 +187,33 @@ test("production timeout notifications classify abandoned arms without retention
   } finally { PIPELINE_SETTINGS.summarizerIdleTimeoutMs = idle; }
 });
 
+test("judge evidence preserves result lines omitted by the candidate", async () => {
+  const line = "failed fix: retry still fails";
+  const s = session(text + "\n" + line);
+  const rt = runtime();
+  const candidate = { ...productionArm, serialize: (batch: Parameters<typeof productionArm.serialize>[0]) => batch.toolCalls[0].resultText.replace(line, "") };
+  await executeReplay(planReplay([{ stem: "one", session: s }], [model]), rt, { current: productionArm, candidate });
+  expect(rt.requests[1].ctx.messages[0].content[0].text).not.toContain(line);
+  expect(JSON.parse(rt.judges[0].ctx.messages[0].content).batch).toContain(line);
+});
+
+test.each(["throws", "number"])("serialization %s fails before any paid call", async kind => {
+  const rt = runtime();
+  let calls = 0;
+  const candidate = { ...productionArm, serialize: (() => {
+    calls++;
+    if (kind === "number") return 42;
+    if (calls === 2) throw Error("broken serializer");
+    return "valid";
+  }) as typeof productionArm.serialize };
+  const plan = planReplay([...corpus(), { stem: "two", session: session(text) }], [model]);
+  await expect(executeReplay(plan, rt, { current: productionArm, candidate })).rejects.toThrow(
+    kind === "number" ? "candidate serialize failed for one#0: expected string, got number" : "candidate serialize failed for two#0: broken serializer",
+  );
+  expect(rt.requests).toHaveLength(0);
+  expect(rt.judges).toHaveLength(0);
+});
+
 test("preflight stops missing auth before any paid call", async () => {
   const rt = runtime(); rt.hasConfiguredAuth = () => false;
   await expect(executeReplay(planReplay(corpus(), [model]), rt, arms, async () => {})).rejects.toThrow("unauthenticated");

@@ -87,7 +87,29 @@ const retryable = (records: CallRecord[]) => {
   return last?.status !== "ok" && last?.retry.retryable && (last.retry.kind === "transport" || (last.retry.kind === "http" && last.retry.httpStatus === 429));
 };
 
+export function judgeEvidence(batch: CapturedBatch): string {
+  return [
+    ...(batch.assistantText ? [`Assistant said: ${batch.assistantText}`] : []),
+    ...batch.toolCalls.map((call, i) => `[[${i + 1}:${call.toolName}]] Tool: ${call.toolName}(${JSON.stringify(call.args)})\nResult (${call.isError ? "ERROR" : "OK"}): ${call.resultText}`),
+  ].join("\n---\n");
+}
+
 export async function executeReplay(plan: ReplayPlan, original: Runtime, replayArms: { current: ReplayArm; candidate: ReplayArm }, sleep: Sleep = sleepDefault): Promise<ReplayResult> {
+  const prepared = plan.selected.map(selected => {
+    const { session, stem, batchIndex } = selected;
+    // Persisted spill metadata is authoritative, even for hand-built envelopes.
+    const batch = { ...selected.batch, toolCalls: selected.batch.toolCalls.map((c, i) => c.spillPath || session.batchPositions[batchIndex].results[i]?.spilled ? { ...c, resultText: "" } : c) };
+    const evidence = judgeEvidence(batch);
+    const inputs = { current: replayArms.current.serialize(batch), candidate: "" };
+    try {
+      const serialized = replayArms.candidate.serialize(batch);
+      if (typeof serialized !== "string") throw Error(`expected string, got ${typeof serialized}`);
+      inputs.candidate = serialized;
+    } catch (error) {
+      throw Error(`candidate serialize failed for ${stem}#${batchIndex}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { selected, batch, inputs, evidence };
+  });
   const runtime = original;
   const candidatesBySession = new Map<ReplaySession, ReturnType<typeof oracleCandidates>>();
   const modelRegistry = new ModelRegistry(runtime as ModelRuntime);
@@ -102,11 +124,8 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, replayA
     models.set(name, model);
   }
   const rows: ReplayRow[] = [];
-  for (const selected of plan.selected) {
+  for (const { selected, batch, inputs, evidence } of prepared) {
     const { session, stem, batchIndex, rawChars } = selected;
-    // Persisted spill metadata is authoritative, even for hand-built envelopes.
-    const batch = { ...selected.batch, toolCalls: selected.batch.toolCalls.map((c, i) => c.spillPath || session.batchPositions[batchIndex].results[i]?.spilled ? { ...c, resultText: "" } : c) };
-    const inputs = { current: replayArms.current.serialize(batch), candidate: replayArms.candidate.serialize(batch) };
     if (!candidatesBySession.has(session)) candidatesBySession.set(session, oracleCandidates(session));
     const candidates = candidatesBySession.get(session)!.get(batchIndex)!;
     const strings = new Set(candidates.map(c => c.text));
@@ -162,7 +181,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, replayA
           for (let attempt = 0; ; attempt++) {
             const start = observer.records.length, started = performance.now();
             try {
-              answer = await observer.runtime.completeSimple(models.get(JUDGE_MODEL)!, { systemPrompt: REPLAY_JUDGE_PROMPT, messages: [{ role: "user", timestamp: 0, content: JSON.stringify({ batch: inputs.candidate, A: assignment === "candidate=A" ? arms.candidate.text : arms.current.text, B: assignment === "candidate=B" ? arms.candidate.text : arms.current.text }) }] });
+              answer = await observer.runtime.completeSimple(models.get(JUDGE_MODEL)!, { systemPrompt: REPLAY_JUDGE_PROMPT, messages: [{ role: "user", timestamp: 0, content: JSON.stringify({ batch: evidence, A: assignment === "candidate=A" ? arms.candidate.text : arms.current.text, B: assignment === "candidate=B" ? arms.candidate.text : arms.current.text }) }] });
             } catch { answer = undefined; }
             const records = observer.records.slice(start);
             judge.attempts.push({ records, notifications: [], elapsedMs: performance.now() - started });

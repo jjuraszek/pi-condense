@@ -14,7 +14,7 @@ export function replayMatrix(cells: { label: string; jobs: ReplayJobs }[]): stri
       const retained = arms.filter(a => a.outcome === "retained");
       const kept = (s: typeof scores[number]) => arm === "current" ? s.retainedCurrent : s.retainedCandidate;
       const costs = attempts.flatMap(a => a.records.map(r => r.measurements.cost));
-      const cost = !costs.length || attempts.some(a => !a.records.length) || costs.some(c => c.provenance === "unavailable") ? "unavailable" : costs.reduce((n, c) => n + c.value!, 0);
+      const cost = !costs.length || attempts.some(a => !a.records.length) || costs.some(c => c.provenance === "unavailable") ? "unavailable" : `${costs.reduce((n, c) => n + c.value!, 0)} (${costs.some(c => c.provenance === "estimated") ? "estimated" : "measured"})`;
       lines.push(`| ${[
         model + (jobs.incomplete ? " (INCOMPLETE)" : ""), jobs.thinking, arm,
         `${scores.filter(kept).length} / ${scores.length}`, `${middle.filter(kept).length} / ${middle.length}`,
