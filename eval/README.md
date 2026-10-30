@@ -54,6 +54,55 @@ Intentionally regenerate the baseline for corpus, prompt, model, settings, or ru
 
 Any per-case pass-count drop prints `REGRESSION CANDIDATE` and exits 1; execution errors also exit 1 and are listed separately. Three runs are not statistical certainty. Re-run the same comparison once, preserve both temporary run directories, and treat two consecutive drops as a regression. A genuine behavioral fail is recorded in a baseline; any execution error refuses all baseline writes. Summarizer failure/fallback, isolation failure, missing flush, and unpruned context are execution errors, not behavioral findings.
 
+## Select-classify-summarize verification
+
+Production changes in `src/batch-capture.ts` and `src/summarizer.ts` require all three evidence runs below, not just unit tests. First land report instrumentation (`Summary chars`, `Summaries`, and `summaryRetained`), then recapture with the header's `npm run eval -- --baseline` on the unchanged runtime. Cite the prior baseline commit in the recapture commit body. Only then change runtime behavior and use the header's comparison procedure with the exact change reason:
+
+```bash
+npm run eval -- --change "select middle evidence and label summaries (gh-23)"
+npm run eval -- --fusion
+```
+
+Run the guarded replay procedure below as the third exercise. Record actual results in a behavior or follow-up evidence commit body as `eval: run - <synthetic comparison>; fusion - <checks>; replay - <gate, coverage, totals>`, without private report contents. A documentation-only change records `eval: not needed` and its touched paths instead; that is not runtime verification or permission to land.
+
+Inspect the unchanged synthetic reports for both pinned candidate models. `mid-result-fact` must show `evidence in summary: 1/1` for `call_mid-result-fact_1`, against an expected compatible baseline `0/1`; verify that baseline measurement rather than assuming it. Keep `contains: ["7319"]` and `recovers` unchanged. The unit seam in `src/batch-capture.test.ts` uses the unchanged `"x".repeat(6000) + "retry_window_ms=7319" + "y".repeat(5980)` body and asserts `retry_window_ms=7319` inside the excerpt markers. Recovery success proves source reachability, not summary retention. Read actual downstream outcomes for `unverified-hypothesis`, `disproved-explanation`, `failed-fix-not-disproof`, and `repeated-attempts-among-unrelated`: uncertainty, correction, failed-fix versus disproof, and relevant attempts among unrelated work must survive.
+
+`--fusion` runs `eval/fusion/closed-task.ts` separately from the frozen scenarios for both summarizers. It has no baseline or comparison key and writes only temporary reports. Require all four mechanical checks: a summarizer request containing `<sub-task-summaries>`; its answered text in the downstream compressed chain message; `hypothesis:`, `tried-failed:`, and `disproved:` lines each carrying an inline `tN` reference; and recovery hits for the observed fact and failed attempt. Read the downstream judge's uncertainty/correction/failure distinctions too. A range-prompt substring assertion alone does not prove fusion behavior.
+
+## Private-session replay
+
+Use a new private corpus directory outside every checkout before extraction. Set `PI_CONDENSE_SESSION_DIR` locally to the source directory; never record its actual value, session stems, oracle strings, or judge reasons in repository artifacts. For example:
+
+```bash
+export PI_CONDENSE_REPLAY_DIR="$(mktemp -d)"
+npm run eval:replay -- extract "$PI_CONDENSE_SESSION_DIR" --out "$PI_CONDENSE_REPLAY_DIR"
+npm run eval:replay -- run --corpus "$PI_CONDENSE_REPLAY_DIR" --dry-run
+# Review selection and planned calls before explicitly authorizing paid execution:
+npm run eval:replay -- run --corpus "$PI_CONDENSE_REPLAY_DIR"
+```
+
+Extraction makes no model calls. Without `--out`, it uses `PI_CONDENSE_REPLAY_DIR`, otherwise `$TMPDIR/pi-condense-replay` (OS temporary directory fallback when `TMPDIR` is unset). Both extraction and execution call `assertOutsideRepo` before destination writes: it resolves symlinks, including existing ancestors of new paths, and refuses the current worktree, primary checkout, and every listed Git worktree. A symlink alias into any of them is refused too. Do not bypass these guards or put the corpus in a gitignored repository directory.
+
+The extractor opens each JSONL session's active branch and reuses production batch capture and protection rules. Unreadable sessions are skipped and counted. Persisted spill metadata is joined by occurrence key; spilled bodies are emptied, sidecar present/missing is counted, and neither arm summarizes or earns oracle credit for them. A missing index entry remains inline; no spill threshold is reapplied. Extraction prints counts only.
+
+The runner orders sessions by stem and batches by `turnIndex`. It skips all-spilled batches and batches below the production minimum before any calls; eligible short results remain included to measure labeling regressions. `--limit N` selects the first N eligible batches, not N sessions. Defaults use both pinned `SUMMARIZER_MODELS` in `config.ts`; `--models a,b` accepts unique provider/id values. Private session models are never selected. `--dry-run` prints eligible/selected/skipped counts, models, and planned summarizer calls (`selected x 2 arms x models`) plus judge calls (`selected x models`), then stops without calls. These counts describe planned spend, not a dollar quote; retries can increase calls, and non-retained arms skip judging.
+
+The `current` arm uses the frozen pre-change prompt and `middleChars: 0`; `candidate` uses the production prompt and bounded selection. Both call production `runSummarization` with its usability checks and timeouts, then apply reference substitution, footer decoration, and oversized-summary rejection. Only `retained` text earns summary characters or retention credit. `rejected-oversized`, `unusable:empty`, `unusable:length`, `unusable:timeout`, and `error` remain visible with incurred usage, elapsed time, and available cost. Summarizer provider calls retry HTTP 429 or transport failures at most twice, after 2,000 and 8,000 ms. Judge provider calls use that same policy; a malformed verdict gets one independent re-ask, then `judge: error`. Errors make the run incomplete with exit 1 and a partial report when execution reaches report writing.
+
+The oracle tracks strings from inline results later reused in assistant text or tool arguments but absent from earlier user/assistant text and arguments, including the batch's own inputs. It compares source visibility and verbatim retained-summary evidence, not merely recovery. For each scored batch/model a regression is `retainedCurrent && !retainedCandidate`; any regression yields exit 2 with `Gate: FAIL`, while a complete run without regressions exits 0. Exit 1 means execution failure; a header saying pass in an incomplete report is not a go decision. Judge A/B assignments alternate deterministically and are stored in `jobs.json`; verdicts are advisory and never override the deterministic gate.
+
+Run model x thinking cells as independent parallel `run` processes with the same `--corpus`, one `--models provider/id`, `--thinking off|low|medium|high` (default: `PIPELINE_SETTINGS.summarizerThinking`), and a distinct outside-checkout `--out <dir>` per cell. The runner creates each output directory for `jobs.json` and `report.md`; without `--out`, execution writes to the corpus directory. After the processes finish, `npm run eval:replay -- matrix /private/cell-a/jobs.json /private/cell-b/jobs.json` prints one aggregate-only table with retention, regressions, gains, judge counts, outcome errors, nearest-rank attempt latency p50/p95, cost, and mean retained-summary size; incomplete cells are labeled `INCOMPLETE`.
+
+### Reading private evidence
+
+`report.md` and `jobs.json` stay in the guarded corpus directory. The report lists regressions first, then gains, and includes source/summary text and private identifiers. Do not commit, paste, or attach these reports. Only aggregate counts and percentages from `## Coverage` and `## Totals` may leave the corpus directory.
+
+`## Coverage` counts unique oracle strings per scored batch/model (the same string in different models counts again). `inMiddle` means its first result occurrence is inside the elided region; when several results supply the same string, the scored string is middle-only only if all its provenance is in the middle. Each arm's input coverage is `inInput / total oracle strings`; retention is `retained / total`, with both repeated over the middle-only denominator. Candidate non-retentions split into `scanner-missed` (absent from candidate serialization) and `model-dropped` (visible in input but absent from retained text), over both total and middle-only denominators. A non-retained summary retains nothing.
+
+For results with K > 0, `budgetExhausted` means another matching line was dropped by the ordered budget stop. The report counts those results and `scanner-missed` strings whose contributing results saturated, divided by total oracle strings. Result/saturation counts repeat per model row, not unique corpus results. `## Totals` records each arm's retained oracle numerator/denominator, advisory judge verdict counts, and outcomes per arm/model. Zero or sparse oracle coverage limits what a gate pass proves.
+
+Use these measurements for an empirical go/no-go decision: a regression-free run is necessary but does not prove worthwhile gains. Inspect middle retention gains, saturation losses, advisory regressions, downstream behavior, and measured cost/size before deciding. `scanner-missed` and `budgetExhausted` measure selection gaps for a later scope decision; `model-dropped` measures prompt-only retention gaps. They do not authorize a new selector, priority ranking, or an output evidence appendix. Insufficient gains can still mean no-go.
+
 ## Costs, reports, and retained evidence
 
 The committed baseline reports cover 42 jobs with total estimated cost USD 1.223723080 (Haiku USD 0.618264205; Luna USD 0.605458875). Their totals record summed job time per summarizer: Haiku 299165.101208 ms and Luna 364666.609412 ms, not parallel wall time:

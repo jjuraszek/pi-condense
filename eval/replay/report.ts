@@ -9,6 +9,7 @@ export interface ReportMetadata {
   skippedTrivial: number;
   skippedSpilled: number;
   models: string[];
+  thinking: string;
   hashes: { current: string; candidate: string; rubric: string };
 }
 const cell = (value: unknown) => String(value ?? "-").replace(/\|/g, "\\|").replace(/[\r\n]/g, " ");
@@ -18,7 +19,7 @@ const gains = (s: EvidenceScore) => !s.retainedCurrent && s.retainedCandidate;
 export function renderReplayReport(result: ReplayResult, meta: ReportMetadata): string {
   const all = result.rows.flatMap(row => row.scores), middle = all.filter(s => s.inMiddle);
   const n = all.filter(regressions).length;
-  const lines = [`# Gate: ${n ? `FAIL (${n} regressions)` : "pass"}`, ...(result.incomplete ? ["INCOMPLETE - execution errors; gate is not a go decision."] : []), `Corpus: ${cell(meta.corpus)}`, `sessions read / skipped: ${meta.counts.sessionsRead} / ${meta.counts.sessionsSkipped}`, `batches total / eligible / selected: ${meta.counts.batches} / ${meta.eligible} / ${meta.selected}`, `skipped-trivial: ${meta.skippedTrivial}; skipped-spilled: ${meta.skippedSpilled}`, `spilled sidecar present / missing: ${meta.counts.spillPresent} / ${meta.counts.spillMissing}`, `results over 8000: ${meta.counts.longResults}; protected exclusions: ${meta.counts.protectedExclusions}`, `Models: ${meta.models.join(", ")}`, `Current prompt sha256: ${meta.hashes.current}`, `Candidate prompt sha256: ${meta.hashes.candidate}`, `Judge rubric sha256: ${meta.hashes.rubric}`, `Assignments: candidate=A: ${result.rows.filter(r => r.assignment === "candidate=A").length}; candidate=B: ${result.rows.filter(r => r.assignment === "candidate=B").length}`];
+  const lines = [`# Gate: ${n ? `FAIL (${n} regressions)` : "pass"}`, ...(result.incomplete ? ["INCOMPLETE - execution errors; gate is not a go decision."] : []), `Corpus: ${cell(meta.corpus)}`, `sessions read / skipped: ${meta.counts.sessionsRead} / ${meta.counts.sessionsSkipped}`, `batches total / eligible / selected: ${meta.counts.batches} / ${meta.eligible} / ${meta.selected}`, `skipped-trivial: ${meta.skippedTrivial}; skipped-spilled: ${meta.skippedSpilled}`, `spilled sidecar present / missing: ${meta.counts.spillPresent} / ${meta.counts.spillMissing}`, `results over 8000: ${meta.counts.longResults}; protected exclusions: ${meta.counts.protectedExclusions}`, `Models: ${meta.models.join(", ")}`, `Thinking: ${cell(meta.thinking)}`, `Current prompt sha256: ${meta.hashes.current}`, `Candidate prompt sha256: ${meta.hashes.candidate}`, `Judge rubric sha256: ${meta.hashes.rubric}`, `Assignments: candidate=A: ${result.rows.filter(r => r.assignment === "candidate=A").length}; candidate=B: ${result.rows.filter(r => r.assignment === "candidate=B").length}`];
   for (const model of meta.models) for (const arm of ["current", "candidate"] as const) {
     const arms = result.rows.filter(r => r.model === model).map(r => r[arm]);
     const attempts = arms.flatMap(a => a.attempts);
@@ -56,6 +57,10 @@ function detailRow(row: ReplayRow, score?: EvidenceScore): string {
 function outcomeCounts(arms: Arm[]): string {
   return ["retained", "rejected-oversized", "unusable:empty", "unusable:length", "unusable:timeout", "error"].map(outcome => `${outcome}: ${arms.filter(a => a.outcome === outcome).length}`).join(", ");
 }
+export function elapsedPercentile(attempts: Attempt[], percentile: number): number | "unavailable" {
+  const values = attempts.map(a => a.elapsedMs).sort((a, b) => a - b);
+  return values.length ? values[Math.ceil(values.length * percentile) - 1] : "unavailable";
+}
 function measurements(attempts: Attempt[]): string {
   const records = attempts.flatMap(a => a.records);
   const total = (key: "input" | "output" | "cost") => {
@@ -63,5 +68,5 @@ function measurements(attempts: Attempt[]): string {
     if (!values.length || attempts.some(a => !a.records.length) || values.some(v => !v || v.provenance === "unavailable")) return "unavailable";
     return `${values.reduce((n, v) => n + v.value!, 0)} (${values.some(v => v.provenance === "estimated") ? "estimated" : "measured"})`;
   };
-  return `input tokens: ${total("input")}; output tokens: ${total("output")}; elapsed ms: ${attempts.reduce((n, a) => n + a.elapsedMs, 0)}; cost: ${total("cost")}; attempts: ${attempts.length}`;
+  return `input tokens: ${total("input")}; output tokens: ${total("output")}; elapsed ms: ${attempts.reduce((n, a) => n + a.elapsedMs, 0)}; elapsed p50 / p95 ms: ${attempts.length ? `${elapsedPercentile(attempts, .5)} / ${elapsedPercentile(attempts, .95)}` : "unavailable"}; cost: ${total("cost")}; attempts: ${attempts.length}`;
 }

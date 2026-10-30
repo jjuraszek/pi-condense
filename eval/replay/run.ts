@@ -1,6 +1,6 @@
 import { ModelRuntime, ModelRegistry, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { InMemoryModelsStore, InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 import { serializeBatchForSummarizer } from "../../src/batch-capture.js";
@@ -15,11 +15,15 @@ import { REPLAY_JUDGE_PROMPT } from "./judge-prompt.js";
 import { assertOutsideRepo } from "./paths.js";
 import { extractSessions, type ReplayCounts, type ReplaySession } from "./extract.js";
 import { oracleCandidates, selectionStats, type OracleCandidate, type SelectionStat } from "./oracle.js";
+import { replayMatrix, type ReplayJobs } from "./matrix.js";
 import { renderReplayReport } from "./report.js";
 
-export interface Options { corpus: string; limit?: number; models: string[]; dryRun: boolean }
+export type Thinking = "default" | "off" | "low" | "medium" | "high";
+export interface Options { corpus: string; out: string; limit?: number; models: string[]; thinking: Thinking; dryRun: boolean }
 export function parseArgs(args: string[]): Options {
-  if (args[0] !== "run") throw Error("Usage: eval:replay run --corpus <dir> [--limit N] [--models a,b] [--dry-run]");
+  if (args[0] !== "run") throw Error("Usage: eval:replay run --corpus <dir> [--limit N] [--models a,b] [--thinking off|low|medium|high] [--out <dir>] [--dry-run]");
+  let out: string | undefined;
+  let thinking: Thinking = PIPELINE_SETTINGS.summarizerThinking;
   let corpus = "", limit: number | undefined, models: string[] = [...SUMMARIZER_MODELS], dryRun = false;
   const seen = new Set<string>();
   for (let i = 1; i < args.length; i++) {
@@ -27,26 +31,31 @@ export function parseArgs(args: string[]): Options {
     if (seen.has(flag)) throw Error(`Duplicate flag ${flag}`);
     seen.add(flag);
     if (flag === "--dry-run") { dryRun = true; continue; }
-    if (!["--corpus", "--limit", "--models"].includes(flag)) throw Error(`Unknown flag ${flag}`);
+    if (!["--corpus", "--limit", "--models", "--thinking", "--out"].includes(flag)) throw Error(`Unknown flag ${flag}`);
     const value = args[++i];
     if (!value || value.startsWith("--")) throw Error(`Missing value for ${flag}`);
     if (flag === "--corpus") corpus = value;
+    if (flag === "--out") out = value;
+    if (flag === "--thinking") {
+      if (!["off", "low", "medium", "high"].includes(value)) throw Error("Invalid --thinking level");
+      thinking = value as Thinking;
+    }
     if (flag === "--limit") {
       if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw Error("--limit must be a positive integer");
       limit = Number(value);
     }
     if (flag === "--models") {
       models = value.split(",");
-      if (new Set(models).size !== models.length || models.some(m => !SUMMARIZER_MODELS.includes(m as typeof SUMMARIZER_MODELS[number]))) throw Error("Use only pinned SUMMARIZER_MODELS");
+      if (new Set(models).size !== models.length || models.some(m => !/^[^\/\s]+\/[^\/\s]+$/.test(m))) throw Error("Models must be unique provider/id strings");
     }
   }
   if (!corpus) throw Error("--corpus is required");
-  return { corpus, limit, models, dryRun };
+  return { corpus, out: out ?? corpus, limit, models, thinking: thinking as Thinking, dryRun };
 }
 
 export interface SelectedBatch { stem: string; session: ReplaySession; batch: CapturedBatch; batchIndex: number; rawChars: number }
-export interface ReplayPlan { selected: SelectedBatch[]; models: string[]; eligible: number; skippedTrivial: number; skippedSpilled: number; summarizerCalls: number; judgeCalls: number }
-export function planReplay(sessions: { stem: string; session: ReplaySession }[], models: string[], limit = Number.MAX_SAFE_INTEGER): ReplayPlan {
+export interface ReplayPlan { thinking: Thinking; selected: SelectedBatch[]; models: string[]; eligible: number; skippedTrivial: number; skippedSpilled: number; summarizerCalls: number; judgeCalls: number }
+export function planReplay(sessions: { stem: string; session: ReplaySession }[], models: string[], thinking: Thinking = PIPELINE_SETTINGS.summarizerThinking as Thinking, limit = Number.MAX_SAFE_INTEGER): ReplayPlan {
   const selected: SelectedBatch[] = [];
   let eligible = 0, skippedTrivial = 0, skippedSpilled = 0;
   for (const { stem, session } of [...sessions].sort((a, b) => a.stem < b.stem ? -1 : a.stem > b.stem ? 1 : 0)) {
@@ -60,7 +69,7 @@ export function planReplay(sessions: { stem: string; session: ReplaySession }[],
       if (selected.length < limit) selected.push({ stem, session, batch, batchIndex, rawChars });
     }
   }
-  return { selected, models, eligible, skippedTrivial, skippedSpilled, summarizerCalls: selected.length * 2 * models.length, judgeCalls: selected.length * models.length };
+  return { selected, models, thinking, eligible, skippedTrivial, skippedSpilled, summarizerCalls: selected.length * 2 * models.length, judgeCalls: selected.length * models.length };
 }
 
 export type Outcome = "retained" | "rejected-oversized" | "unusable:empty" | "unusable:length" | "unusable:timeout" | "error";
@@ -113,7 +122,7 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: 
           const started = performance.now(), notifications: string[] = [];
           let result = null;
           try {
-            result = await runSummarization(`${arm === "current" ? CURRENT_SYSTEM_PROMPT : SYSTEM_PROMPT}\n\n<tool-call-batch>\n${inputs[arm]}\n</tool-call-batch>`, { ...PIPELINE_SETTINGS, summarizerModel: name }, { model: models.get(name), modelRegistry: attemptRegistry, ui: { notify: (message: string) => notifications.push(message) } } as any, { signal: new AbortController().signal });
+            result = await runSummarization(`${arm === "current" ? CURRENT_SYSTEM_PROMPT : SYSTEM_PROMPT}\n\n<tool-call-batch>\n${inputs[arm]}\n</tool-call-batch>`, { ...PIPELINE_SETTINGS, summarizerModel: name, summarizerThinking: plan.thinking, protectedTools: [...PIPELINE_SETTINGS.protectedTools], protectedPaths: [...PIPELINE_SETTINGS.protectedPaths] }, { model: models.get(name), modelRegistry: attemptRegistry, ui: { notify: (message: string) => notifications.push(message) } } as any, { signal: new AbortController().signal });
           } catch {
             // Observer metadata, not the thrown message, owns provider attribution.
           }
@@ -181,9 +190,9 @@ export async function executeReplay(plan: ReplayPlan, original: Runtime, sleep: 
   return { rows, incomplete, exitCode: incomplete ? 1 : regressions ? 2 : 0 };
 }
 
-async function storedRuntime(): Promise<Runtime> {
+async function storedRuntime(models: string[]): Promise<Runtime> {
   const dir = getAgentDir(), credentials = new InMemoryCredentialStore();
-  for (const provider of new Set([...SUMMARIZER_MODELS, JUDGE_MODEL].map(m => m.split("/")[0]))) {
+  for (const provider of new Set([...models, JUDGE_MODEL].map(m => m.split("/")[0]))) {
     const credential = readStoredCredential(provider, join(dir, "auth.json"));
     if (credential) await credentials.modify(provider, async () => credential);
   }
@@ -196,7 +205,16 @@ export async function replayMain(args: string[], seams: { runtime?: () => Promis
     if (!args[1] || (args.length !== 2 && (args.length !== 4 || args[2] !== "--out"))) throw Error("Usage: extract <session-dir> [--out <dir>]");
     print(JSON.stringify(extractSessions(args[1], args[3]))); return 0;
   }
-  const options = parseArgs(args), corpus = assertOutsideRepo(options.corpus);
+  if (args[0] === "matrix") {
+    if (args.length < 2) throw Error("Usage: matrix <jobs.json> [<jobs.json>...]");
+    print(replayMatrix(args.slice(1).map(file => {
+      const jobs: ReplayJobs = JSON.parse(readFileSync(assertOutsideRepo(file), "utf8"));
+      return { label: `${jobs.models[0]} ${jobs.thinking}`, jobs };
+    })));
+    return 0;
+  }
+  const options = parseArgs(args), corpus = assertOutsideRepo(options.corpus), out = assertOutsideRepo(options.out);
+  mkdirSync(out, { recursive: true });
   const sessions: { stem: string; session: ReplaySession }[] = [];
   const counts: ReplayCounts = { sessionsRead: 0, sessionsSkipped: 0, batches: 0, longResults: 0, spillPresent: 0, spillMissing: 0, protectedExclusions: 0 };
   for (const file of readdirSync(corpus).filter(f => f.endsWith(".json") && f !== "jobs.json").sort()) {
@@ -206,15 +224,15 @@ export async function replayMain(args: string[], seams: { runtime?: () => Promis
     sessions.push({ stem: basename(file, ".json"), session: value });
     for (const key of Object.keys(counts) as (keyof ReplayCounts)[]) counts[key] += value.counts[key] ?? 0;
   }
-  const plan = planReplay(sessions, options.models, options.limit);
-  print(JSON.stringify({ ...counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, summarizerCalls: plan.summarizerCalls, judgeCalls: plan.judgeCalls }));
+  const plan = planReplay(sessions, options.models, options.thinking, options.limit);
+  print(JSON.stringify({ ...counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, thinking: plan.thinking, summarizerCalls: plan.summarizerCalls, judgeCalls: plan.judgeCalls }));
   if (options.dryRun) return 0;
   let result: ReplayResult;
-  try { result = await executeReplay(plan, await (seams.runtime ?? storedRuntime)(), seams.sleep); }
+  try { result = await executeReplay(plan, await (seams.runtime ? seams.runtime() : storedRuntime(options.models)), seams.sleep); }
   catch { result = { rows: [], incomplete: true, exitCode: 1 }; }
-  const metadata = { corpus, counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, hashes: { current: hash(CURRENT_SYSTEM_PROMPT), candidate: hash(SYSTEM_PROMPT), rubric: hash(REPLAY_JUDGE_PROMPT) } };
-  writeFileSync(assertOutsideRepo(join(corpus, "jobs.json")), JSON.stringify({ ...metadata, ...result }, null, 2));
-  writeFileSync(assertOutsideRepo(join(corpus, "report.md")), renderReplayReport(result, metadata));
+  const metadata = { corpus, counts, eligible: plan.eligible, selected: plan.selected.length, skippedTrivial: plan.skippedTrivial, skippedSpilled: plan.skippedSpilled, models: plan.models, thinking: plan.thinking, hashes: { current: hash(CURRENT_SYSTEM_PROMPT), candidate: hash(SYSTEM_PROMPT), rubric: hash(REPLAY_JUDGE_PROMPT) } };
+  writeFileSync(assertOutsideRepo(join(out, "jobs.json")), JSON.stringify({ ...metadata, ...result }, null, 2));
+  writeFileSync(assertOutsideRepo(join(out, "report.md")), renderReplayReport(result, metadata));
   return result.exitCode;
 }
 if (import.meta.main) {

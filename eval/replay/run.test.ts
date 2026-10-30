@@ -28,10 +28,13 @@ function runtime(responses: any[] = [answer("7319"), answer("7319")], judgeAnswe
   }, async completeSimple(m: any, ctx: any) { judges.push({ m, ctx }); const value = judgeAnswers.shift() ?? answer('{"verdict":"same","reason":"Same evidence."}'); if (value instanceof Error) throw value; return value; } };
 }
 
-test("parse positive limits and pinned allowlist only", () => {
+test("parse limits, arbitrary model shapes, thinking and output", () => {
   expect(parseArgs(["run", "--corpus", "/tmp/private", "--limit", "2", "--models", model, "--dry-run"])).toMatchObject({ limit: 2, models: [model], dryRun: true });
   for (const value of ["0", "-1", "1.5", "NaN"]) expect(() => parseArgs(["run", "--corpus", "/tmp", "--limit", value])).toThrow();
-  expect(() => parseArgs(["run", "--corpus", "/tmp", "--models", "unknown/model"])).toThrow();
+  expect(parseArgs(["run", "--corpus", "/tmp", "--models", "unknown/model", "--thinking", "high", "--out", "/tmp/out"])).toMatchObject({ models: ["unknown/model"], thinking: "high", out: "/tmp/out" });
+  expect(parseArgs(["run", "--corpus", "/tmp"])).toMatchObject({ thinking: PIPELINE_SETTINGS.summarizerThinking, out: "/tmp" });
+  for (const value of ["bad", "a/b/c", "a/ b", "a/b,a/b"]) expect(() => parseArgs(["run", "--corpus", "/tmp", "--models", value])).toThrow();
+  expect(() => parseArgs(["run", "--corpus", "/tmp", "--thinking", "invalid"])).toThrow();
 });
 
 test("stable file/turn ordering, specific skips and exact planned calls", () => {
@@ -40,8 +43,8 @@ test("stable file/turn ordering, specific skips and exact planned calls", () => 
   const trivial = session("small");
   const spilled = session(""); spilled.batches[0].toolCalls[0].spillPath = "/outside/no-body"; spilled.batchPositions[0].results[0].spilled = true;
   const input = [{ stem: "z", session: a }, { stem: "a", session: session(text) }, { stem: "trivial", session: trivial }, { stem: "spill", session: spilled }];
-  const first = planReplay(input, [model], 2);
-  expect(first).toEqual(planReplay(input, [model], 2));
+  const first = planReplay(input, [model], "off", 2);
+  expect(first).toEqual(planReplay(input, [model], "off", 2));
   expect(first.selected.map(r => [r.stem, r.batch.turnIndex])).toEqual([["a", 0], ["z", 2]]);
   expect(first).toMatchObject({ eligible: 3, skippedTrivial: 1, skippedSpilled: 1, summarizerCalls: 4, judgeCalls: 2 });
 });
@@ -106,9 +109,17 @@ test("every string is scored including both-arm misses with scanner/model attrib
 
 test("gate writes regression report; advisory preference alone passes; blind assignment alternates", async () => {
   const dir = mkdtempSync(join(tmpdir(), "replay-gate-")); writeFileSync(join(dir, "one.json"), JSON.stringify(session(text)));
+  const out = join(dir, "results");
   const fail = runtime([answer("7319"), answer("nothing")]);
-  expect(await replayMain(["run", "--corpus", dir, "--models", model], { runtime: async () => fail, print() {} })).toBe(2);
-  expect(readFileSync(join(dir, "report.md"), "utf8")).toContain("Gate: FAIL (1 regressions)");
+  expect(await replayMain(["run", "--corpus", dir, "--models", model, "--thinking", "high", "--out", out], { runtime: async () => fail, print() {} })).toBe(2);
+  expect(readFileSync(join(out, "report.md"), "utf8")).toContain("Gate: FAIL (1 regressions)");
+  expect(JSON.parse(readFileSync(join(out, "jobs.json"), "utf8")).thinking).toBe("high");
+  expect(fail.requests.map(r => r.options.reasoning)).toEqual(["high", "high"]);
+  expect(fail.requests[0].options.reasoning).toBe("high");
+  const logs: string[] = [];
+  expect(await replayMain(["matrix", join(out, "jobs.json")], { print: text => logs.push(text) })).toBe(0);
+  expect(logs.join("")).toContain("high");
+  await expect(replayMain(["run", "--corpus", dir, "--out", process.cwd(), "--dry-run"])).rejects.toThrow();
   const rt = runtime(undefined, [answer('{"verdict":"B better","reason":"Clearer uncertainty."}'), answer('{"verdict":"A better","reason":"Clearer uncertainty."}')]);
   const result = await executeReplay(planReplay([...corpus(), { stem: "two", session: session(text) }], [model]), rt, async () => {});
   expect(result.exitCode).toBe(0);
