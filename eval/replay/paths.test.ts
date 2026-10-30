@@ -1,8 +1,20 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertOutsideRepo } from "./paths";
+
+test("rejects an unrelated git checkout and accepts a plain temporary directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "replay-paths-"));
+  try {
+    expect(assertOutsideRepo(join(dir, "corpus"))).toBe(join(realpathSync(dir), "corpus"));
+    execFileSync("git", ["init", "-q", dir], { stdio: "ignore" });
+    expect(() => assertOutsideRepo(join(dir, "corpus"))).toThrow("Replay destination must be outside all checkouts");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("guards every discovered checkout and symlink children with component boundaries", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "replay-paths-")));

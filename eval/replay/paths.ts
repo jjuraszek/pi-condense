@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 export interface GitDiscovery {
@@ -40,12 +40,22 @@ export function assertOutsideRepo(dir: string, discovery: GitDiscovery = {}): st
     if (!top || !common || trees.length === 0) throw Error(refusal);
     const roots = [resolve(cwd, top), dirname(resolve(cwd, common)), ...trees.map(tree => resolve(cwd, tree))].map(root => realpathSync(root));
     const destination = resolvedDestination(dir);
+    let ancestor = destination;
+    while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+    let enclosingTop = "";
+    try {
+      enclosingTop = execFileSync("git", ["-C", ancestor, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    } catch {
+      // An existing directory outside a checkout has no git toplevel.
+    }
+    if (enclosingTop) throw Error(`${refusal}: ${enclosingTop}`);
     if (roots.some(root => {
       const child = relative(root, destination);
       return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
     })) throw Error(refusal);
     return destination;
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(refusal)) throw error;
     throw new Error(refusal);
   }
 }
