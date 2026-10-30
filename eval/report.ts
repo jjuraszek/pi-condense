@@ -28,13 +28,24 @@ function toolOutcome(t: any): string {
   return /^## toolRef: /m.test(t.result) ? "returned-source" : "wrong-source";
 }
 function safeJob(j: any) {
-  return { scenario: j.scenario, runIndex: j.runIndex, status: j.status, verdict: j.verdict, errorReason: j.errorReason, check: j.check, reason: j.reason, recovery: j.recovery, reply: (j.reply ?? "").slice(0, 600), toolCalls: [...(j.toolCalls ?? [])].sort((a, b) => a.index - b.index).map((t: any) => ({ name: t.name, arguments: t.arguments, index: t.index, outcome: toolOutcome(t) })), usage: j.usage, callCounts: j.callCounts, elapsedMs: j.elapsedMs, attempts: j.attempts, backoffMs: j.backoffMs, retryOverhead: j.retryOverhead, judgeOverhead: j.judgeOverhead };
+  return { scenario: j.scenario, runIndex: j.runIndex, status: j.status, verdict: j.verdict, errorReason: j.errorReason, check: j.check, reason: j.reason, recovery: j.recovery, summaries: j.summaries, flushMetrics: j.flushMetrics, reply: (j.reply ?? "").slice(0, 600), toolCalls: [...(j.toolCalls ?? [])].sort((a, b) => a.index - b.index).map((t: any) => ({ name: t.name, arguments: t.arguments, index: t.index, outcome: toolOutcome(t) })), usage: j.usage, callCounts: j.callCounts, elapsedMs: j.elapsedMs, attempts: j.attempts, backoffMs: j.backoffMs, retryOverhead: j.retryOverhead, judgeOverhead: j.judgeOverhead };
 }
 export function header(r: Report): string {
   return `# Behavioral context-retention eval\n\nThis paid eval measures what an assistant still does correctly after real summarization and pruning. Mechanical evidence gates and a frozen LLM judge score downstream behavior.\n\nComparison key: ${escape(JSON.stringify(r.key))}\n\nVersions: ${escape(JSON.stringify(r.versions))}\n\nRevision / corpus revision: ${escape(r.revision)}; corpus hash: ${escape(r.key.corpusHash)}\n\nDate: ${escape(r.date)}\n\nScoring: mechanical gate, then judge on judged cases; judge prompt hash ${escape(r.key.judgePromptHash)}.\n\nRetry policy: terminal provider HTTP 429 or transport only; delays 2000ms, 8000ms; retries: ${r.jobs.reduce((n, j) => n + (j.attempts ?? 1) - 1, 0)}.\n\nEstimated cost / duration: ${escape(r.estimate ?? "unavailable (no baseline yet)")}\n\nPipeline settings: ${escape(JSON.stringify(r.settings))}\n\nIntended change: ${escape(r.change ?? "baseline capture")} (follow the [behavioral-eval guidance](../../AGENTS.md#behavioral-eval)).\n`;
 }
 function usageRow(label: string, usage?: Measurements, elapsed?: number): string {
   return `| ${label} | ${measurement(usage?.input)} | ${measurement(usage?.output)} | ${numeric(elapsed)} | ${measurement(usage?.cost)} |`;
+}
+function summaryChars(j: any): string {
+  return j?.summaries?.length ? String(j.summaries.reduce((n: number, s: { content: string }) => n + s.content.length, 0)) : "unavailable";
+}
+function summaryCounts(j: any): string {
+  if (!j?.flushMetrics) return "unavailable";
+  const count = (...outcomes: string[]) => j.flushMetrics.filter((m: { outcome: string }) => outcomes.includes(m.outcome)).length;
+  return `retained ${count("summarized")}, skipped-trivial ${count("skipped-trivial")}, skipped-oversized ${count("skipped-oversized")}, unusable ${count("empty", "error")}`;
+}
+function retainedEvidence(j: any): string {
+  return `${(j?.recovery ?? []).filter((r: { summaryRetained?: boolean }) => r.summaryRetained === true).length}/${j?.recovery?.length ?? 0}`;
 }
 export function renderReport(r: Report): string {
   const safe = { ...r, scenarios: r.scenarios.map(({ id, title, tests, mechanical, judged }) => ({ id, title, tests, mechanical, judged })), jobs: r.jobs.map(safeJob) };
@@ -44,7 +55,7 @@ export function renderReport(r: Report): string {
     const expected = s.judged ? `${s.judged.oracle} Expected: ${s.judged.expected}` : `The reply must contain ${(s.mechanical.contains ?? []).join(", ") || "the required answer"} and recover ${(s.mechanical.recovers ?? []).map(x => `${x.id}: ${x.evidence}`).join(", ") || "no additional sources"}.`;
     out += `\n## ${escape(s.title)}\n\n${escape(s.tests)}\n\n${escape(expected)}\n\npasses ${passes(r, s.id)}/${r.key.runs ?? r.key.RUNS_PER_CASE}, errors ${jobs.filter(j => j.status !== "ok" || j.verdict === "error").length}\n`;
     for (const j of jobs) {
-      out += `\n### Repeat ${j.runIndex + 1}: ${escape(j.verdict)}\n\nCheck: ${escape(j.check)}; reason: ${escape(j.reason ?? j.errorReason)}\n\nRecovery: ${escape(JSON.stringify(j.recovery ?? []))}\n\nReply: ${escape((j.reply ?? "").slice(0, 600))}\n\nTools:\n`;
+      out += `\n### Repeat ${j.runIndex + 1}: ${escape(j.verdict)}\n\nCheck: ${escape(j.check)}; reason: ${escape(j.reason ?? j.errorReason)}\n\nSummary chars: ${summaryChars(j)}\n\nSummaries: ${summaryCounts(j)}\n\nRecovery: ${escape(JSON.stringify(j.recovery ?? []))}; evidence in summary: ${retainedEvidence(j)}\n\nReply: ${escape((j.reply ?? "").slice(0, 600))}\n\nTools:\n`;
       for (const t of [...(j.toolCalls ?? [])].sort((a, b) => a.index - b.index)) out += `\n- ${escape(t.name)}(${escape(JSON.stringify(t.arguments))}) -> ${escape(toolOutcome(t))}\n`;
       out += `\nAttempts: ${j.attempts ?? 1}; backoff ms: ${j.backoffMs ?? 0}\n\n| Phase | Input tokens | Output tokens | Elapsed ms | Cost |\n|---|---|---|---|---|\n`;
       out += [usageRow("summarizer", j.usage?.summarizer, j.elapsedMs?.flush), usageRow("subject", j.usage?.subject, j.elapsedMs?.probe), usageRow("judge overhead", j.judgeOverhead?.usage, j.judgeOverhead?.elapsedMs), usageRow("retry overhead", j.retryOverhead?.usage, j.retryOverhead?.elapsedMs), usageRow("total", jobTotal(j), j.elapsedMs?.total)].join("\n") + "\n";
@@ -109,6 +120,7 @@ export function compareReports(a: Report, b: Report, change: string) {
     for (const j of b.jobs.filter(j => j.scenario === s.id)) {
       const old = a.jobs.find(k => k.scenario === s.id && k.runIndex === j.runIndex);
       for (const field of ["check", "reason", "recovery"]) if (JSON.stringify(old?.[field]) !== JSON.stringify(j[field])) text += `Repeat ${j.runIndex + 1} ${field}: ${escape(JSON.stringify(old?.[field]))} -> ${escape(JSON.stringify(j[field]))}\n`;
+      text += `Repeat ${j.runIndex + 1} Summary chars: ${summaryChars(old)} -> ${summaryChars(j)}; Summaries: ${summaryCounts(old)} -> ${summaryCounts(j)}; evidence in summary: ${retainedEvidence(old)} -> ${retainedEvidence(j)}\n`;
       const at = old ? jobTotal(old) : undefined, bt = jobTotal(j);
       text += `Repeat ${j.runIndex + 1} overhead input ${delta(at?.input, bt.input)}, output ${delta(at?.output, bt.output)}, cost ${delta(at?.cost, bt.cost)}, elapsed ${Number.isFinite(old?.elapsedMs?.total) && Number.isFinite(j.elapsedMs?.total) ? j.elapsedMs.total - old.elapsedMs.total : "unavailable"} ms\n`;
       for (const field of ["judgeOverhead", "retryOverhead"]) text += `${field}: cost ${delta(old?.[field]?.usage?.cost, j[field]?.usage?.cost)}; elapsed ${Number.isFinite(old?.[field]?.elapsedMs) && Number.isFinite(j[field]?.elapsedMs) ? j[field].elapsedMs - old[field].elapsedMs : "unavailable"} ms\n`;

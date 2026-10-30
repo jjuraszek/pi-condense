@@ -1,3 +1,4 @@
+import { normalizeSummaryToolCallRefs } from "../src/summary-refs.js";
 import { createHash } from "node:crypto";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { JUDGE_MODEL } from "./config.js";
@@ -5,10 +6,11 @@ import type { Scenario } from "./scenario.js";
 
 export type ToolObservation = { name: string; arguments: Record<string, unknown>; result: string; index: number; resultIndex: number; toolCallId: string };
 export type RecoveryOutcome = "hit" | "not-found" | "wrong-source" | "no-call";
-export type Recovery = { id: string; outcome: RecoveryOutcome };
+export type Recovery = { id: string; outcome: RecoveryOutcome; summaryRetained: boolean };
 export type Score = { status: "pass" | "fail" | "error"; check: string; reason: string; recovery: Recovery[] };
 export type ScoreInput = {
   scenario: Scenario;
+  summaries?: readonly { content: string; details: unknown }[];
   reply: string;
   toolCalls: ToolObservation[];
   finalAssistantIndex: number;
@@ -68,7 +70,7 @@ function providerFailure(error: unknown): string {
 
 export async function score(input: ScoreInput): Promise<Score> {
   const { scenario, reply, toolCalls, runtime } = input;
-  const recovery = (scenario.mechanical.recovers ?? []).map(required => ({ id: required.id, outcome: recover(input, required) }));
+  const recovery = (scenario.mechanical.recovers ?? []).map(required => ({ id: required.id, outcome: recover(input, required), summaryRetained: (input.summaries ?? []).some(summary => normalizeSummaryToolCallRefs(summary.details).some(ref => ref.toolCallId === required.id) && summary.content.includes(required.evidence)) }));
   const failedRecovery = recovery.find(item => item.outcome !== "hit");
   const missing = scenario.mechanical.contains?.find(literal => !reply.includes(literal));
   const check = failedRecovery ? `recovers:${failedRecovery.id}:${failedRecovery.outcome}` : missing !== undefined ? `contains:${missing}` : undefined;

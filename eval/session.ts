@@ -131,7 +131,7 @@ export async function runJob(options: JobOptions) {
     });
     requireProof(finalAssistantIndex >= 0, "error:subject");
     observed.setPhase("judge");
-    const scored = await score({ scenario: options.scenario, reply, toolCalls, finalAssistantIndex, shortRefMap: refMap, runtime: observed.runtime });
+    const scored = await score({ scenario: options.scenario, reply, toolCalls, finalAssistantIndex, shortRefMap: refMap, summaries, runtime: observed.runtime });
     ({ status: verdict, check, reason, recovery } = scored);
     if (scored.status === "error") errorReason = "error:judge";
   } catch (error) {

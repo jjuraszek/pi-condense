@@ -38,3 +38,18 @@ test.each(scenarios)("$id seeds a complete traversable session without orphan ca
   });
   expect(results.sort()).toEqual([...calls.keys()].sort());
 });
+
+test("runJob preserves empty retention observations on an isolation failure", async () => {
+  const { mkdtemp, readFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { runJob } = await import("./session");
+  const jobPath = await mkdtemp(join(tmpdir(), "condense-retention-"));
+  const result = await runJob({ scenario: scenarios[0], summarizer: "invalid-offline-model", runIndex: 0, jobPath, operatorAgentDir: jobPath, repo: process.cwd() });
+  expect(result.errorReason).toBe("error:isolation");
+  expect(result.summaries).toEqual([]);
+  expect(result.flushMetrics).toEqual([]);
+  const saved = JSON.parse(await readFile(join(jobPath, "job.json"), "utf8"));
+  expect(saved.summaries).toEqual(result.summaries);
+  expect(saved.flushMetrics).toEqual(result.flushMetrics);
+});

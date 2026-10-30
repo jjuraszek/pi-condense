@@ -132,14 +132,14 @@ describe("reports", () => {
     expect(measurement({ value: 2, provenance: "estimated" })).toBe("2 (estimated)");
   });
   test("ordered tool outcomes and safe metadata exclude raw logs and full replies", () => {
-    const j = { ...job(), records: [{ context: "secret raw context", judgeResponse: { text: "RAW_JUDGE_DIAGNOSTIC_MARKER", stopReason: "stop" } }], summaries: ["raw summary"], toolCalls: [
+    const j = { ...job(), records: [{ context: "secret raw context", judgeResponse: { text: "RAW_JUDGE_DIAGNOSTIC_MARKER", stopReason: "stop" } }], summaries: [{ content: "retained", details: {} }], toolCalls: [
       { name: "context_tree_query", arguments: { toolCallIds: ["t2"] }, index: 2, result: "## toolRef: t2\n(not found in index)" },
       { name: "context_tree_query", arguments: { toolCallIds: ["t1"] }, index: 1, result: "## toolRef: t1\nTool: read\nanswer" },
     ] };
     const md = renderReport(report([j]) as any);
     expect(md).toContain("-> returned-source"); expect(md).toContain("-> not-found");
     const safe = readReport(md).jobs[0];
-    expect(safe.records).toBeUndefined(); expect(safe.summaries).toBeUndefined();
+    expect(safe.records).toBeUndefined(); expect(safe.summaries).toEqual(j.summaries);
     expect(md).not.toContain("RAW_JUDGE_DIAGNOSTIC_MARKER");
     expect(JSON.stringify(safe)).not.toContain("RAW_JUDGE_DIAGNOSTIC_MARKER");
     expect(safe.toolCalls[0].index).toBe(1); expect(safe.toolCalls[0].result).toBeUndefined();
@@ -342,4 +342,28 @@ describe("offline orchestration boundary", () => {
     for (let i = 0; i < 7; i++) expect(h.messages.join("\n")).toContain(`case-${i}: baseline 0/3 -> candidate 0/3 =`);
     expect(h.messages.at(-1)).toBe("Retained evidence: /temp");
   });
+});
+
+test.each([
+  ["retained and skipped", [{ content: "value=42", details: { toolCallRefs: [{ shortId: "t1", toolCallId: "call_a" }] } }], ["summarized", "skipped-trivial", "skipped-oversized", "empty", "error", "skipped-deduped"], "8", "retained 1, skipped-trivial 1, skipped-oversized 1, unusable 2", true],
+  ["absent", undefined, undefined, "unavailable", "unavailable", false],
+  ["only dedup", [], ["skipped-deduped"], "unavailable", "retained 0, skipped-trivial 0, skipped-oversized 0, unusable 0", false],
+] as const)("report retention measurements: %s", (_name, summaries, outcomes, chars, counts, retained) => {
+  const j = { ...job(), summaries, flushMetrics: outcomes?.map(outcome => ({ outcome })), recovery: [{ id: "call_a", outcome: "hit", summaryRetained: retained }], usage: { summarizer: sumMeasurements([]) } };
+  const r = report([j]);
+  const md = renderReport(r as any);
+  expect(md).toContain(`Summary chars: ${chars}`);
+  expect(md).toContain(`Summaries: ${counts}`);
+  expect(md).toContain(`evidence in summary: ${retained ? 1 : 0}/1`);
+  expect(md).toContain("| summarizer | unavailable | unavailable |");
+  const saved = readReport(md);
+  expect(saved.jobs[0].summaries).toEqual(summaries);
+  expect(saved.jobs[0].flushMetrics).toEqual(j.flushMetrics);
+  expect(saved.jobs[0].usage).toEqual(j.usage);
+  expect(saved.key).toEqual(r.key);
+  expect(saved.settings).toEqual(r.settings);
+  const comparison = compareReports(report() as any, saved, "instrumentation");
+  expect(comparison.text).toContain(`Summary chars: unavailable -> ${chars}`);
+  expect(comparison.text).toContain(`Summaries: unavailable -> ${counts}`);
+  expect(comparison.text).toContain(`evidence in summary: 0/0 -> ${retained ? 1 : 0}/1`);
 });
