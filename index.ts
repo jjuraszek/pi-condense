@@ -13,6 +13,7 @@
  * Usage:  pi -e .
  */
 
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
 import { capImages, imageLimitFor } from "./src/image-cap.js";
@@ -62,7 +63,7 @@ export default function (pi: ExtensionAPI) {
     value: { ...DEFAULT_CONFIG },
   };
 
-  const protectionPredicate = (name: string, args: unknown) => isProtected(name, args, currentConfig.value);
+  const protectionPredicate = (name: string, args: unknown, nested?: NestedToolCalls) => isProtected(name, args, currentConfig.value, nested);
 
   // Shared indexer — rebuilt from session on every session_start / session_tree
   const indexer = new ToolCallIndexer();
@@ -926,7 +927,7 @@ export default function (pi: ExtensionAPI) {
       // CapturedBatch is pruned, which is exactly what we want.
       const filtered = {
         ...capturedBatch,
-        toolCalls: capturedBatch.toolCalls.filter((tc) => !isProtected(tc.toolName, tc.args, currentConfig.value)),
+        toolCalls: capturedBatch.toolCalls.filter((tc) => !protectionPredicate(tc.toolName, tc.args, tc.nestedCalls)),
       };
 
       // Eager spill: offload oversized single results to sidecar files before they

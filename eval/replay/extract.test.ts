@@ -3,7 +3,23 @@ import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, realpa
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedEntries } from "../scenario";
-import { extractSessions } from "./extract";
+import { extractBranch, extractSessions } from "./extract";
+
+test("extractBranch counts and excludes recorded nested protected reads", () => {
+  const branch: any[] = [
+    { role: "assistant", content: [
+      { type: "toolCall", id: "script", name: "codemode", arguments: {} },
+      { type: "toolCall", id: "plain", name: "read", arguments: {} },
+    ] },
+    { role: "toolResult", toolCallId: "script", toolName: "codemode", timestamp: 1, content: [{ type: "text", text: "PROTECTED" }], nestedCalls: {
+      complete: true, calls: [{ id: "nested", name: "read", arguments: { path: "skills/x/SKILL.md" }, status: "ok" }],
+    } },
+    { role: "toolResult", toolCallId: "plain", toolName: "read", timestamp: 2, content: [{ type: "text", text: "control" }] },
+  ].map(message => ({ type: "message", message }));
+  const session = extractBranch(branch);
+  expect(session.counts.protectedExclusions).toBe(1);
+  expect(session.batches[0].toolCalls.map(call => call.toolCallId)).toEqual(["plain"]);
+});
 
 test("opens branch sessions, excludes protected calls and joins spills by occurrence", () => {
   const dir = mkdtempSync(join(tmpdir(), "replay-extract-"));

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { CapturedBatch, CapturedToolCall, BatchingMode } from "./types.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
@@ -111,6 +112,7 @@ export function captureBatch(
         resultText,
         isError,
         ...(resultTimestamp !== undefined ? { resultTimestamp } : {}),
+        ...(match?.nestedCalls !== undefined ? { nestedCalls: match.nestedCalls } : {}),
       } satisfies CapturedToolCall;
     });
 
@@ -128,7 +130,7 @@ export function captureBatch(
 export function captureUnindexedBatchesFromSession(
   branch: any[],
   indexer: { isSummarized(id: string): boolean },
-  exclude: (toolName: string, args: unknown) => boolean = () => false
+  exclude: (toolName: string, args: unknown, nested?: NestedToolCalls) => boolean = () => false
 ): CapturedBatch[] {
   // Keep the SessionEntry wrapper alongside each projected message so the
   // entry's own timestamp remains available as the preferred source below
@@ -191,7 +193,7 @@ export function captureUnindexedBatchesFromSession(
       const result = turnResults.get(id);
       if (!result) return false;
       if (indexer.isSummarized(occKey(id, resultTimestampOf(result.timestamp)))) return false;
-      if (exclude(tc.name, tc.input ?? tc.arguments)) return false;
+      if (exclude(tc.name, tc.input ?? tc.arguments, result.nestedCalls)) return false;
       return true;
     });
 

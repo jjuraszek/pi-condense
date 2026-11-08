@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { detectChains, isChainAnchorCustom, withClosingMessage } from "./chain-detector.js";
+import { isProtected } from "./protected.js";
+import { DEFAULT_CONFIG } from "./types.js";
+
+test("nested protected reads join a closed chain's protected ids", () => {
+  const messages = [
+    userMsg(1),
+    { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "script", name: "codemode", arguments: {} }] },
+    { role: "toolResult", timestamp: 3, toolCallId: "script", toolName: "codemode", nestedCalls: {
+      complete: true, calls: [{ id: "read", name: "read", arguments: { path: "skills/x/SKILL.md" }, status: "ok" }],
+    } },
+    { role: "assistant", timestamp: 4, content: [{ type: "text", text: "done" }] },
+  ];
+  const [chain] = detectChains(messages, (name, args, nested) => isProtected(name, args, DEFAULT_CONFIG, nested));
+  expect(chain.protectedToolCallIds).toEqual(["script"]);
+  expect(chain.finalAssistantTimestamp).toBe(4);
+});
 
 const custom = (customType: string, timestamp: number) => ({ role: "custom", customType, timestamp });
 

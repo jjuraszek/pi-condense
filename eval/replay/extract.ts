@@ -41,8 +41,8 @@ const emptyCounts = (): ReplayCounts => ({ sessionsRead: 0, sessionsSkipped: 0, 
 export function extractBranch(branch: SessionEntry[]): ReplaySession {
   const counts = emptyCounts();
   counts.sessionsRead = 1;
-  const batches = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false }, (name, args) => {
-    const excluded = isProtected(name, args, PIPELINE_SETTINGS);
+  const batches = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false }, (name, args, nested) => {
+    const excluded = isProtected(name, args, PIPELINE_SETTINGS, nested);
     if (excluded) counts.protectedExclusions++;
     return excluded;
   });

@@ -1,3 +1,4 @@
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { ChainRange } from "./types.js";
 
@@ -45,12 +46,12 @@ type State = "idle" | "inChain";
  * NOTE: Message identity uses `timestamp` (for user / final text-only assistant) and
  * `toolCallId` sets (for middle tool-using turns). AgentMessage has no `.id` field.
  *
- * @param isProtected  Predicate over (toolName, args); matching calls are never pruned
+ * @param isProtected  Predicate over (toolName, args, nestedCalls); matching calls are never pruned
  *                     and their outputs are relocated verbatim into compressed chains.
  */
 export function detectChains(
   messages: any[],
-  isProtected: (toolName: string, args: unknown) => boolean = () => false,
+  isProtected: (toolName: string, args: unknown, nested?: NestedToolCalls) => boolean = () => false,
 ): ChainRange[] {
   const ranges: ChainRange[] = [];
   let state: State = "idle";
@@ -108,9 +109,8 @@ export function detectChains(
       if (msg.toolCallId) {
         middleIds.add(msg.toolCallId);
         middleKeys.add(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)));
-        // toolResult fallback — results carry no args; name-only by design,
-        // the assistant block always precedes its result so no protection is lost
-        if (isProtected(msg.toolName, undefined)) protectedIds.add(msg.toolCallId);
+        // Outer args live on the assistant block; nested calls live on the result.
+        if (isProtected(msg.toolName, undefined, msg.nestedCalls)) protectedIds.add(msg.toolCallId);
       }
       continue;
     }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
 import { globToRegExp, isProtected, normalizePath } from "./protected.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
@@ -72,6 +73,39 @@ describe("isProtected", () => {
       complete: true,
       calls: [{ id: "nested-read", name: "read", arguments: { path: "skills/x/SKILL.md" }, status }],
     })).toBe(true);
+  });
+
+  test.each([undefined, {}, { path: "source.ts" }])("protects nested tool names with arguments %j and path matching disabled", (args) => {
+    for (const outerName of ["codemode", "another-script-tool"]) {
+      expect(isProtected(outerName, {}, { protectedTools: ["todowrite"], protectedPaths: [] }, {
+        complete: true, calls: [{ id: "nested", name: "todowrite", arguments: args, status: "ok" }],
+      })).toBe(true);
+    }
+  });
+
+  test.each([
+    { complete: false, calls: [] },
+    { complete: false, calls: [{ id: "write", name: "write", arguments: { path: "source.ts" }, status: "ok" }] },
+    { complete: false, calls: [{ id: "read", name: "read", argumentsBytes: 8193, status: "ok" }] },
+    { complete: false, calls: [{ id: "read", name: "read", arguments: { path: "source.ts" }, status: "unfinished" }] },
+  ] satisfies NestedToolCalls[])("protects incomplete records %j even with empty configuration", (nested) => {
+    for (const config of [cfg, { protectedTools: [], protectedPaths: [] }]) {
+      expect(isProtected("codemode", {}, config, nested)).toBe(true);
+    }
+  });
+
+  test.each([
+    undefined,
+    { complete: true, calls: [] },
+    { complete: true, calls: [{ id: "read", name: "read", arguments: { path: "source.ts" }, status: "ok" }] },
+    { complete: true, calls: [{ id: "read", name: "read", arguments: { path: 42 }, status: "ok" }] },
+    "malformed",
+    { complete: false, calls: {} },
+  ])("keeps unmatched or malformed nested records %j prunable without changing direct protection", (nested) => {
+    const record = nested as NestedToolCalls | undefined;
+    expect(isProtected("codemode", { code: "tools.read({path: 'skills/x/SKILL.md'})" }, cfg, record)).toBe(false);
+    expect(isProtected("todowrite", {}, cfg, record)).toBe(true);
+    expect(isProtected("read", { path: "skills/x/SKILL.md" }, cfg, record)).toBe(true);
   });
 
   test("backslashes normalized to forward slashes", () => {
