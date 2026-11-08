@@ -3,7 +3,7 @@
 base: eb1dd629cf3a6baeb14dac8ef72fa28c2be9ca8e
 verification: bun test src/
 checks: commands
-iterations: 2
+iterations: 3
 allowance: 10
 
 | row | status | attempts | evidence |
@@ -12,7 +12,7 @@ allowance: 10
 | 2 | done | 0 | timeout -k 30 60 bun test src/protected.test.ts; 22 passed, 0 failed; nested protectedTools matches with absent arguments and empty protectedPaths on any outer tool |
 | 3 | done | 0 | timeout -k 30 60 bun test src/protected.test.ts src/reload-rearm.integration.test.ts; 71 passed, 0 failed; incomplete records protect with empty configuration and bypass oversized spill in live capture |
 | 4 | done | 0 | timeout -k 30 60 bun test src/protected.test.ts; 32 passed, 0 failed; absent, unmatched and malformed nested records stay prunable while direct protection stays unchanged |
-| 5 | open | 0 | |
+| 5 | done | 1 | timeout -k 30 60 bun test src/commands.test.ts; 26 passed, 0 failed; documentation clause assertions and existing supersession banner passed; no paid or external action or background job launched |
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 1
@@ -20,3 +20,4 @@ row 1 done | Threaded nested path protection through capture, chains, render rep
 row 2 done | Confirmed nested protected tool names match regardless of arguments or outer tool with path matching disabled. | Reuse the parameterized src/protected.test.ts cases to guard name-only nested protection.
 row 3 done | Protected incomplete records unconditionally and verified oversized outputs bypass spill with path matching disabled. | Reuse the incomplete-record matrix and oversized live/rescan fixture to guard fail-closed capture.
 row 4 done | Confirmed absent, unmatched and malformed nested records stay prunable while direct matching stays unchanged. | Reuse the src/protected.test.ts compatibility matrix when changing nested metadata handling.
+row 5 done | Documented nested protection, limits, spill bypass and direct-only supersession with 26 tests passing and no paid/external action or background job launched. | Reuse src/commands.test.ts to check settings wording and PRUNING.md for the nested-protection contract.
