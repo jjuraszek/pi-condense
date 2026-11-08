@@ -67,6 +67,13 @@ describe("isProtected", () => {
     expect(isProtected("read", { path: "/h/src/app.ts" }, cfg)).toBe(false);
   });
 
+  test.each(["ok", "error"] as const)("protects nested skill reads with status %s", (status) => {
+    expect(isProtected("codemode", { code: "console.log(await tools.read({ path: 'skills/x/SKILL.md' }))" }, cfg, {
+      complete: true,
+      calls: [{ id: "nested-read", name: "read", arguments: { path: "skills/x/SKILL.md" }, status }],
+    })).toBe(true);
+  });
+
   test("backslashes normalized to forward slashes", () => {
     expect(isProtected("read", { path: "h\\skills\\x\\SKILL.md" }, cfg)).toBe(true);
   });
