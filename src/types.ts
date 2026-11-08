@@ -1,3 +1,5 @@
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
+
 /**
  * Shared types for the context-prune extension.
  *
@@ -597,6 +599,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
 
 /** A single tool call + its result as captured from turn_end */
 export interface CapturedToolCall {
+  nestedCalls?: NestedToolCalls;
   toolCallId: string;
   toolName: string;
   args: Record<string, unknown>;

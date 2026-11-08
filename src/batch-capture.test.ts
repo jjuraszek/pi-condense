@@ -11,6 +11,26 @@ import {
 } from "./batch-capture.js";
 import type { CapturedBatch, CapturedToolCall } from "./types.js";
 import { ToolCallIndexer } from "./indexer.js";
+import { isProtected } from "./protected.js";
+import { DEFAULT_CONFIG } from "./types.js";
+
+test("nested protection uses each turn's first paired result and preserves capture metadata", () => {
+  const nestedCalls = { complete: true, calls: [{ id: "nested", name: "read", arguments: { path: "skills/x/SKILL.md" }, status: "ok" as const }] };
+  const assistant = { role: "assistant", content: [{ type: "toolCall", id: "same", name: "codemode", arguments: { code: "read()" } }] };
+  const result = (timestamp: number, nested?: typeof nestedCalls) => ({ role: "toolResult", toolCallId: "same", toolName: "codemode", timestamp, content: [{ type: "text", text: "body" }], ...(nested ? { nestedCalls: nested } : {}) });
+  const protectedResult = result(1, nestedCalls);
+  const plainResult = result(2);
+  const captured = captureBatch(assistant, [protectedResult, plainResult], 0, 0);
+  expect(captured.toolCalls[0].nestedCalls).toBe(nestedCalls);
+  expect(captureBatch(assistant, [plainResult], 1, 0).toolCalls[0]).not.toHaveProperty("nestedCalls");
+  expect(serializeBatchForSummarizer(captured)).not.toContain("nestedCalls");
+  const branch = [assistant, protectedResult, plainResult, assistant, plainResult].map(message => ({ type: "message", message }));
+  const batches = captureUnindexedBatchesFromSession(branch, { isSummarized: () => false },
+    (name, args, nested) => isProtected(name, args, DEFAULT_CONFIG, nested));
+  expect(batches).toHaveLength(1);
+  expect(batches[0].turnIndex).toBe(1);
+  expect(batches[0].toolCalls[0].resultTimestamp).toBe(2);
+});
 
 function toolCall(overrides: Partial<CapturedToolCall> = {}): CapturedToolCall {
   return {

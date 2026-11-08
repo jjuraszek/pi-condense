@@ -2,6 +2,8 @@
 
 > **Superseded by:** [doc/specs/2026-09-07-protected-path-supersede.md](./2026-09-07-protected-path-supersede.md) - "Oversized protected read: stays verbatim in context forever" edge case only (now: until a newer read of the same path)
 
+> **Superseded by:** [doc/specs/2026-11-08-gh-27-codemode-nested-protection.md](./2026-11-08-gh-27-codemode-nested-protection.md) - "Defaults and matching" (the "Matched argument: `args.path` only" row) and "Wiring" (the "toolResult fallback stays name-only" clause) only; `isProtected` now also matches the result's recorded nested calls
+
 GitHub issue: [#1](https://github.com/jjuraszek/pi-context-prune/issues/1)
 
 ## Problem

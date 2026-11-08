@@ -1,3 +1,4 @@
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
 import { detectChains, isChainAnchorCustom } from "./chain-detector.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import type { ContextMetricsSnapshot, PruneFrontier } from "./types.js";
@@ -49,7 +50,7 @@ export function computeContextMetrics(
   branch: any[],
   frontier: PruneFrontier | null,
   isSummarized: (occurrenceKey: string) => boolean,
-  isProtected: (toolName: string, args: unknown) => boolean,
+  isProtected: (toolName: string, args: unknown, nested?: NestedToolCalls) => boolean,
 ): ContextMetricsSnapshot {
   if (branch.length === 0) {
     return { openCycleThinkingTokens: 0, largestChainSharePct: 0, frontierGapTokens: 0 };
@@ -156,7 +157,7 @@ export function computeContextMetrics(
     const key = occKey(m.toolCallId, resultTimestampOf(m.timestamp));
     if (isSummarized(key)) continue;
     const args = findArgsForToolCallId(branch, i, m.toolCallId);
-    if (isProtected(m.toolName, args)) continue;
+    if (isProtected(m.toolName, args, m.nestedCalls)) continue;
     frontierGapTokens += tokensOf(m);
   }
 

@@ -46,7 +46,7 @@ The frozen Opus judge scores judged cases only after mechanical gates pass. It r
 
 ## Baselines and comparisons
 
-The committed [Haiku baseline](baseline/claude-haiku-5-5.md) and [Luna baseline](baseline/gpt-6-luna.md) record source/corpus revision `6e2bbdd503a04424f1999ad3f968e06009374acf`. They record genuine behavioral failures: Haiku passed 16/21 and Luna 15/21, with no execution errors.
+The committed [Haiku baseline](baseline/claude-haiku-5-5.md) and [Luna baseline](baseline/gpt-6-luna.md) record source/corpus revision `6c292b403a0cc7d74eebe3fe646d9f2e793165e7`, captured on Pi SDK 1.5.0 (the earlier capture at `6e2bbdd503a04424f1999ad3f968e06009374acf` on SDK 1.4.0 scored Haiku 16/21 and Luna 15/21; the recapture moved Haiku `failed-fix-not-disproof` from 3/3 to 0/3 on identical main code, which is why it was redone). They record genuine behavioral failures: Haiku passed 15/21 and Luna 18/21, with no execution errors.
 
 Comparison identity includes corpus bytes, subject prompt hash, subject model and thinking level, summarizer, judge model and prompt/rubric hash, pipeline settings hash, and repetition count. Key mismatch blocks comparison before paid jobs. Reports also record both installed Pi SDK versions; the runner warns rather than refuses on version mismatch. Treat that warning as a workflow blocker: align versions or intentionally recapture a baseline before claiming a controlled comparison.
 
@@ -92,13 +92,13 @@ Use these measurements for an empirical go/no-go decision: a regression-free run
 
 ## Costs, reports, and retained evidence
 
-The committed baseline reports cover 42 jobs with total estimated cost USD 1.223723080 (Haiku USD 0.618264205; Luna USD 0.605458875). Their totals record summed job time per summarizer: Haiku 299165.101208 ms and Luna 364666.609412 ms, not parallel wall time:
+The committed baseline reports cover 42 jobs with total estimated cost USD 1.110390695 (Haiku USD 0.585236430; Luna USD 0.525154265). Their totals record summed job time per summarizer: Haiku 252142.421999 ms and Luna 281658.119750 ms, not parallel wall time:
 
 | Phase | Haiku jobs (USD estimated) | Luna jobs (USD estimated) |
 |---|---|---|
-| Summarizer | 0.016132805 | 0.004974175 |
-| Subject | 0.3390014 | 0.3247697 |
-| Judge overhead | 0.263130 | 0.275715 |
+| Summarizer | 0.013724630 | 0.003920165 |
+| Subject | 0.306486800 | 0.284404100 |
+| Judge overhead | 0.265025000 | 0.236830000 |
 | Retry overhead | unavailable (no retries) | unavailable (no retries) |
 
 These are historical catalog-rate estimates, not billed charges, a quota allowance, or a future cost/duration promise. The original report headers say `unavailable (no baseline yet)` because no estimate existed before that capture. Later headers estimate from retained baseline measurements; their duration is summed job time, not parallel wall time.

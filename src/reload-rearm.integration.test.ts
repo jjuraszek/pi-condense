@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { supersededStub } from "./supersede.js";
+import { DEFAULT_CONFIG } from "./types.js";
 
 // This must run before any module that transitively reads PI_CODING_AGENT_DIR
 // (src/config.ts's getAgentDir()) is imported/executed.
@@ -322,6 +323,47 @@ async function boot(options?: Parameters<typeof bootExtension>[0]) {
   extension(harness.pi);
   return harness;
 }
+
+describe("nested protection capture", () => {
+  it.each([
+    { mode: "live", incomplete: false },
+    { mode: "rescan", incomplete: false },
+    { mode: "live", incomplete: true },
+    { mode: "rescan", incomplete: true },
+  ])("%j excludes protected script output from summarizer and index", async ({ mode, incomplete }) => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, ...(incomplete ? { protectedPaths: [] } : {}) });
+    await handlers.get("session_start")!({}, ctx);
+    const message = { role: "assistant", content: [
+      { type: "toolCall", id: "script", name: "codemode", arguments: { code: "read()" } },
+      { type: "toolCall", id: "control", name: "read", arguments: { path: "source.ts" } },
+    ] };
+    const toolResults = [
+      { role: "toolResult", toolCallId: "script", toolName: "codemode", timestamp: 10, content: [{ type: "text", text: "PROTECTED-SCRIPT-BODY".repeat(incomplete ? Math.ceil(DEFAULT_CONFIG.spillThreshold / "PROTECTED-SCRIPT-BODY".length) + 1 : 200) }], nestedCalls: {
+        complete: !incomplete, calls: incomplete ? [] : [{ id: "nested", name: "read", arguments: { path: "skills/x/SKILL.md" }, status: "ok" }],
+      } },
+      { role: "toolResult", toolCallId: "control", toolName: "read", timestamp: 11, content: [{ type: "text", text: "UNPROTECTED-CONTROL".repeat(200) }] },
+    ];
+    branch.push(...[message, ...toolResults].map(message => ({ type: "message", message })));
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    const inputs: string[] = [];
+    const previousStream = streamImpl;
+    streamImpl = (_model, input) => { inputs.push(JSON.stringify(input)); return okStream(); };
+    try {
+      await handlers.get("turn_end")!({ message, toolResults, turnIndex: 0 }, ctx);
+      if (mode === "live") ctx.sessionManager.getBranch = () => { throw new Error("force pending live batch"); };
+      await handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "done" }] } }, ctx);
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]).toContain("UNPROTECTED-CONTROL");
+      expect(inputs[0]).not.toContain("PROTECTED-SCRIPT-BODY");
+      const indexed = appended.filter(entry => entry.type === "context-prune-index")
+        .flatMap(entry => (entry.data as any).toolCalls.map((call: any) => call.toolCallId));
+      expect(indexed).toEqual(["control"]);
+    } finally {
+      streamImpl = previousStream;
+    }
+  });
+});
 
 describe("reload rearm (issue #6)", () => {
   it("hides the startup widget when the prune status line is disabled", async () => {

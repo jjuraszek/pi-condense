@@ -1,3 +1,5 @@
+import type { NestedToolCalls } from "@earendil-works/pi-ai";
+
 /** Structural pick of ContextPruneConfig — keeps this module dependency-free. */
 export interface ProtectionConfig {
   protectedTools: readonly string[];
@@ -46,11 +48,18 @@ export function normalizePath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-export function isProtected(toolName: string, args: unknown, config: ProtectionConfig): boolean {
+function matches(toolName: string, args: unknown, config: ProtectionConfig): boolean {
   if (config.protectedTools.includes(toolName)) return true;
   if (config.protectedPaths.length === 0) return false;
   const path = (args as Record<string, unknown> | null | undefined)?.path;
   if (typeof path !== "string") return false;
   const normalized = normalizePath(path);
   return config.protectedPaths.some((p) => globToRegExp(p).test(normalized));
+}
+
+export function isProtected(toolName: string, args: unknown, config: ProtectionConfig, nested?: NestedToolCalls): boolean {
+  if (matches(toolName, args, config)) return true;
+  if (!nested || typeof nested !== "object" || !Array.isArray(nested.calls)) return false;
+  if (nested.complete === false) return true;
+  return nested.calls.some((call) => matches(call?.name, call?.arguments, config));
 }

@@ -97,13 +97,14 @@ function setupPrunerCommand(overrides: {
   };
 }
 
-describe("/pruner settings argument purge", () => {
+describe("/pruner settings descriptions", () => {
   initTheme("dark");
 
   it.each([
     ["purgeErrorsEnabled", "Argument purge", "Shrink long strings in summarized calls when their results are stubbed in the same render, and in errored calls after the error cooldown, keeping argument shape."],
     ["purgeErrorsCooldown", "Error purge cooldown (turns)", "Wait this many turns after a tool error before purging its argument body."],
     ["purgeErrorsMinArgChars", "Argument purge min arg chars", "Only purge summarized or errored argument bodies at least this many chars."],
+    ["protectedPaths", "Protected paths", "reads made inside codemode scripts"],
   ])("describes %s through the settings overlay", async (id, label, description) => {
     const harness = setupPrunerCommand({ save: async () => {} });
     await harness.run("settings");
@@ -114,6 +115,11 @@ describe("/pruner settings argument purge", () => {
     expect(rendered).toContain(label);
     expect(rendered).toContain(description);
     if (id === "purgeErrorsCooldown") expect(rendered).not.toContain("same render");
+    if (id === "protectedPaths") {
+      expect(rendered).toContain("nestedCalls");
+      expect(rendered).toContain("incomplete nested-call record is kept verbatim regardless of this setting");
+      expect(rendered).toContain("Set to 'none' to disable path matching only");
+    }
   });
 
   it("persists the shared disabled toggle and minimum using only existing purgeErrors fields", async () => {

@@ -116,7 +116,7 @@ export function pruneMessages(
     // session JSONL, so skipping the stub restores it verbatim.
     // Dedup aliases resolve to the original record, so an alias whose own
     // path is protected but whose original isn't stays stubbed (edge case).
-    if (protection && record && isProtected(record.toolName, record.args, protection)) {
+    if (protection && record && isProtected(record.toolName, record.args, protection, msg.nestedCalls)) {
       return msg;
     }
     if (inGrace.has(key)) {

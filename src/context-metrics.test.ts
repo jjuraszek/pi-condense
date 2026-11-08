@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { computeContextMetrics } from "./context-metrics.js";
-import type { PruneFrontier } from "./types.js";
+import { DEFAULT_CONFIG, type PruneFrontier } from "./types.js";
+import { isProtected } from "./protected.js";
+
+test("frontier gap excludes a result with a protected nested read", () => {
+  const messages = [userMsg(1), assistantWithTools(2, ["script"]), {
+    ...toolResult(3, "script", "codemode"),
+    nestedCalls: { complete: true, calls: [{ id: "nested", name: "read", arguments: { path: "skills/x/SKILL.md" }, status: "ok" }] },
+  }];
+  expect(computeContextMetrics(messages, null, () => false,
+    (name, args, nested) => isProtected(name, args, DEFAULT_CONFIG, nested)).frontierGapTokens).toBe(0);
+});
 
 // ── Minimal message factories (mirrors src/chain-detector.test.ts style) ───
 

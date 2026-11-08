@@ -599,6 +599,27 @@ describe("render-time protection re-check", () => {
     expect(messages[1].content[0].text).toBe("FULL SKILL BODY");
   });
 
+  it("repairs an indexed script result from nested metadata with byte-identical repeat renders", () => {
+    const record = { toolCallId: "script", toolName: "codemode", args: { code: "read()" }, resultText: "FULL SKILL BODY", isError: false, turnIndex: 0, timestamp: 10 };
+    const oldIndexer = makeMockIndexer({
+      summarized: new Set(["script"]), shortRefs: new Map([["script", "t1"]]), records: new Map([["script", record]]),
+    });
+    const raw = [
+      { ...skillAsst, content: [{ type: "toolCall", id: "script", name: "codemode", arguments: record.args }] },
+      { ...skillMsg, toolCallId: "script", toolName: "codemode", nestedCalls: {
+        complete: true, calls: [{ id: "nested", name: "read", arguments: { path: "skills/x/SKILL.md" }, status: "ok" }],
+      } },
+    ];
+    const before = JSON.stringify(raw);
+    const render = () => pruneMessages(raw, oldIndexer as any, undefined, undefined,
+      { protectedTools: [], protectedPaths: ["**/skills/**/*.md"] });
+    const first = render();
+    expect(first.pruned).toBe(false);
+    expect(JSON.stringify(first.messages)).toBe(before);
+    expect(JSON.stringify(render().messages)).toBe(JSON.stringify(first.messages));
+    expect(oldIndexer.getRecord("script")).toBe(record);
+  });
+
   it("still stubs when no protection config is passed", () => {
     const { messages, pruned } = pruneMessages([skillAsst, skillMsg], indexer as any);
     expect(pruned).toBe(true);
