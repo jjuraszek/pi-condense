@@ -9,6 +9,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ## [Unreleased]
 
+### Changed
+
+- The compiled-against pi packages (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`) move from `^1.3.0` to `^1.5.0`; the runtime floor stays pi >= 1.3.0 (`streamSimple`).
+
 ### Added
 
 - Paid synthetic behavioral evals measure downstream context quality after summarization and pruning, with frozen committed baselines for both summarizers and an eval-needed decision gate for every repository change. Offline harness tests remain separate from paid runs. (#22)
