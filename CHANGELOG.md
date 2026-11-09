@@ -11,7 +11,7 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ### Changed
 
-- The `agent-message` flush no longer runs on the final assistant reply in sessions without a UI (`pi -p`, `--mode json`): those sessions exit once the prompt is answered, so the flush only delayed the exit and paid the summarizer for a prune no later call read. Budget, delta, and frontier-gap flushes at `turn_end` still run mid-prompt; pending work stays recoverable through the reload rearm. (#29)
+- pi-condense treats sessions without a UI (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and skips the final `agent-message` flush: a single-prompt print child has no later call to read the pruned context. Multi-message print runs and headless SDK hosts still rely on budget, delta, and frontier-gap flushes at `turn_end` (`autoBudgetThreshold`, `budgetTurnDelta`, `frontierGapThresholdTokens`); pending work stays recoverable through the reload rearm. (#29)
 
 ## [2.14.0] - 2026-11-08
 
