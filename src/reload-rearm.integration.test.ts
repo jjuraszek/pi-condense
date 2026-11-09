@@ -1777,3 +1777,53 @@ describe("session-wide live turn index (#16)", () => {
     expect((fm[0].data as any).trigger).toBe("frontier-gap");
   });
 });
+
+describe("final agent-message flush in sessions without a UI (#29)", () => {
+  const finalReply = { message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
+
+  it("skips the message-end flush when ctx.hasUI is false", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: null, budgetTurnDelta: null });
+    ctx.hasUI = false;
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await fireTurn(handlers, ctx, branch, "tc-p", "p".repeat(800), 0);
+    await handlers.get("message_end")!(finalReply, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+    expect(appended.some((e) => e.type === "context-prune-summary")).toBe(false);
+  });
+
+  it("still flushes mid-prompt on the turn_end budget trigger when ctx.hasUI is false", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch });
+    ctx.hasUI = false;
+    await handlers.get("session_start")!({}, ctx);
+
+    await fireTurn(handlers, ctx, branch, "tc-b", "b".repeat(800), 0);
+
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("budget");
+    expect((fm[0].data as any).outcome).toBe("summarized");
+  });
+
+  it("flushes on the final assistant message when ctx.hasUI is true", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: null, budgetTurnDelta: null });
+    ctx.hasUI = true;
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+
+    await fireTurn(handlers, ctx, branch, "tc-u", "u".repeat(800), 0);
+    await handlers.get("message_end")!(finalReply, ctx);
+
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("message-end");
+    expect((fm[0].data as any).outcome).toBe("summarized");
+  });
+});

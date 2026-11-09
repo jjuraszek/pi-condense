@@ -1021,9 +1021,16 @@ export default function (pi: ExtensionAPI) {
   // finished using the raw tool results. flushPending captures the SessionManager
   // before awaiting summarization so print-mode shutdown cannot invalidate the
   // persistence path while the summarizer model is running.
+  //
+  // A session without a UI (`-p`, `--mode json`) has no next turn after its final
+  // reply: the process exits once the prompt is answered, so a flush here only
+  // delays that exit and pays the summarizer for a prune nothing reads. Budget and
+  // frontier-gap flushes on turn_end still run mid-prompt, and anything left
+  // pending stays recoverable through the reload rearm if the session is resumed.
   pi.on("message_end", async (event, ctx) => {
     if (!currentConfig.value.enabled) return;
     if (currentConfig.value.pruneOn !== "agent-message") return;
+    if (ctx.hasUI === false) return;
     if (!isFinalAssistantMessage(event.message)) return;
     await flushPending(ctx, { delivery: "session", closingMessage: event.message, trigger: "message-end" });
   });

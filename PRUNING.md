@@ -975,7 +975,7 @@ Any other outcome - zero or multiple matches on either boundary, `finalAssistant
 - With K=3: the three most-recently-closed chains stay as-is; the fourth triggers compression of the oldest. Exactly K closed chains are kept raw (the open/live chain is never counted).
 - `/pruner compact` bypasses the window and compresses every eligible chain immediately (retroactive).
 
-**Closing-message threading.** In agent-message mode the flush runs from `message_end`, which pi emits to extensions *before* it persists the message to the session (`agent-session.js` runs `_emitExtensionEvent` ahead of `sessionManager.appendMessage`). So at flush time `getBranch()` is missing the just-closed final assistant, and the newest chain would read as open — over-retaining by one (effective K+1). `index.ts` threads the triggering `event.message` through `FlushOptions.closingMessage` into `withClosingMessage` so the chain closes and the window is exactly K.
+**Closing-message threading.** In agent-message mode the flush runs from `message_end` (in sessions with a UI; `ctx.hasUI === false` sessions skip it, since `-p`/`--mode json` exit after the final reply and no later call would read the result), which pi emits to extensions *before* it persists the message to the session (`agent-session.js` runs `_emitExtensionEvent` ahead of `sessionManager.appendMessage`). So at flush time `getBranch()` is missing the just-closed final assistant, and the newest chain would read as open — over-retaining by one (effective K+1). `index.ts` threads the triggering `event.message` through `FlushOptions.closingMessage` into `withClosingMessage` so the chain closes and the window is exactly K.
 
 ### Synthetic message format
 

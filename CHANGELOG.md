@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- The `agent-message` flush no longer runs on the final assistant reply in sessions without a UI (`pi -p`, `--mode json`): those sessions exit once the prompt is answered, so the flush only delayed the exit and paid the summarizer for a prune no later call read. Budget, delta, and frontier-gap flushes at `turn_end` still run mid-prompt; pending work stays recoverable through the reload rearm. (#29)
+
 ## [2.14.0] - 2026-11-08
 
 ### Changed
