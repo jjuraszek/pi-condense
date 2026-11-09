@@ -477,6 +477,7 @@ export function registerCommands(
   getDiagnosticCounts?: () => Record<DiagnosticKind, number>,
   getContextMetrics?: (ctx: ExtensionCommandContext) => ContextMetricsSnapshot,
   getRearmed?: () => boolean,
+  probeRearm?: (ctx: ExtensionCommandContext) => void,
   save: (config: ContextPruneConfig) => Promise<void> = saveConfig,
 ): void {
   // Register the /pruner command
@@ -856,8 +857,12 @@ export function registerCommands(
 
         // ── /pruner on ──
         case "on": {
+          const wasEnabled = currentConfig.value.enabled;
           currentConfig.value = { ...currentConfig.value, enabled: true };
           void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
+          // Tool results produced while disabled were never queued; the probe
+          // puts them back in front of the next gate check.
+          if (!wasEnabled) probeRearm?.(ctx);
           ctx.ui.notify("Context pruning enabled.");
           setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
           break;

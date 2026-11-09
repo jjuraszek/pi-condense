@@ -73,6 +73,7 @@ function setupPrunerCommand(overrides: {
     undefined,
     overrides.getContextMetrics,
     overrides.getRearmed,
+    undefined,
     overrides.save,
   );
 
