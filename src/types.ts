@@ -126,9 +126,12 @@ export const PROGRESS_WIDGET_ID = "context-prune-progress";
  * When summarization (and context pruning) is triggered.
  * - "agent-message" : batches up turns and flushes when the agent sends a final text response
  *                     (a turn with no tool calls), or when the agent loop ends (default)
+ * - "next-prompt"   : batches up turns and flushes when the next user prompt starts, before its
+ *                     first model request; a session that never gets another prompt skips that
+ *                     final flush (the turn_end budget/delta/frontier-gap triggers still fire)
  * - "on-demand"     : only when the user runs /pruner now
  */
-export type PruneOn = "on-demand" | "agent-message";
+export type PruneOn = "on-demand" | "agent-message" | "next-prompt";
 
 /**
  * Granularity of pruning batches.
@@ -255,6 +258,7 @@ export const AUTO_BUDGET_PRESETS: { value: string; label: string }[] = [
 /** Choices for the prune-on setting (used by commands and settings overlay) */
 export const PRUNE_ON_MODES: { value: PruneOn; label: string }[] = [
   { value: "agent-message", label: "On agent message" },
+  { value: "next-prompt", label: "On next prompt" },
   { value: "on-demand", label: "On demand" },
 ];
 
@@ -736,7 +740,7 @@ export interface ContextMetricsSnapshot {
   frontierGapTokens: number;
 }
 
-export type FlushTrigger = "budget" | "delta" | "frontier-gap" | "message-end" | "manual" | "rearmed";
+export type FlushTrigger = "budget" | "delta" | "frontier-gap" | "message-end" | "next-prompt" | "manual" | "rearmed";
 
 /** Payload of CUSTOM_TYPE_FLUSH_METRICS. */
 export interface FlushMetricsEntry {

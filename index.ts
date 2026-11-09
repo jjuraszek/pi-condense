@@ -961,7 +961,9 @@ export default function (pi: ExtensionAPI) {
         const n = pendingBatches.length;
         const trigger = currentConfig.value.pruneOn === "agent-message"
           ? "agent's next text response"
-          : "/pruner now";
+          : currentConfig.value.pruneOn === "next-prompt"
+            ? "your next prompt"
+            : "/pruner now";
         if (currentConfig.value.showPruneStatusLine) {
           setPruneStatusWidget(ctx, currentConfig.value, `prune: ${n} pending`);
           safeNotify(
@@ -1031,6 +1033,24 @@ export default function (pi: ExtensionAPI) {
     if (ctx.hasUI === false) return;
     if (!isFinalAssistantMessage(event.message)) return;
     await flushPending(ctx, { delivery: "session", closingMessage: event.message, trigger: "message-end" });
+  });
+
+  // ── before_agent_start: next-prompt flush ───────────────────────────────────
+  // The user has just submitted a prompt and pi has not yet built its message or
+  // sent the first request, so this is the latest point where a prune still pays
+  // for itself on this run and the earliest point that proves a next run exists.
+  // The previous run's final assistant message is already persisted, so the
+  // newest chain is closed without threading a closingMessage. Session delivery:
+  // summaries land in the session before this run's first `context` event.
+  // Queued follow-ups continue the current run without this event and keep
+  // relying on the turn_end triggers.
+  pi.on("before_agent_start", async (_event, ctx) => {
+    if (!currentConfig.value.enabled) return;
+    if (currentConfig.value.pruneOn !== "next-prompt") return;
+    const n = pendingBatches.length;
+    if (n === 0 && !rearmedPending) return;
+    if (isFlushing) return;
+    await flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : "next-prompt" });
   });
 
   // ── agent_end: last-chance cleanup only ─────────────────────────────────────
