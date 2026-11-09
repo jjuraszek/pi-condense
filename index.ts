@@ -1021,9 +1021,13 @@ export default function (pi: ExtensionAPI) {
   // finished using the raw tool results. flushPending captures the SessionManager
   // before awaiting summarization so print-mode shutdown cannot invalidate the
   // persistence path while the summarizer model is running.
+  //
+  // No-UI sessions are treated as single-prompt to avoid a final prune print children never read.
+  // Multi-prompt print/SDK hosts rely on turn_end budget/delta/frontier-gap triggers instead.
   pi.on("message_end", async (event, ctx) => {
     if (!currentConfig.value.enabled) return;
     if (currentConfig.value.pruneOn !== "agent-message") return;
+    if (ctx.hasUI === false) return;
     if (!isFinalAssistantMessage(event.message)) return;
     await flushPending(ctx, { delivery: "session", closingMessage: event.message, trigger: "message-end" });
   });

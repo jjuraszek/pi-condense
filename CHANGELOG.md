@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- pi-condense treats sessions without a UI (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and skips the final `agent-message` flush: a single-prompt print child has no later call to read the pruned context. Multi-message print runs and headless SDK hosts still rely on budget, delta, and frontier-gap flushes at `turn_end` (`autoBudgetThreshold`, `budgetTurnDelta`, `frontierGapThresholdTokens`); pending work stays recoverable through the reload rearm. (#29)
+
 ## [2.14.0] - 2026-11-08
 
 ### Changed

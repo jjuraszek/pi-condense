@@ -69,7 +69,7 @@ pi install npm:pi-condense
 | `agent-message` (default) | When the agent sends a final text-only reply | ~1 cache rewrite per task batch |
 | `on-demand` | Only when you run `/pruner now` | None until you ask |
 
-With the default `agent-message` trigger (and `autoBudgetThreshold`/`budgetTurnDelta` unset), a non-interactive (`pi -p`) session sees its first flush only at the final reply - set `autoBudgetThreshold` (e.g. `0.8`) so flushes also fire mid-run. This is a property of single-prompt sessions, not a defect in the default.
+pi-condense treats a session without a UI (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and skips the final `agent-message` flush there: for a single-prompt `-p` / `--mode json` child, nothing reads the pruned context afterwards. A multi-message print run or a headless SDK host that wants its final messages pruned still relies on the `turn_end` budget/delta/frontier-gap flushes: set `autoBudgetThreshold` (e.g. `0.8`), `budgetTurnDelta`, or `frontierGapThresholdTokens` to enable them. Pending work stays recoverable through the reload rearm if the session is resumed.
 
 Before any summarizer call, a pre-flush pipeline can drop or redirect a batch at zero LLM cost: protected tools/paths are never touched, content-hash duplicates are aliased to the original, batches too small to be worth summarizing are skipped outright, and oversized single results are spilled straight to a sidecar file. Closed tool-call chains older than a rolling window are additionally range-compressed. Full pipeline and each safeguard: [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards), [§ Chain Compression](PRUNING.md#chain-compression).
 
