@@ -1147,6 +1147,8 @@ Protected calls and trivial batches have no phase 1 stub and do not qualify thro
 
 **Transform position:** argument purge runs in Phase 2, after stub-replace and supersession and before chain range prune.
 
+**Re-issue guard:** a model repeating a purged call can copy the marker as the new argument. A `tool_call` handler (`purgeMarkerBlockReason` in `src/error-purge.ts`) blocks any call in which a string argument at any depth (`command`, `content`, `edits[].newText`, `tasks[].task`) is only a marker, ignoring surrounding whitespace, so the marker is never run as a command or written to a file. The block reason names each argument path; for `<purged-args>` it gives the `context_tree_query` call for the ref, and for `<purged-errored-args>`, which carries no ref, it asks for a full rewrite. A marker inside longer text passes, so a document that mentions the marker stays writable. The guard runs whether or not pruning is enabled, because a marker the model already copied stays in raw history. It is a backstop, not a fix: each blocked call still costs the model a turn, and the marker stays in the argument slot because provider schema validation needs the argument shape preserved.
+
 ```
 [stub-replace] → [supersede] → [argument-purge] → [chain-range-prune] → [orphan-sweep]
 ```

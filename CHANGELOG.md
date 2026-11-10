@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- A tool call whose string argument is only a purge marker (`<purged-args size="N" ref="tN"/>` or `<purged-errored-args size="N"/>`) is blocked before it runs. Models copied the marker when re-issuing a purged call: `bash` ran it as a command, `write` and `edit` saved it into files, and `subagent` ran it as the whole task. The block reason names the argument path, nested ones such as `tasks[0].task` included, and gives the `context_tree_query` call for the ref, or asks for a full rewrite when the marker has none. A marker inside longer text is not blocked. This is a backstop: the model still spends a turn on each blocked call, and the marker stays in the argument slot because provider schema validation needs the argument shape (#19). (#33)
+
 ## [2.15.1] - 2026-11-10
 
 ### Fixed

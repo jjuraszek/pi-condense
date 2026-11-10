@@ -22,6 +22,7 @@ import { summarizeBatch, summarizeBatches, summarizeRange } from "./src/summariz
 import { FallbackController } from "./src/summarizer-fallback.js";
 import { ToolCallIndexer } from "./src/indexer.js";
 import { pruneMessages } from "./src/pruner.js";
+import { purgeMarkerBlockReason } from "./src/error-purge.js";
 import { isProtected } from "./src/protected.js";
 import { registerQueryTool } from "./src/query-tool.js";
 import { registerCommands, setPruneStatusWidget } from "./src/commands.js";
@@ -1087,6 +1088,13 @@ export default function (pi: ExtensionAPI) {
 
     if (!changed) return undefined;
     return { messages };
+  });
+
+  // ── tool_call: refuse a call whose argument is a purge marker ─────────────
+  // Independent of `enabled`: a marker the model already copied stays in raw history.
+  pi.on("tool_call", async (event) => {
+    const reason = purgeMarkerBlockReason(event.input);
+    return reason ? { block: true, reason } : undefined;
   });
 
   // ── Register context_tree_query tool ──────────────────────────────────────

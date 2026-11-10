@@ -1846,3 +1846,51 @@ describe("final agent-message flush in sessions without a UI (#29)", () => {
     expect((fm[0].data as any).outcome).toBe("summarized");
   });
 });
+
+describe("purge marker tool_call guard (#33)", () => {
+  it.each([{ enabled: true }, { enabled: false }])("blocks a call whose argument is a marker, pruning %j", async (options) => {
+    const { handlers, ctx } = await boot(options);
+    await handlers.get("session_start")!({}, ctx);
+    const toolCall = handlers.get("tool_call")!;
+
+    const bash = await toolCall(
+      { type: "tool_call", toolCallId: "tc-bash", toolName: "bash", input: { command: '<purged-args size="900" ref="t323"/>' } },
+      ctx,
+    );
+    expect(bash.block).toBe(true);
+    expect(bash.reason).toContain('context_tree_query({ toolCallIds: ["t323"] })');
+
+    const write = await toolCall(
+      { type: "tool_call", toolCallId: "tc-write", toolName: "write", input: { path: "spec.md", content: '<purged-errored-args size="657"/>' } },
+      ctx,
+    );
+    expect(write.block).toBe(true);
+
+    const subagent = await toolCall(
+      {
+        type: "tool_call",
+        toolCallId: "tc-subagent",
+        toolName: "subagent",
+        input: { tasks: [{ agent: "worker", task: '<purged-args size="1887" ref="t127"/>' }] },
+      },
+      ctx,
+    );
+    expect(subagent.block).toBe(true);
+    expect(subagent.reason).toContain("tasks[0].task");
+  });
+
+  it("lets a write through when the marker sits inside other text", async () => {
+    const { handlers, ctx } = await boot();
+    await handlers.get("session_start")!({}, ctx);
+    const result = await handlers.get("tool_call")!(
+      {
+        type: "tool_call",
+        toolCallId: "tc-write",
+        toolName: "write",
+        input: { path: "PRUNING.md", content: 'Markers look like <purged-args size="30000" ref="t6"/> in context.' },
+      },
+      ctx,
+    );
+    expect(result).toBeUndefined();
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { purgeErroredArgs } from "./error-purge.js";
+import { purgeErroredArgs, purgeMarkerBlockReason } from "./error-purge.js";
 import { occKey } from "./occurrence-key.js";
 import { expectNoOrphanToolResults } from "./test-support.js";
 import type { ErrorPurgeConfig } from "./types.js";
@@ -359,5 +359,64 @@ describe("positional argument purge", () => {
     expect((result[result.length - 2] as any).content[0].arguments.code).toBe(
       source === "summarized" ? marker : '<purged-errored-args size="600"/>',
     );
+  });
+});
+
+describe("purgeMarkerBlockReason", () => {
+  const summarized = '<purged-args size="900" ref="t323"/>';
+  const errored = '<purged-errored-args size="657"/>';
+
+  it("names context_tree_query and the ref for a summarized marker", () => {
+    const reason = purgeMarkerBlockReason({ command: summarized });
+    expect(reason).toContain("command");
+    expect(reason).toContain('context_tree_query({ toolCallIds: ["t323"] })');
+  });
+
+  it("asks for a full rewrite when the marker carries no ref", () => {
+    const reason = purgeMarkerBlockReason({ path: "doc/spec.md", content: errored });
+    expect(reason).toContain("content");
+    expect(reason).toContain("rewrite it in full");
+    expect(reason).not.toContain("context_tree_query");
+  });
+
+  it("finds nested leaves and reports each path", () => {
+    const reason = purgeMarkerBlockReason({
+      tasks: [
+        { agent: "worker", task: "short task" },
+        { agent: "worker", task: '<purged-args size="1887" ref="t127"/>' },
+      ],
+      edits: [{ oldText: "a", newText: errored }],
+    });
+    expect(reason).toContain("tasks[1].task");
+    expect(reason).toContain('context_tree_query({ toolCallIds: ["t127"] })');
+    expect(reason).toContain("edits[0].newText");
+    expect(reason).not.toContain("tasks[0]");
+  });
+
+  it("matches a marker padded only by whitespace", () => {
+    expect(purgeMarkerBlockReason({ content: `${summarized}\n` })).toContain("t323");
+  });
+
+  it.each([
+    ["marker inside other text", { content: `The stub looks like ${summarized} in context.` }],
+    ["two markers", { content: `${summarized}\n${errored}` }],
+    ["malformed marker", { content: '<purged-args size="900"/>' }],
+    ["marker as an object key", { [summarized]: "value" }],
+    ["no strings", { limit: 5, flags: [true, null] }],
+  ])("allows %s", (_, input) => {
+    expect(purgeMarkerBlockReason(input)).toBeUndefined();
+  });
+
+  it("recognizes every marker purgeErroredArgs emits", () => {
+    const messages = [
+      makeAssistant("tc1", { command: LONG }),
+      makeToolResult("tc1", false),
+      makeAssistant("tc2", { command: LONG }),
+      { ...makeToolResult("tc2", true), timestamp: 3 },
+    ];
+    const purged = purgeErroredArgs(messages, { ...defaultConfig, cooldownTurns: 0 }, new Map([[occKey("tc1", 2), "t6"]]));
+    const reissued = [0, 2].map((i) => (purged[i] as any).content[0].arguments);
+    expect(purgeMarkerBlockReason(reissued[0])).toContain('"t6"');
+    expect(purgeMarkerBlockReason(reissued[1])).toContain("rewrite it in full");
   });
 });
