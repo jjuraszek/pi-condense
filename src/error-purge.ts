@@ -1,4 +1,5 @@
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
+import { QUERY_TOOL_NAME } from "./types.js";
 import type { ErrorPurgeConfig } from "./types.js";
 
 // Keep short paths and commands readable while reclaiming large completed-call bodies.
@@ -35,6 +36,40 @@ function shrinkStrings(
     return out ? [out, true] : [value, false];
   }
   return [value, false];
+}
+
+// The two markers shrinkStrings writes; only the summarized one carries a ref.
+const PURGE_MARKER = /^\s*<purged-(?:errored-args size="\d+"|args size="\d+" ref="([^"]+)")\/>\s*$/;
+
+function collectMarkerLeaves(value: unknown, path: string, found: string[]): void {
+  if (typeof value === "string") {
+    const match = PURGE_MARKER.exec(value);
+    if (!match) return;
+    found.push(
+      match[1] === undefined
+        ? `- ${path}: this placeholder has no ref; rewrite it in full.`
+        : `- ${path}: recover the original with ${QUERY_TOOL_NAME}({ toolCallIds: ["${match[1]}"] }), or rewrite it in full.`,
+    );
+  } else if (Array.isArray(value)) {
+    value.forEach((item, index) => collectMarkerLeaves(item, `${path}[${index}]`, found));
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) collectMarkerLeaves(item, path ? `${path}.${key}` : key, found);
+  }
+}
+
+/**
+ * A model re-issuing a purged call can copy the marker as the argument.
+ * Returns the refusal for a call with a string argument that is only a marker; a marker inside longer text passes.
+ */
+export function purgeMarkerBlockReason(input: Record<string, unknown>): string | undefined {
+  const found: string[] = [];
+  collectMarkerLeaves(input, "", found);
+  if (found.length === 0) return undefined;
+  return [
+    "pi-condense blocked this call. A purge placeholder marks where a long argument was removed from context; it is not the argument's value.",
+    ...found,
+    "Call the tool again with the real value.",
+  ].join("\n");
 }
 
 /**
