@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- `/pruner on` runs the reload rearm probe when it flips pruning from off to on, so tool results produced while pruning was disabled, or recovered by a reload that happened while it was disabled, reach the next `turn_end` gate. Before, only `session_start` and `session_tree` probed, and enabling later left that work unflushed until a fresh batch arrived. (#29)
+
 ## [2.15.0] - 2026-11-09
 
 ### Changed

@@ -180,9 +180,9 @@ export default function (pi: ExtensionAPI) {
   // ── Helper: capture + trim + group pending batches (no LLM work) ──────────
   // Exposed to commands.ts via registerCommands so /pruner now can preview the
   // queue before opening the multi-row progress overlay.
-  // `rethrow` is for the reload rearm probe only (session_start/session_tree):
-  // it needs to observe a rescan failure so it can console.error and leave
-  // rearmedPending false, per spec. Every other caller (turn_end capture path,
+  // `rethrow` is for probeRearm only: it needs to observe a rescan failure so
+  // it can console.error and leave rearmedPending false, per spec. Every
+  // other caller (turn_end capture path,
   // flushPending, /pruner commands) keeps the existing swallow-and-fall-back
   // behavior so a transient getBranch failure there never blocks the turn.
   const capturePendingBatches = (ctx: any, opts?: { rethrow?: boolean }): CapturedBatch[] => {
@@ -198,6 +198,20 @@ export default function (pi: ExtensionAPI) {
       .map((batch) => trimBatchToPendingRange(batch))
       .filter((batch): batch is CapturedBatch => batch !== null);
     return groupBatchesByMode(batches, currentConfig.value.batchingMode);
+  };
+
+  // Arms the one-shot rearm flag when the persisted branch holds un-pruned
+  // tool results the in-memory queue does not know about: after a reload, a
+  // branch switch, or a stretch with pruning disabled (turn_end captures
+  // nothing while disabled). A disabled pruner never arms.
+  const probeRearm = (ctx: any): void => {
+    rearmedPending = false;
+    if (!currentConfig.value.enabled) return;
+    try {
+      rearmedPending = capturePendingBatches(ctx, { rethrow: true }).length > 0;
+    } catch (err) {
+      console.error("pi-condense: reload rearm probe failed", err);
+    }
   };
 
   // Summarizes + indexes all pending batches.
@@ -817,14 +831,7 @@ export default function (pi: ExtensionAPI) {
     // Clear any batches queued before the session reload
     pendingBatches.length = 0;
     previousFraction = null;
-    rearmedPending = false;
-    if (currentConfig.value.enabled) {
-      try {
-        rearmedPending = capturePendingBatches(ctx, { rethrow: true }).length > 0;
-      } catch (err) {
-        console.error("pi-condense: reload rearm probe failed", err);
-      }
-    }
+    probeRearm(ctx);
 
     // Update footer status
     setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
@@ -859,14 +866,7 @@ export default function (pi: ExtensionAPI) {
     // Pending batches belong to the old branch — discard them
     pendingBatches.length = 0;
     previousFraction = null;
-    rearmedPending = false;
-    if (currentConfig.value.enabled) {
-      try {
-        rearmedPending = capturePendingBatches(ctx, { rethrow: true }).length > 0;
-      } catch (err) {
-        console.error("pi-condense: reload rearm probe failed", err);
-      }
-    }
+    probeRearm(ctx);
 
     setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
   });
@@ -1138,5 +1138,6 @@ export default function (pi: ExtensionAPI) {
     () => diagnostics.counts(),
     (ctx: any) => computeMetricsSnapshot(ctx) ?? EMPTY_METRICS_SNAPSHOT,
     () => rearmedPending,
+    probeRearm,
   );
 }

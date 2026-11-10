@@ -214,12 +214,13 @@ function bootExtension(
     budgetTurnDelta?: number | null;
     frontierGapThresholdTokens?: number | null;
     showPruneStatusLine?: boolean;
+    enabled?: boolean;
   } = {},
 ) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-condense-rearm-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const contextPruneSettings: any = {
-    enabled: true,
+    enabled: options.enabled ?? true,
     pruneOn: "agent-message",
     batchingMode: "agent-message",
     autoBudgetThreshold: options.autoBudgetThreshold === undefined ? 0.5 : options.autoBudgetThreshold,
@@ -556,6 +557,24 @@ describe("reload rearm (issue #6)", () => {
 
     expect(statusCalls).toContain("\u2502 prune: recovered pending (reload)");
   });
+
+it("/pruner on rearms the gate so work recovered from a disabled stretch flushes", async () => {
+  const { handlers, commands, ctx, appended } = await boot({ enabled: false });
+  await handlers.get("session_start")!({}, ctx);
+  const callsBefore = summarizerCalls;
+
+  const budgetTurn = { toolResults: [], message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, turnIndex: 2 };
+  await handlers.get("turn_end")!(budgetTurn, ctx);
+  expect(summarizerCalls).toBe(callsBefore);
+
+  await commands.get("pruner")!("on", ctx);
+  await handlers.get("turn_end")!(budgetTurn, ctx);
+
+  expect(summarizerCalls).toBe(callsBefore + 1);
+  const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+  expect(fm.length).toBe(1);
+  expect((fm[0].data as any).trigger).toBe("rearmed");
+});
 
   it("reports a rescan failure to console.error and leaves rearmedPending false, without failing session_start (G4)", async () => {
     // Spec (Component 2, Rescan failure): "if the reload rearm probe throws,
