@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- README documents how a subagent child's `pruneOn` is resolved and how to give one agent type its own mode with pi-cohort's `settings` override, which starts the child in a private agent directory that pi-condense already reads. No pi-condense setting or code change. (#35)
+
 ## [2.16.0] - 2026-11-12
 
 ### Added
