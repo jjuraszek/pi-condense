@@ -1985,7 +1985,7 @@ describe("next-prompt mode defers the final flush to the next prompt (#29)", () 
     expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
   });
 
-  it("flushes work left by a disabled resume on the first prompt after /pruner on", async () => {
+  it.each(["/pruner on", "settings Enabled"])("flushes work left by a disabled resume on the first prompt after %s", async (enablePath) => {
     const { handlers, commands, ctx, appended } = await boot({ enabled: false, pruneOn: "next-prompt", ...quiet });
     await handlers.get("session_start")!({}, ctx);
     const callsBefore = summarizerCalls;
@@ -1993,7 +1993,34 @@ describe("next-prompt mode defers the final flush to the next prompt (#29)", () 
     await handlers.get("before_agent_start")!({ prompt: "while disabled" }, ctx);
     expect(summarizerCalls).toBe(callsBefore);
 
-    await commands.get("pruner")!("on", ctx);
+    if (enablePath === "/pruner on") {
+      await commands.get("pruner")!("on", ctx);
+    } else {
+      const { initTheme } = await import("@earendil-works/pi-coding-agent");
+      const { SettingsList } = await import("@earendil-works/pi-tui");
+      initTheme("dark");
+      ctx.modelRegistry.getAvailable = () => [];
+      let overlay: any;
+      ctx.ui.custom = async (factory: any) => {
+        overlay = factory(undefined, undefined, undefined, () => {});
+      };
+      await commands.get("pruner")!("settings", ctx);
+      const list = overlay.children.find((child: any) => child instanceof SettingsList);
+      let branchReads = 0;
+      const getBranch = ctx.sessionManager.getBranch;
+      ctx.sessionManager.getBranch = () => { branchReads++; return getBranch(); };
+
+      list.selectItem("enabled");
+      overlay.handleInput(" ");
+      const readsAfterEnabling = branchReads;
+      list.selectItem("showPruneStatusLine");
+      overlay.handleInput(" ");
+      expect(branchReads).toBe(readsAfterEnabling);
+      list.selectItem("enabled");
+      overlay.handleInput(" ");
+      expect(branchReads).toBe(readsAfterEnabling);
+      overlay.handleInput(" ");
+    }
     await handlers.get("before_agent_start")!({ prompt: "text only" }, ctx);
 
     expect(summarizerCalls).toBe(callsBefore + 1);

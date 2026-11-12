@@ -726,6 +726,7 @@ export function registerCommands(
             // presses Enter on a single-value item. Short-circuit so we don't
             // do a redundant saveConfig / status-widget refresh on no-op presses.
             if (id === "protectedTools" || id === "protectedPaths") return;
+            const wasEnabled = currentConfig.value.enabled;
             const newConfig = { ...currentConfig.value };
             if (id === "enabled") {
               newConfig.enabled = newValue === "true";
@@ -827,6 +828,7 @@ export function registerCommands(
               };
             }
             currentConfig.value = newConfig;
+            if (!wasEnabled && newConfig.enabled) probeRearm?.(ctx);
             void persistConfig((m, t) => ctx.ui.notify(m, t), newConfig, save);
             setPruneStatusWidget(ctx, newConfig, getLiveReclaim(), getDiagnosticCounts?.());
             settingsList?.invalidate();
