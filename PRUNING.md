@@ -570,7 +570,10 @@ graph LR
 | Mode | Cache Busts per 5 Turns | Context Reclaimed | Recommended for |
 |---|---|---|---|
 | `agent-message` | 1 | After batch | **Default** — best balance |
+| `next-prompt` | 1 | At the next prompt | Sessions that may end after a reply (subagent children, one-shot runs) |
 | `on-demand` | 0–1 | When you say so | Maximum cache preservation |
+
+`next-prompt` batches exactly like `agent-message` but moves the flush from `message_end` to `before_agent_start`: pi emits that event once the user has submitted the next prompt and before it builds the prompt message or sends the first request, so the summaries land in the session ahead of this run's first `context` event. The previous run's final assistant message is already persisted at that point, so the newest chain is closed without threading a `closingMessage`. A session that never gets another prompt skips this deferred flush only: the `turn_end` budget/delta/frontier-gap triggers still summarize mid-run in every mode. An interactive session pays the summarizer's latency at the top of the next prompt instead of during idle time. Queued follow-ups continue the current run without `before_agent_start`, so between a reply and a queued follow-up only the `turn_end` budget/delta/frontier-gap triggers flush. After a reload, or after pruning flips from off to on through `/pruner on` or the Enabled toggle in `/pruner settings`, the rearm probe's recovered work flushes on the next prompt (trigger `rearmed`).
 
 > **Everything before the previous pruning point stays in the prefix cache.** The cached prefix is the stable foundation; only the new suffix (recent turns since last prune) changes per request.
 
@@ -1074,9 +1077,9 @@ See `doc/specs/2026-08-12-single-chain-observability-trigger-repair.md` for the 
 
 ### Reload rearm
 
-A reload (`session_start` or `session_tree`), and `/pruner on` when it flips pruning from off to on, rescans the branch for completed-but-unflushed tool-call batches past the frontier (the same rescan `flushPending` itself uses, no queue reconstruction). If that rescan finds recoverable work, a transient in-memory flag arms: the next `turn_end` evaluates the budget/delta trigger even on a turn that contributes no new tool results itself, instead of silently requiring a fresh batch to reach the gate. No flush runs at reload time - arming only changes what an *existing* trigger sees on the next turn.
+A reload (`session_start` or `session_tree`), or enabling pruning through `/pruner on` or the Enabled toggle in `/pruner settings` (off to on), rescans the branch for completed-but-unflushed tool-call batches past the frontier (the same rescan `flushPending` itself uses, no queue reconstruction). If that rescan finds recoverable work, a transient in-memory flag arms: the next `turn_end` evaluates the budget/delta trigger even on a turn that contributes no new tool results itself, instead of silently requiring a fresh batch to reach the gate. No flush runs at reload time - arming only changes what an *existing* trigger sees on the next turn.
 
-The flag clears the moment any flush attempt runs (any outcome) and is re-evaluated on the next reload or enable. `turn_end` captures nothing while pruning is disabled, so the `/pruner on` probe is what puts tool results from a disabled stretch back in front of the gate; a `/pruner on` while already enabled does not probe. A reload followed by total idleness - no further turns at all - gets visibility only: the footer, `/pruner status`, and the `agent_end` pending notice (`prune: recovered pending (reload)`) all reflect the recoverable work, but nothing flushes automatically. This is by design - no immediate flush at boot (print-mode sessions may die under it; a boot-time compact was not requested by the user).
+The flag clears the moment any flush attempt runs (any outcome) and is re-evaluated on the next reload or enable. `turn_end` captures nothing while pruning is disabled, so the enable probe puts tool results from a disabled stretch back in front of the gate; neither enable path probes while already enabled. A reload followed by total idleness - no further turns at all - gets visibility only: the footer, `/pruner status`, and the `agent_end` pending notice (`prune: recovered pending (reload)`) all reflect the recoverable work, but nothing flushes automatically. This is by design - no immediate flush at boot (print-mode sessions may die under it; a boot-time compact was not requested by the user).
 
 ---
 
@@ -1222,6 +1225,9 @@ Prune-time degradations - an unresolvable chain range, a detection/render id mis
 │                                                                     │
 │  "I want the best balance of automation, savings, and cache hits"   │
 │       └──► agent-message  ◄── DEFAULT                               │
+│                                                                     │
+│  "My session may end after its reply (subagent child, one-shot)"    │
+│       └──► next-prompt                                              │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```

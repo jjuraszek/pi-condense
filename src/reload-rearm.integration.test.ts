@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectBranchMessages } from "./batch-capture.js";
 import { supersededStub } from "./supersede.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
@@ -215,13 +216,14 @@ function bootExtension(
     frontierGapThresholdTokens?: number | null;
     showPruneStatusLine?: boolean;
     enabled?: boolean;
+    pruneOn?: "agent-message" | "next-prompt" | "on-demand";
   } = {},
 ) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-condense-rearm-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const contextPruneSettings: any = {
     enabled: options.enabled ?? true,
-    pruneOn: "agent-message",
+    pruneOn: options.pruneOn ?? "agent-message",
     batchingMode: "agent-message",
     autoBudgetThreshold: options.autoBudgetThreshold === undefined ? 0.5 : options.autoBudgetThreshold,
     summarizerModel: "default",
@@ -1892,5 +1894,139 @@ describe("purge marker tool_call guard (#33)", () => {
       ctx,
     );
     expect(result).toBeUndefined();
+  });
+});
+
+describe("next-prompt mode defers the final flush to the next prompt (#29)", () => {
+  const finalReply = { message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
+  const quiet = { autoBudgetThreshold: null, budgetTurnDelta: null } as const;
+
+  it("leaves the final reply alone and flushes when the next prompt starts", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, pruneOn: "next-prompt", ...quiet });
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    // pi's SessionManager appends a custom_message entry to the branch, and pi
+    // rebuilds each request from that branch; mirror it so the request built
+    // below holds whatever the flush wrote.
+    const recordSummary = ctx.sessionManager.appendCustomMessageEntry;
+    ctx.sessionManager.appendCustomMessageEntry = (customType: string, content: string, display: boolean, details?: unknown) => {
+      branch.push({ type: "custom_message", customType, content, display, details, timestamp: new Date().toISOString() });
+      return recordSummary(customType, content, display, details);
+    };
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await fireTurn(handlers, ctx, branch, "tc-n", "n".repeat(800), 0);
+    await handlers.get("message_end")!(finalReply, ctx);
+    branch.push({ type: "message", ...finalReply });
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("next-prompt");
+    expect((fm[0].data as any).outcome).toBe("summarized");
+
+    // The prompt's first request carries the summary and the stub together,
+    // not the raw tool result.
+    branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "next" }] } });
+    const res = await handlers.get("context")!({ messages: projectBranchMessages(branch) }, ctx);
+    const textOf = (m: any) => (Array.isArray(m.content) ? m.content.map((c: any) => c.text).join("\n") : String(m.content));
+    const summaryAt = res.messages.findIndex((m: any) => m.role === "custom" && m.customType === "context-prune-summary");
+    const promptAt = res.messages.findIndex((m: any) => m.role === "user" && textOf(m) === "next");
+    expect(summaryAt).toBeGreaterThan(-1);
+    expect(textOf(res.messages[summaryAt])).toContain("summary");
+    expect(summaryAt).toBeLessThan(promptAt);
+    const stubbed = res.messages.find((m: any) => m.role === "toolResult" && m.toolCallId === "tc-n");
+    expect(stubbed).toBeDefined();
+    expect(textOf(stubbed)).toContain("context_tree_query");
+    expect(textOf(stubbed)).not.toContain("n".repeat(800));
+  });
+
+  it("skips the flush when a prompt starts with no pending work", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, pruneOn: "next-prompt", ...quiet });
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("before_agent_start")!({ prompt: "first" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+  });
+
+  it("flushes recovered pending work on the first prompt after a reload", async () => {
+    const { handlers, ctx, appended } = await boot({ pruneOn: "next-prompt", ...quiet });
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("before_agent_start")!({ prompt: "resume" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("rearmed");
+    expect((fm[0].data as any).outcome).toBe("summarized");
+  });
+
+  it("does not flush at prompt start in agent-message mode", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, ...quiet });
+    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await fireTurn(handlers, ctx, branch, "tc-a", "a".repeat(800), 0);
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+  });
+
+  it.each(["/pruner on", "settings Enabled"])("flushes work left by a disabled resume on the first prompt after %s", async (enablePath) => {
+    const { handlers, commands, ctx, appended } = await boot({ enabled: false, pruneOn: "next-prompt", ...quiet });
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("before_agent_start")!({ prompt: "while disabled" }, ctx);
+    expect(summarizerCalls).toBe(callsBefore);
+
+    if (enablePath === "/pruner on") {
+      await commands.get("pruner")!("on", ctx);
+    } else {
+      const { initTheme } = await import("@earendil-works/pi-coding-agent");
+      const { SettingsList } = await import("@earendil-works/pi-tui");
+      initTheme("dark");
+      ctx.modelRegistry.getAvailable = () => [];
+      let overlay: any;
+      ctx.ui.custom = async (factory: any) => {
+        overlay = factory(undefined, undefined, undefined, () => {});
+      };
+      await commands.get("pruner")!("settings", ctx);
+      const list = overlay.children.find((child: any) => child instanceof SettingsList);
+      let branchReads = 0;
+      const getBranch = ctx.sessionManager.getBranch;
+      ctx.sessionManager.getBranch = () => { branchReads++; return getBranch(); };
+
+      list.selectItem("enabled");
+      overlay.handleInput(" ");
+      const readsAfterEnabling = branchReads;
+      list.selectItem("showPruneStatusLine");
+      overlay.handleInput(" ");
+      expect(branchReads).toBe(readsAfterEnabling);
+      list.selectItem("enabled");
+      overlay.handleInput(" ");
+      expect(branchReads).toBe(readsAfterEnabling);
+      overlay.handleInput(" ");
+    }
+    await handlers.get("before_agent_start")!({ prompt: "text only" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
+    expect(fm.length).toBe(1);
+    expect((fm[0].data as any).trigger).toBe("rearmed");
+    expect((fm[0].data as any).outcome).toBe("summarized");
   });
 });

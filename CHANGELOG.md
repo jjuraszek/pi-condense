@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Added
+
+- `pruneOn: "next-prompt"`: batches like `agent-message` but runs the flush at `before_agent_start` of the next prompt, before its first model request, instead of at `message_end`. A session that never gets another prompt (a subagent child, a one-shot run) skips that final flush; the `turn_end` budget, delta, and frontier-gap triggers still summarize mid-run in every mode. An interactive session pays the summarizer's latency at the top of the next prompt. New `FlushTrigger` value `next-prompt`; work recovered after a reload or enabling pruning through `/pruner on` or the Enabled toggle in `/pruner settings` flushes there as `rearmed`. The settings toggle now runs the rearm probe only when pruning flips from off to on. (#29)
+
 ## [2.15.2] - 2026-11-10
 
 ### Fixed

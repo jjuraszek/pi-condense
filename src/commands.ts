@@ -127,6 +127,7 @@ const SUBCOMMANDS = [
 
 const PRUNE_MODE_GUIDANCE: Record<ContextPruneConfig["pruneOn"], string> = {
   "agent-message": "Recommended default. Batches tool work and prunes once after the final text reply, giving the best balance of automation, context savings, and cache stability.",
+  "next-prompt": "Same batching, but the prune runs when your next prompt starts, before its first model request. A session that never gets another prompt (a subagent, a one-shot run) skips that final prune; the budget, delta, and frontier-gap flushes still run mid-run. You pay the summarizer's latency at the top of the next prompt.",
   "on-demand": "Maximum manual control. Nothing is pruned until you run /pruner now, so cache invalidation happens only when you choose.",
 };
 
@@ -274,6 +275,7 @@ Usage:
   /pruner prune-on                         Show or interactively pick the trigger
   /pruner prune-on on-demand               Only summarize when /pruner now runs
   /pruner prune-on agent-message           Summarize after the agent's final text reply (default; safest for cache stability)
+  /pruner prune-on next-prompt             Summarize when your next prompt starts, before its first model request
   /pruner batching                         Show or interactively pick the batching granularity
   /pruner batching turn                    One summary per assistant turn (default)
   /pruner batching agent-message           One summary per user→final-agent-message span (merges all turns in a span)
@@ -332,6 +334,7 @@ Batching mode:
 Mode guidance:
   - on-demand: maximum manual control. Best when you want to decide exactly when to trade cache stability for shorter context.
   - agent-message: recommended default. Batches a whole tool-using run, then prunes once after the final text reply so future requests become cacheable again.
+  - next-prompt: same batching, but the final prune waits for your next prompt. A session that ends after its reply skips it; you pay the summarizer's latency at the top of the next prompt.
 
 Why this matters:
   Frequent edits to earlier context can reduce prompt/prefix cache hits on providers that cache identical prefixes. Batched pruning is usually cheaper and faster than pruning every turn.
@@ -723,6 +726,7 @@ export function registerCommands(
             // presses Enter on a single-value item. Short-circuit so we don't
             // do a redundant saveConfig / status-widget refresh on no-op presses.
             if (id === "protectedTools" || id === "protectedPaths") return;
+            const wasEnabled = currentConfig.value.enabled;
             const newConfig = { ...currentConfig.value };
             if (id === "enabled") {
               newConfig.enabled = newValue === "true";
@@ -824,6 +828,7 @@ export function registerCommands(
               };
             }
             currentConfig.value = newConfig;
+            if (!wasEnabled && newConfig.enabled) probeRearm?.(ctx);
             void persistConfig((m, t) => ctx.ui.notify(m, t), newConfig, save);
             setPruneStatusWidget(ctx, newConfig, getLiveReclaim(), getDiagnosticCounts?.());
             settingsList?.invalidate();
