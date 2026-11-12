@@ -1,10 +1,10 @@
-import { describe, it, expect } from "bun:test";
+import { afterEach, beforeEach, describe, it, expect, jest } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { projectBranchMessages } from "./batch-capture.js";
 import { supersededStub } from "./supersede.js";
-import { DEFAULT_CONFIG } from "./types.js";
+import { DEFAULT_CONFIG, SETTLED_FLUSH_DELAY_MS } from "./types.js";
 
 // This must run before any module that transitively reads PI_CODING_AGENT_DIR
 // (src/config.ts's getAgentDir()) is imported/executed.
@@ -126,6 +126,25 @@ function closedChainBranch(count: number): any[] {
   return msgs;
 }
 
+// Like closedChainBranch, but each chain holds two tool turns, so batchingMode
+// "turn" gives it two per-batch summaries: the minimum the range fuser accepts.
+function twoTurnChainBranch(count: number): any[] {
+  const msgs: any[] = [];
+  let t = Date.now();
+  for (let i = 0; i < count; i++) {
+    msgs.push({ type: "message", message: { role: "user", content: [{ type: "text", text: `do task ${i}` }], timestamp: (t += 1000) } });
+    for (const id of [`tc${i}a`, `tc${i}b`]) {
+      msgs.push({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "read", arguments: {} }], timestamp: (t += 1000) } });
+      msgs.push({
+        type: "message",
+        message: { role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "x".repeat(400) }], timestamp: (t += 1000) },
+      });
+    }
+    msgs.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `done ${i}` }], timestamp: (t += 1000) } });
+  }
+  return msgs;
+}
+
 // Builds one independent pending batch: user -> assistant toolCall -> toolResult,
 // with no closing text-only assistant (chain stays open, matching defaultBranch's
 // shape). Used by the frontier-gap tests below to grow/shrink the branch's
@@ -216,7 +235,8 @@ function bootExtension(
     frontierGapThresholdTokens?: number | null;
     showPruneStatusLine?: boolean;
     enabled?: boolean;
-    pruneOn?: "agent-message" | "next-prompt" | "on-demand";
+    pruneOn?: "agent-message" | "on-demand";
+    batchingMode?: "turn" | "agent-message";
   } = {},
 ) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-condense-rearm-"));
@@ -224,7 +244,7 @@ function bootExtension(
   const contextPruneSettings: any = {
     enabled: options.enabled ?? true,
     pruneOn: options.pruneOn ?? "agent-message",
-    batchingMode: "agent-message",
+    batchingMode: options.batchingMode ?? "agent-message",
     autoBudgetThreshold: options.autoBudgetThreshold === undefined ? 0.5 : options.autoBudgetThreshold,
     summarizerModel: "default",
     minBatchChars: 1,
@@ -355,7 +375,7 @@ describe("nested protection capture", () => {
     try {
       await handlers.get("turn_end")!({ message, toolResults, turnIndex: 0 }, ctx);
       if (mode === "live") ctx.sessionManager.getBranch = () => { throw new Error("force pending live batch"); };
-      await handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "done" }] } }, ctx);
+      await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
       expect(inputs).toHaveLength(1);
       expect(inputs[0]).toContain("UNPROTECTED-CONTROL");
       expect(inputs[0]).not.toContain("PROTECTED-SCRIPT-BODY");
@@ -402,10 +422,7 @@ describe("reload rearm (issue #6)", () => {
     expect(notifications.filter((message) => message.includes("pruner: 1 turn queued"))).toHaveLength(1);
 
     ctx.sessionManager.getBranch = healthyGetBranch;
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const flushMetrics = appended.find((entry) => entry.type === "context-prune-flush-metrics");
     expect(flushMetrics).toBeDefined();
@@ -443,10 +460,7 @@ describe("reload rearm (issue #6)", () => {
     // getBranch is still down at flush time: capturePendingBatches' catch
     // branch serves pendingBatches.slice() (index.ts), so the queued batch's
     // captured run-local index (7) is what reaches persistence.
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const flushMetrics = appended.find((entry) => entry.type === "context-prune-flush-metrics");
     expect(flushMetrics).toBeDefined();
@@ -529,22 +543,6 @@ describe("reload rearm (issue #6)", () => {
     expect(fm.capturedBatches).toBe(1);
     expect(fm.processedBatches).toBe(1);
     expect(fm.metrics.frontierGapTokens).toBeGreaterThan(0);
-
-    // Empty-attempt: message_end's unconditional flushPending rescans and finds
-    // nothing (the only batch was already summarized above). One entry per
-    // attempt, including empty ones.
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
-
-    const flushMetricsEntriesAfterEmpty = appended.filter((e) => e.type === "context-prune-flush-metrics");
-    expect(flushMetricsEntriesAfterEmpty.length).toBe(2);
-    const empty = flushMetricsEntriesAfterEmpty[1].data as any;
-    expect(empty.trigger).toBe("message-end");
-    expect(empty.outcome).toBe("empty");
-    expect(empty.capturedBatches).toBe(0);
-    expect(empty.processedBatches).toBe(0);
   });
 
   it("agent_end shows 'recovered pending (reload)' when rearmed but the in-memory queue is empty", async () => {
@@ -706,14 +704,10 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
 
     await handlers.get("session_start")!({}, ctx);
 
-    // message_end drives an agent-message flush directly (no reload rearm
-    // needed): captures the four batches, summarizes them, then attempts
-    // chain compression on the oldest eligible chain, which fails and is
-    // swallowed.
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "hi" }] } },
-      ctx,
-    );
+    // The first prompt after the reload flushes the recovered work: captures
+    // the four batches, summarizes them, then attempts chain compression on
+    // the oldest eligible chain, which fails and is swallowed.
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     // Positive proof the injected throw was actually exercised (not vacuous).
     expect(chainWriteAttempts).toBeGreaterThan(0);
@@ -722,7 +716,7 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
     expect(flushMetricsEntries.length).toBe(1);
     const fm = flushMetricsEntries[0].data as any;
     expect(fm.outcome).toBe("summarized");
-    expect(fm.trigger).toBe("message-end");
+    expect(fm.trigger).toBe("rearmed");
     expect(fm.capturedBatches).toBe(4);
     expect(fm.processedBatches).toBe(4);
   });
@@ -731,10 +725,14 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
     // Regression: the sessionManager-backed appender used to bind only after
     // a non-empty capture, so an empty rescan on a session-delivery flush
     // fell back to pi.appendEntry for the flush-metrics emit — a stale-pi
-    // drop risk (print-mode, reload). message_end always flushes with
-    // delivery: "session"; an empty branch makes the rescan find nothing.
+    // drop risk (print-mode, reload). The prompt-start flush uses delivery:
+    // "session"; a queued batch whose tool call has left the branch by flush
+    // time makes the rescan find nothing.
+    const branch: any[] = [];
     const { handlers, ctx, piAppended, sessionAppended } = await boot({
-      branch: [],
+      branch,
+      autoBudgetThreshold: null,
+      budgetTurnDelta: null,
       separatePiAppended: true,
       piAppendEntry: (push) => (type: string, data?: unknown) => {
         push(type, data);
@@ -743,11 +741,10 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
     });
 
     await handlers.get("session_start")!({}, ctx);
+    await fireTurn(handlers, ctx, branch, "tc-gone", "g".repeat(800), 0);
+    branch.length = 0;
 
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const flushMetricsEntries = sessionAppended.filter((e) => e.type === "context-prune-flush-metrics");
     expect(flushMetricsEntries.length).toBe(1);
@@ -769,19 +766,16 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
 
     await handlers.get("session_start")!({}, ctx);
 
-    // message_end drives a session-delivery flush (delivery: "session").
+    // The first prompt after the reload drives a session-delivery flush.
     // Under the pre-fix unconditional pi.appendEntry, this entry is lost to
     // the swallowing try/catch because pi.appendEntry throws above.
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "hi" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const flushMetricsEntries = sessionAppended.filter((e) => e.type === "context-prune-flush-metrics");
     expect(flushMetricsEntries.length).toBe(1);
     const fm = flushMetricsEntries[0].data as any;
     expect(fm.outcome).toBe("summarized");
-    expect(fm.trigger).toBe("message-end");
+    expect(fm.trigger).toBe("rearmed");
 
     // Confirms the routing decision, not just a lucky duplicate write: the
     // stale pi.appendEntry must never be the source of this entry.
@@ -906,10 +900,7 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
       { toolResults: [], message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, turnIndex: 2 },
       ctx,
     );
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const chainEntries = appended.filter((e) => e.type === "context-prune-chain");
     const anchoredAtCustom = chainEntries.find(
@@ -956,10 +947,7 @@ it("/pruner on rearms the gate so work recovered from a disabled stretch flushes
       { toolResults: [], message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, turnIndex: 2 },
       ctx,
     );
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const chainEntries = appended.filter((e) => e.type === "context-prune-chain");
     const anchoredAtSummary = chainEntries.find(
@@ -1383,13 +1371,10 @@ describe("supersede floor cadence (spec 2026-09-07)", () => {
     await handlers.get("session_start")!({}, ctx);
     await render(branch, handlers, ctx); // prime: only one occurrence of the protected path exists so far
 
-    // message_end drives an unconditional agent-message flush: summarizes the
-    // four turns, then compresses whichever chains fall outside rollingWindow=3
+    // The first prompt after the reload flushes the recovered work: summarizes
+    // the four turns, then compresses whichever chains fall outside rollingWindow=3
     // (chain0, the oldest of four).
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const chainEntries = appended.filter((e) => e.type === "context-prune-chain");
     const chain0Entry = chainEntries.find((e) => (e.data as any).startUserTimestamp === chain0.startUserTimestamp);
@@ -1627,10 +1612,7 @@ describe("supersede floor cadence (spec 2026-09-07)", () => {
     await handlers.get("session_start")!({}, ctx);
     await render(branch, handlers, ctx); // prime: only c1-read exists so far, no second occurrence
 
-    await handlers.get("message_end")!(
-      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
-      ctx,
-    );
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
 
     const chainEntries = appended.filter((e) => e.type === "context-prune-chain");
     const chain0Entry = chainEntries.find((e) => (e.data as any).startUserTimestamp === 10);
@@ -1799,25 +1781,7 @@ describe("session-wide live turn index (#16)", () => {
   });
 });
 
-describe("final agent-message flush in sessions without a UI (#29)", () => {
-  const finalReply = { message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
-
-  it("skips the message-end flush when ctx.hasUI is false", async () => {
-    const branch: any[] = [];
-    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: null, budgetTurnDelta: null });
-    ctx.hasUI = false;
-    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
-    await handlers.get("session_start")!({}, ctx);
-    const callsBefore = summarizerCalls;
-
-    await fireTurn(handlers, ctx, branch, "tc-p", "p".repeat(800), 0);
-    await handlers.get("message_end")!(finalReply, ctx);
-
-    expect(summarizerCalls).toBe(callsBefore);
-    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
-    expect(appended.some((e) => e.type === "context-prune-summary")).toBe(false);
-  });
-
+describe("sessions without a UI (#29)", () => {
   it("still flushes mid-prompt on the turn_end budget trigger when ctx.hasUI is false", async () => {
     const branch: any[] = [];
     const { handlers, ctx, appended } = await boot({ branch });
@@ -1829,22 +1793,6 @@ describe("final agent-message flush in sessions without a UI (#29)", () => {
     const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
     expect(fm.length).toBe(1);
     expect((fm[0].data as any).trigger).toBe("budget");
-    expect((fm[0].data as any).outcome).toBe("summarized");
-  });
-
-  it("flushes on the final assistant message when ctx.hasUI is true", async () => {
-    const branch: any[] = [];
-    const { handlers, ctx, appended } = await boot({ branch, autoBudgetThreshold: null, budgetTurnDelta: null });
-    ctx.hasUI = true;
-    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
-    await handlers.get("session_start")!({}, ctx);
-
-    await fireTurn(handlers, ctx, branch, "tc-u", "u".repeat(800), 0);
-    await handlers.get("message_end")!(finalReply, ctx);
-
-    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
-    expect(fm.length).toBe(1);
-    expect((fm[0].data as any).trigger).toBe("message-end");
     expect((fm[0].data as any).outcome).toBe("summarized");
   });
 });
@@ -1897,96 +1845,460 @@ describe("purge marker tool_call guard (#33)", () => {
   });
 });
 
-describe("next-prompt mode defers the final flush to the next prompt (#29)", () => {
-  const finalReply = { message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
+describe("final flush after the run settles (#37)", () => {
   const quiet = { autoBudgetThreshold: null, budgetTurnDelta: null } as const;
+  const finalReply = { type: "message", message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
+  const settled = { type: "agent_settled", aborted: false };
+  const summaryEntries = (appended: AppendedEntry[]) => appended.filter((e) => e.type === "context-prune-summary");
+  const flushMetrics = (appended: AppendedEntry[]) =>
+    appended.filter((e) => e.type === "context-prune-flush-metrics").map((e) => e.data as any);
 
-  it("leaves the final reply alone and flushes when the next prompt starts", async () => {
+  let previousStream: typeof streamImpl;
+  beforeEach(() => {
+    previousStream = streamImpl;
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    streamImpl = previousStream;
+  });
+
+  // A finished run: one tool turn is queued and the final reply is persisted.
+  async function finishedRun(options: Parameters<typeof bootExtension>[0] = {}) {
     const branch: any[] = [];
-    const { handlers, ctx, appended } = await boot({ branch, pruneOn: "next-prompt", ...quiet });
-    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
+    const harness = await boot({ branch, ...quiet, ...options });
+    harness.ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
     // pi's SessionManager appends a custom_message entry to the branch, and pi
-    // rebuilds each request from that branch; mirror it so the request built
-    // below holds whatever the flush wrote.
-    const recordSummary = ctx.sessionManager.appendCustomMessageEntry;
-    ctx.sessionManager.appendCustomMessageEntry = (customType: string, content: string, display: boolean, details?: unknown) => {
+    // rebuilds each request from that branch; mirror it so a request built
+    // from `branch` holds whatever the flush wrote.
+    const recordSummary = harness.ctx.sessionManager.appendCustomMessageEntry;
+    harness.ctx.sessionManager.appendCustomMessageEntry = (customType: string, content: string, display: boolean, details?: unknown) => {
       branch.push({ type: "custom_message", customType, content, display, details, timestamp: new Date().toISOString() });
       return recordSummary(customType, content, display, details);
     };
-    await handlers.get("session_start")!({}, ctx);
+    await harness.handlers.get("session_start")!({}, harness.ctx);
+    await fireTurn(harness.handlers, harness.ctx, branch, "tc-s", "s".repeat(800), 0);
+    branch.push(finalReply);
+    return harness;
+  }
+
+  // Every flush attempt ends by writing one flush-metrics entry.
+  function nextFlushDone(appended: AppendedEntry[]): Promise<void> {
+    return new Promise((resolve) => {
+      const push = appended.push;
+      appended.push = (...entries: AppendedEntry[]) => {
+        const length = push.apply(appended, entries);
+        if (entries.some((e) => e.type === "context-prune-flush-metrics")) {
+          appended.push = push;
+          resolve();
+        }
+        return length;
+      };
+    });
+  }
+
+  // A summarizer whose response stays outstanding until `release()`.
+  function heldSummarizer() {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const seen: { signal?: AbortSignal } = {};
+    streamImpl = (_model, _input, opts) => {
+      summarizerCalls++;
+      seen.signal = opts?.signal;
+      return {
+        async *[Symbol.asyncIterator]() {},
+        async result() {
+          await released;
+          return { stopReason: "stop", content: [{ type: "text", text: "[[1:read]] summary" }], usage: USAGE };
+        },
+      };
+    };
+    return { release, seen };
+  }
+
+  // The summarizer stub settles on promises alone, so a flush that has started
+  // reaches its summarizer call, and one that can finish does, within these turns.
+  async function drainMicrotasks() {
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  }
+
+  async function isSettled(promise: Promise<unknown>): Promise<boolean> {
+    let done = false;
+    void promise.then(() => { done = true; });
+    await drainMicrotasks();
+    return done;
+  }
+
+  const textOf = (m: any) => (Array.isArray(m.content) ? m.content.map((c: any) => c.text).join("\n") : String(m.content));
+
+  async function firstRequest(handlers: Map<string, any>, ctx: any, branch: any[], prompt: string) {
+    branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: prompt }] } });
+    const res = await handlers.get("context")!({ messages: projectBranchMessages(branch) }, ctx);
+    return res.messages as any[];
+  }
+
+  function expectPruned(messages: any[], prompt: string) {
+    const summaryAt = messages.findIndex((m) => m.role === "custom" && m.customType === "context-prune-summary");
+    const promptAt = messages.findIndex((m) => m.role === "user" && textOf(m) === prompt);
+    expect(summaryAt).toBeGreaterThan(-1);
+    expect(summaryAt).toBeLessThan(promptAt);
+    const stubbed = messages.find((m) => m.role === "toolResult" && m.toolCallId === "tc-s");
+    expect(textOf(stubbed)).toContain("context_tree_query");
+    expect(textOf(stubbed)).not.toContain("s".repeat(800));
+  }
+
+  it("the run settles without a summarizer call", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
     const callsBefore = summarizerCalls;
 
-    await fireTurn(handlers, ctx, branch, "tc-n", "n".repeat(800), 0);
-    await handlers.get("message_end")!(finalReply, ctx);
-    branch.push({ type: "message", ...finalReply });
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS - 1);
+
     expect(summarizerCalls).toBe(callsBefore);
-    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+    expect(flushMetrics(appended)).toEqual([]);
+  });
+
+  it("an idle session is pruned after the delay, and the next prompt pays for no summarizer call", async () => {
+    const { handlers, ctx, appended, branch } = await finishedRun();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    const flushed = nextFlushDone(appended);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await flushed;
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "summarized"]]);
 
     await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
     expect(summarizerCalls).toBe(callsBefore + 1);
-    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
-    expect(fm.length).toBe(1);
-    expect((fm[0].data as any).trigger).toBe("next-prompt");
-    expect((fm[0].data as any).outcome).toBe("summarized");
-
-    // The prompt's first request carries the summary and the stub together,
-    // not the raw tool result.
-    branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "next" }] } });
-    const res = await handlers.get("context")!({ messages: projectBranchMessages(branch) }, ctx);
-    const textOf = (m: any) => (Array.isArray(m.content) ? m.content.map((c: any) => c.text).join("\n") : String(m.content));
-    const summaryAt = res.messages.findIndex((m: any) => m.role === "custom" && m.customType === "context-prune-summary");
-    const promptAt = res.messages.findIndex((m: any) => m.role === "user" && textOf(m) === "next");
-    expect(summaryAt).toBeGreaterThan(-1);
-    expect(textOf(res.messages[summaryAt])).toContain("summary");
-    expect(summaryAt).toBeLessThan(promptAt);
-    const stubbed = res.messages.find((m: any) => m.role === "toolResult" && m.toolCallId === "tc-n");
-    expect(stubbed).toBeDefined();
-    expect(textOf(stubbed)).toContain("context_tree_query");
-    expect(textOf(stubbed)).not.toContain("n".repeat(800));
+    expect(flushMetrics(appended).length).toBe(1);
+    expectPruned(await firstRequest(handlers, ctx, branch, "next"), "next");
   });
 
-  it("skips the flush when a prompt starts with no pending work", async () => {
-    const branch: any[] = [];
-    const { handlers, ctx, appended } = await boot({ branch, pruneOn: "next-prompt", ...quiet });
+  it("a prompt sent while the flush is in flight waits for it and sends no second summarizer request", async () => {
+    const { handlers, ctx, appended, branch } = await finishedRun();
+    const { release } = heldSummarizer();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    const prompt = handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(await isSettled(prompt)).toBe(false);
+    expect(summarizerCalls).toBe(callsBefore + 1);
+
+    release();
+    await prompt;
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "summarized"]]);
+    expectPruned(await firstRequest(handlers, ctx, branch, "next"), "next");
+  });
+
+  it("a prompt sent before the flush has started runs it ahead of the first request", async () => {
+    const { handlers, ctx, appended, branch } = await finishedRun();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS - 1);
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["next-prompt", "summarized"]]);
+    expectPruned(await firstRequest(handlers, ctx, branch, "next"), "next");
+
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    expect(flushMetrics(appended).length).toBe(1);
+  });
+
+  it("a prompt that waited on a failed flush does not retry it", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
+    const callsBefore = summarizerCalls;
+    streamImpl = () => {
+      summarizerCalls++;
+      return errStream("503 upstream unavailable");
+    };
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"]]);
+  });
+
+  it("a session shut down before the delay passes sends no summarizer request", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(10);
+    await handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await drainMicrotasks();
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(flushMetrics(appended)).toEqual([]);
+    expect(summaryEntries(appended)).toEqual([]);
+  });
+
+  it.each(["session_shutdown", "session_before_tree", "session_before_compact"])("%s while the flush is in flight aborts it and writes no summary", async (eventName) => {
+    const { handlers, ctx, appended } = await finishedRun();
+    const { release, seen } = heldSummarizer();
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    const flushed = nextFlushDone(appended);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    while (!seen.signal) await Promise.resolve();
+
+    // The handler returns while the summarizer response is still outstanding.
+    await handlers.get(eventName)!({ type: eventName, reason: "quit" }, ctx);
+    expect(seen.signal.aborted).toBe(true);
+    await flushed;
+    release();
+    await drainMicrotasks();
+
+    expect(summaryEntries(appended)).toEqual([]);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"]]);
+  });
+
+  it("an abort that lands as the summarizer response arrives still writes no summary", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
+    streamImpl = () => {
+      summarizerCalls++;
+      return {
+        async *[Symbol.asyncIterator]() {},
+        async result() {
+          return {
+            stopReason: "stop",
+            usage: USAGE,
+            // Read after the summarizer has stopped racing the abort signal.
+            get content() {
+              void handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, ctx);
+              return [{ type: "text", text: "[[1:read]] summary" }];
+            },
+          };
+        },
+      };
+    };
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    const flushed = nextFlushDone(appended);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await flushed;
+
+    expect(summaryEntries(appended)).toEqual([]);
+    expect(appended.some((e) => e.type === "context-prune-index")).toBe(false);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"]]);
+  });
+
+  it.each(["session_before_tree", "session_before_compact"])("%s returns once the aborted flush has put its batches back, and the next prompt flushes them", async (eventName) => {
+    const { handlers, ctx, appended, branch } = await finishedRun();
+    const { release, seen } = heldSummarizer();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    while (!seen.signal) await Promise.resolve();
+    await handlers.get(eventName)!({ type: eventName }, ctx);
+
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"]]);
+
+    release();
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore + 2);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"], ["next-prompt", "summarized"]]);
+    expectPruned(await firstRequest(handlers, ctx, branch, "next"), "next");
+  });
+
+  it("a shutdown during the chain-compression fuse call aborts it and writes no chain entry", async () => {
+    const { handlers, ctx, appended } = await boot({
+      branch: twoTurnChainBranch(4),
+      chainCompressionEnabled: true,
+      batchingMode: "turn",
+      ...quiet,
+    });
+    await handlers.get("session_start")!({}, ctx);
+    let fuseSignal: AbortSignal | undefined;
+    streamImpl = (_model, input, opts) => {
+      summarizerCalls++;
+      if (!JSON.stringify(input).includes("<sub-task-summaries>")) return okStream();
+      fuseSignal = opts?.signal;
+      return { async *[Symbol.asyncIterator]() {}, result: () => new Promise(() => {}) };
+    };
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    const flushed = nextFlushDone(appended);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    for (let i = 0; i < 1000 && !fuseSignal; i++) await Promise.resolve();
+    expect(fuseSignal).toBeDefined();
+    const writtenBeforeShutdown = appended.length;
+
+    await handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, ctx);
+    expect(fuseSignal!.aborted).toBe(true);
+    await flushed;
+    await drainMicrotasks();
+
+    expect(appended.slice(writtenBeforeShutdown).map((e) => e.type)).toEqual(["context-prune-flush-metrics"]);
+    expect(appended.some((e) => e.type === "context-prune-chain")).toBe(false);
+  });
+
+  it("/pruner compact waits for a flush in flight instead of compressing the same chain twice", async () => {
+    const { handlers, commands, ctx, appended } = await boot({
+      branch: twoTurnChainBranch(4),
+      chainCompressionEnabled: true,
+      batchingMode: "turn",
+      ...quiet,
+    });
+    await handlers.get("session_start")!({}, ctx);
+    let fuseCalls = 0;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    streamImpl = (_model, input) => {
+      summarizerCalls++;
+      if (!JSON.stringify(input).includes("<sub-task-summaries>")) return okStream();
+      fuseCalls++;
+      return {
+        async *[Symbol.asyncIterator]() {},
+        async result() {
+          await released;
+          return { stopReason: "stop", content: [{ type: "text", text: "FUSED" }], usage: USAGE };
+        },
+      };
+    };
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    for (let i = 0; i < 1000 && fuseCalls === 0; i++) await Promise.resolve();
+    expect(fuseCalls).toBe(1);
+
+    const compacted = commands.get("pruner")!("compact", ctx);
+    await drainMicrotasks();
+    expect(fuseCalls).toBe(1);
+
+    release();
+    await compacted;
+
+    const chainStarts = appended.filter((e) => e.type === "context-prune-chain").map((e) => (e.data as { startUserTimestamp: number }).startUserTimestamp);
+    expect(chainStarts.length).toBeGreaterThan(1);
+    expect(new Set(chainStarts).size).toBe(chainStarts.length);
+  });
+
+  it("/pruner compact during the delay drops the armed flush and the next prompt runs it", async () => {
+    const { handlers, commands, ctx, appended } = await finishedRun();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    await commands.get("pruner")!("compact", ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await drainMicrotasks();
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(flushMetrics(appended)).toEqual([]);
+
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["next-prompt", "summarized"]]);
+  });
+
+  it.each(["off", "prune-on on-demand"])("/pruner %s during the delay drops the armed flush", async (command) => {
+    const { handlers, commands, ctx, appended } = await finishedRun();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    await commands.get("pruner")!(command, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await drainMicrotasks();
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(flushMetrics(appended)).toEqual([]);
+  });
+
+  it("a second settle replaces the armed flush instead of adding one", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(10);
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS - 10);
+    await drainMicrotasks();
+    expect(summarizerCalls).toBe(callsBefore);
+
+    const flushed = nextFlushDone(appended);
+    jest.advanceTimersByTime(10);
+    await flushed;
+    expect(summarizerCalls).toBe(callsBefore + 1);
+  });
+
+  it("the turn_end budget flush still runs in on-demand mode", async () => {
+    const { handlers, ctx, appended } = await boot({ pruneOn: "on-demand" });
     await handlers.get("session_start")!({}, ctx);
     const callsBefore = summarizerCalls;
 
+    await handlers.get("turn_end")!(
+      { toolResults: [], message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, turnIndex: 2 },
+      ctx,
+    );
+
+    expect(summarizerCalls).toBe(callsBefore + 1);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["rearmed", "summarized"]]);
+  });
+
+  it("arms no final flush when ctx.hasUI is false", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
+    ctx.hasUI = false;
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await drainMicrotasks();
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(flushMetrics(appended)).toEqual([]);
+  });
+
+  it("arms no final flush and flushes at no prompt in on-demand mode", async () => {
+    const { handlers, ctx, appended } = await finishedRun({ pruneOn: "on-demand" });
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(flushMetrics(appended)).toEqual([]);
+  });
+
+  it("arms no final flush when the run left nothing pending", async () => {
+    const branch: any[] = [];
+    const { handlers, ctx, appended } = await boot({ branch, ...quiet });
+    await handlers.get("session_start")!({}, ctx);
+    const callsBefore = summarizerCalls;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
     await handlers.get("before_agent_start")!({ prompt: "first" }, ctx);
 
     expect(summarizerCalls).toBe(callsBefore);
-    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+    expect(flushMetrics(appended)).toEqual([]);
   });
 
   it("flushes recovered pending work on the first prompt after a reload", async () => {
-    const { handlers, ctx, appended } = await boot({ pruneOn: "next-prompt", ...quiet });
+    const { handlers, ctx, appended } = await boot(quiet);
     await handlers.get("session_start")!({}, ctx);
     const callsBefore = summarizerCalls;
 
     await handlers.get("before_agent_start")!({ prompt: "resume" }, ctx);
 
     expect(summarizerCalls).toBe(callsBefore + 1);
-    const fm = appended.filter((e) => e.type === "context-prune-flush-metrics");
-    expect(fm.length).toBe(1);
-    expect((fm[0].data as any).trigger).toBe("rearmed");
-    expect((fm[0].data as any).outcome).toBe("summarized");
-  });
-
-  it("does not flush at prompt start in agent-message mode", async () => {
-    const branch: any[] = [];
-    const { handlers, ctx, appended } = await boot({ branch, ...quiet });
-    ctx.getContextUsage = () => ({ tokens: 10, contextWindow: 1000000 });
-    await handlers.get("session_start")!({}, ctx);
-    const callsBefore = summarizerCalls;
-
-    await fireTurn(handlers, ctx, branch, "tc-a", "a".repeat(800), 0);
-    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
-
-    expect(summarizerCalls).toBe(callsBefore);
-    expect(appended.some((e) => e.type === "context-prune-flush-metrics")).toBe(false);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["rearmed", "summarized"]]);
   });
 
   it.each(["/pruner on", "settings Enabled"])("flushes work left by a disabled resume on the first prompt after %s", async (enablePath) => {
-    const { handlers, commands, ctx, appended } = await boot({ enabled: false, pruneOn: "next-prompt", ...quiet });
+    const { handlers, commands, ctx, appended } = await boot({ enabled: false, ...quiet });
     await handlers.get("session_start")!({}, ctx);
     const callsBefore = summarizerCalls;
 

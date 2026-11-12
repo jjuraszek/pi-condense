@@ -66,13 +66,18 @@ pi install npm:pi-condense
 
 | Trigger mode | Fires | Cache impact |
 |---|---|---|
-| `agent-message` (default) | When the agent sends a final text-only reply | ~1 cache rewrite per task batch |
-| `next-prompt` | When your next prompt starts, before its first model request | ~1 cache rewrite per task batch; no final flush if no prompt follows |
+| `agent-message` (default) | About 1.5 s after the run settles on the agent's final reply, while the session is idle | ~1 cache rewrite per task batch |
 | `on-demand` | Only when you run `/pruner now` | None until you ask |
 
-pi-condense treats a session without a UI (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and skips the final `agent-message` flush there: for a single-prompt `-p` / `--mode json` child, nothing reads the pruned context afterwards. A multi-message print run or a headless SDK host that wants its final messages pruned still relies on the `turn_end` budget/delta/frontier-gap flushes: set `autoBudgetThreshold` (e.g. `0.8`), `budgetTurnDelta`, or `frontierGapThresholdTokens` to enable them. Pending work stays recoverable through the reload rearm if the session is resumed.
+The final `agent-message` flush stays off the run's critical path. The run settles first, so the session is idle and an orchestrator has its child's result before any summarizer request is sent:
 
-`next-prompt` is for sessions that may never get another prompt - subagent children, one-shot runs - where an end-of-reply flush is paid for and never read. It batches like `agent-message` but runs that final flush at the top of the next prompt instead, so a session that ends after its reply skips it; the trade is that the summarizer's latency lands before the model starts answering that next prompt. Only the final flush is deferred: the `turn_end` budget/delta/frontier-gap flushes, when set, still summarize mid-run in every mode. Queued follow-up messages continue the current run and do not count as a new prompt.
+- A session shut down within the 1.5 s delay sends no summarizer request. One shut down while the request is in flight drops it and writes no summary.
+- A prompt submitted while the flush is running waits only for the rest of it.
+- A prompt submitted before the flush has started runs it first, ahead of the prompt's first model request.
+
+[PRUNING.md](PRUNING.md#cache-impact-trade-off) lists what each session event does to the flush. Queued follow-up messages continue the current run, which has not settled, so they neither start this flush nor wait for it. The `turn_end` budget/delta/frontier-gap flushes, when set, still summarize mid-run in every mode.
+
+pi-condense treats a session without a UI (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and starts no flush after its reply: for a single-prompt `-p` / `--mode json` child, nothing reads the pruned context afterwards. A multi-message print run or a headless SDK host flushes the previous run's pending work at the top of each later prompt, and can add those `turn_end` flushes to prune mid-run: set `autoBudgetThreshold` (e.g. `0.8`), `budgetTurnDelta`, or `frontierGapThresholdTokens` to enable them. Pending work stays recoverable through the reload rearm if the session is resumed.
 
 Before any summarizer call, a pre-flush pipeline can drop or redirect a batch at zero LLM cost: protected tools/paths are never touched, content-hash duplicates are aliased to the original, batches too small to be worth summarizing are skipped outright, and oversized single results are spilled straight to a sidecar file. Closed tool-call chains older than a rolling window are additionally range-compressed. Full pipeline and each safeguard: [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards), [§ Chain Compression](PRUNING.md#chain-compression).
 
@@ -171,7 +176,7 @@ Settings live under `contextPrune` in `<agent-dir>/settings.json` (`$PI_CODING_A
 |---|---|---|
 | `enabled` | `false` | Master switch (or just use `/pruner on`) |
 | `summarizerModel` | `"default"` | Pin a cheap model instead of reusing your active one - see the plan-by-plan table in [doc/configuration.md](doc/configuration.md#choosing-a-summarizer-model) |
-| `pruneOn` | `agent-message` | Trigger mode (`agent-message`, `next-prompt`, `on-demand`) - see Architecture above |
+| `pruneOn` | `agent-message` | Trigger mode (`agent-message`, `on-demand`) - see Architecture above |
 | `autoBudgetThreshold` | `null` | Fraction (e.g. `0.8`) of the context window that force-flushes everything regardless of `pruneOn`; the trigger point is capped at 300k tokens |
 | `frontierGapThresholdTokens` | `null` | Opt-in absolute-token flush trigger: fires at `turn_end` once the un-pruned tail past the prune frontier reaches N tokens, regardless of window size; recommended starting value `80000` |
 | `maxImagesPerRequest` | `null` | Once a request carries more than N images, the oldest become a text note (in cache-friendly steps of half of N) so a long session stays under a provider's per-request image limit; applies even with pruning off. `null` = built-in limit for the model's API (Anthropic Messages: 100; others: no cap); a number overrides it for every API |

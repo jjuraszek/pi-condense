@@ -63,6 +63,15 @@ describe("loadConfig protectedPaths", () => {
   });
 });
 
+describe("loadConfig pruneOn normalization", () => {
+  it("keeps on-demand and falls back to the default for an unknown value", async () => {
+    await writeContextPrune({ pruneOn: "on-demand" });
+    expect((await loadConfig()).pruneOn).toBe("on-demand");
+    await writeContextPrune({ pruneOn: "every-turn" });
+    expect((await loadConfig()).pruneOn).toBe(DEFAULT_CONFIG.pruneOn);
+  });
+});
+
 describe("loadConfig recoveryGraceTurns normalization", () => {
   it("preserves an explicit 0", async () => {
     await writeContextPrune({ recoveryGraceTurns: 0 });

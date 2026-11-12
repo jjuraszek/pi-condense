@@ -7,6 +7,13 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- The final `agent-message` flush no longer holds the run or the next prompt. It was awaited inside `message_end`, so the session stayed busy, and a subagent child's result was held back, for one summarizer call after the reply. It is now armed at `agent_settled` and starts 1.5 s later (`SETTLED_FLUSH_DELAY_MS`), while the session is idle. A `session_shutdown` within the delay sends no summarizer request; one during a summarizer call aborts it and writes no summary; one during chain compression writes no backfill index or chain entry. The batches stay pending and flush at the first prompt after a resume. `session_before_tree` and `session_before_compact` cancel the flush the same way. `/pruner compact` waits for a running flush and drops one still in its delay. A prompt submitted while the flush runs waits only for the rest of it; one submitted before it started runs it at `before_agent_start`, ahead of the first model request. The `FlushTrigger` value `message-end` is replaced by `settled`. (#37)
+- `pruneOn: "next-prompt"` is removed. Its top-of-prompt flush is now the catch-up in `agent-message` mode, which left `next-prompt` with no behavior of its own. A settings file that still holds the value loads as the default, `agent-message`, like any unknown value; `/pruner prune-on next-prompt` is rejected, and `/pruner prune-on` rejects any unknown mode instead of storing it. A session without a UI that gets another prompt now flushes the previous run's pending work before that prompt's first model request. Such a session still starts no flush after a reply. (#37)
+
 ## [2.16.0] - 2026-11-12
 
 ### Added
