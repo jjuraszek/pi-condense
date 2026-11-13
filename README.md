@@ -81,15 +81,15 @@ pi-condense treats a session without a UI (`pi -p`, `--mode json`, an SDK host w
 
 ### Trigger mode for subagent children
 
-pi-condense reads `contextPrune` from the agent directory's `settings.json` at each session start, a resume included. Keep `agent-message` in the top-level session's preset and give a one-shot agent type this pi-cohort `settings` override:
+pi-condense reads `contextPrune` from the agent directory's `settings.json` at each session start or resume: children use the top-level session's values unless their launch overrides them. Children closed when they report send no final flush under either mode, so most need no override. For one agent type's `contextPrune` values, use pi-cohort's `settings` override (8.1.0 or later):
 
 ```json
-{ "contextPrune": { "pruneOn": "next-prompt" } }
+{ "contextPrune": { "pruneOn": "on-demand" } }
 ```
 
-[pi-cohort's config fields reference](https://github.com/jjuraszek/pi-cohort/blob/main/skills/pi-cohort/reference/config-fields.md#child-settings-override-settings) defines the launch rules: a child's `pruneOn` uses the first value set by the call's `settings`, the agent config's `settings`, then the top-level session's file. A call-level override is not replayed on resume. An override is not handed down to the child's own children, and there is no single default for all children.
+[pi-cohort's launch rules](https://github.com/jjuraszek/pi-cohort/blob/main/skills/pi-cohort/reference/config-fields.md#child-settings-override-settings) take the first value set: call `settings`, agent-config `settings`, then the top-level session's file; a call-level override is not replayed on resume, an override is not handed down to the child's own children, and there is no single default for all children.
 
-A `next-prompt` child that gets a new prompt after its reply flushes pending work before that prompt's first model request. A `/pruner` change inside an overridden child is saved to its private agent directory and ends with that directory.
+`on-demand` flushes on `/pruner now` or configured `turn_end` budget/delta/frontier-gap triggers. A `/pruner` change in an overridden child saves to its private agent directory and ends with it.
 
 Before any summarizer call, a pre-flush pipeline can drop or redirect a batch at zero LLM cost: protected tools/paths are never touched, content-hash duplicates are aliased to the original, batches too small to be worth summarizing are skipped outright, and oversized single results are spilled straight to a sidecar file. Closed tool-call chains older than a rolling window are additionally range-compressed. Full pipeline and each safeguard: [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards), [§ Chain Compression](PRUNING.md#chain-compression).
 

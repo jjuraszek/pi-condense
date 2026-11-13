@@ -11,7 +11,7 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 ### Changed
 
-- README documents how a subagent child's `pruneOn` is resolved and how to give one agent type its own mode with pi-cohort's `settings` override, which starts the child in a private agent directory that pi-condense already reads. No pi-condense setting or code change. (#35)
+- README documents how a subagent child's `pruneOn` is resolved and how one agent type gets its own `contextPrune` values through the `settings` override in pi-cohort 8.1.0 or later. No pi-condense setting or code change. (#35)
 
 ## [2.17.0] - 2026-11-13
 
