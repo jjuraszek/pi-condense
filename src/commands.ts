@@ -23,7 +23,7 @@ import {
   DEFAULT_CONFIG,
 } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { saveConfig, persistConfig } from "./config.js";
+import { saveConfig, persistConfig, toPruneOn } from "./config.js";
 import { MAX_BUDGET_WINDOW } from "./budget.js";
 import { formatTokens, formatCost, formatCharProgress, formatCompactCount } from "./stats.js";
 import { Container, Text, SettingsList, type SettingItem } from "@earendil-works/pi-tui";
@@ -126,8 +126,7 @@ const SUBCOMMANDS = [
 // ── Help text ───────────────────────────────────────────────────────────────
 
 const PRUNE_MODE_GUIDANCE: Record<ContextPruneConfig["pruneOn"], string> = {
-  "agent-message": "Recommended default. Batches tool work and prunes once after the final text reply, giving the best balance of automation, context savings, and cache stability.",
-  "next-prompt": "Same batching, but the prune runs when your next prompt starts, before its first model request. A session that never gets another prompt (a subagent, a one-shot run) skips that final prune; the budget, delta, and frontier-gap flushes still run mid-run. You pay the summarizer's latency at the top of the next prompt.",
+  "agent-message": "Recommended default. Batches tool work and prunes once after the final text reply, while the session is idle, giving the best balance of automation, context savings, and cache stability. A prompt sent before that prune finishes waits for it.",
   "on-demand": "Maximum manual control. Nothing is pruned until you run /pruner now, so cache invalidation happens only when you choose.",
 };
 
@@ -275,7 +274,6 @@ Usage:
   /pruner prune-on                         Show or interactively pick the trigger
   /pruner prune-on on-demand               Only summarize when /pruner now runs
   /pruner prune-on agent-message           Summarize after the agent's final text reply (default; safest for cache stability)
-  /pruner prune-on next-prompt             Summarize when your next prompt starts, before its first model request
   /pruner batching                         Show or interactively pick the batching granularity
   /pruner batching turn                    One summary per assistant turn (default)
   /pruner batching agent-message           One summary per user→final-agent-message span (merges all turns in a span)
@@ -334,7 +332,6 @@ Batching mode:
 Mode guidance:
   - on-demand: maximum manual control. Best when you want to decide exactly when to trade cache stability for shorter context.
   - agent-message: recommended default. Batches a whole tool-using run, then prunes once after the final text reply so future requests become cacheable again.
-  - next-prompt: same batching, but the final prune waits for your next prompt. A session that ends after its reply skips it; you pay the summarizer's latency at the top of the next prompt.
 
 Why this matters:
   Frequent edits to earlier context can reduce prompt/prefix cache hits on providers that cache identical prefixes. Batched pruning is usually cheaper and faster than pruning every turn.
@@ -998,7 +995,15 @@ export function registerCommands(
             const chosenValue = choice.split(/\s+/)[0] as ContextPruneConfig["pruneOn"];
             currentConfig.value = { ...currentConfig.value, pruneOn: chosenValue };
           } else {
-            currentConfig.value = { ...currentConfig.value, pruneOn: modeArg as ContextPruneConfig["pruneOn"] };
+            const pruneOn = toPruneOn(modeArg);
+            if (!pruneOn) {
+              ctx.ui.notify(
+                `Invalid prune-on mode: ${modeArg}. Use one of: ${PRUNE_ON_MODES.map((m) => m.value).join(", ")}.`,
+                "warning",
+              );
+              return;
+            }
+            currentConfig.value = { ...currentConfig.value, pruneOn };
           }
           void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());

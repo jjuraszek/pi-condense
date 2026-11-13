@@ -113,6 +113,14 @@ export const EXTERNAL_COST_CHANNEL = "cost:external";
 /** Stable producer id for this extension's cost contributions. */
 export const EXTERNAL_COST_SOURCE = "pi-condense";
 
+/**
+ * Wait between a run settling and its final flush's first summarizer request.
+ * An orchestrator closes a finished child within about a second (pi drains
+ * terminal input for up to 1 s before it emits `session_shutdown`), so a session
+ * that ends right after its reply cancels the flush before it costs anything.
+ */
+export const SETTLED_FLUSH_DELAY_MS = 1500;
+
 /** Footer status widget ID */
 export const STATUS_WIDGET_ID = "context-prune";
 
@@ -124,14 +132,12 @@ export const PROGRESS_WIDGET_ID = "context-prune-progress";
 
 /**
  * When summarization (and context pruning) is triggered.
- * - "agent-message" : batches up turns and flushes when the agent sends a final text response
- *                     (a turn with no tool calls), or when the agent loop ends (default)
- * - "next-prompt"   : batches up turns and flushes when the next user prompt starts, before its
- *                     first model request; a session that never gets another prompt skips that
- *                     final flush (the turn_end budget/delta/frontier-gap triggers still fire)
+ * - "agent-message" : batches up turns and flushes once the run has settled after the agent's
+ *                     final reply, SETTLED_FLUSH_DELAY_MS later and off the run's critical path;
+ *                     a prompt submitted first waits for that flush instead (default).
  * - "on-demand"     : only when the user runs /pruner now
  */
-export type PruneOn = "on-demand" | "agent-message" | "next-prompt";
+export type PruneOn = "on-demand" | "agent-message";
 
 /**
  * Granularity of pruning batches.
@@ -258,7 +264,6 @@ export const AUTO_BUDGET_PRESETS: { value: string; label: string }[] = [
 /** Choices for the prune-on setting (used by commands and settings overlay) */
 export const PRUNE_ON_MODES: { value: PruneOn; label: string }[] = [
   { value: "agent-message", label: "On agent message" },
-  { value: "next-prompt", label: "On next prompt" },
   { value: "on-demand", label: "On demand" },
 ];
 
@@ -740,7 +745,7 @@ export interface ContextMetricsSnapshot {
   frontierGapTokens: number;
 }
 
-export type FlushTrigger = "budget" | "delta" | "frontier-gap" | "message-end" | "next-prompt" | "manual" | "rearmed";
+export type FlushTrigger = "budget" | "delta" | "frontier-gap" | "settled" | "next-prompt" | "manual" | "rearmed";
 
 /** Payload of CUSTOM_TYPE_FLUSH_METRICS. */
 export interface FlushMetricsEntry {
@@ -880,13 +885,6 @@ export interface FlushOptions {
   signal?: AbortSignal;
   /** Which trigger initiated this flush. Defaults to "manual" when absent. */
   trigger?: FlushTrigger;
-  /**
-   * The final text-only assistant message that triggered an agent-message flush.
-   * pi emits `message_end` to extensions before persisting it to the session, so it
-   * is threaded in here to close the newest chain for compression (see
-   * `withClosingMessage`). Only set on the message_end path.
-   */
-  closingMessage?: any;
 }
 
 /** Options for a single summarizeBatch() call. */

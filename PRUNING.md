@@ -498,7 +498,7 @@ The insight is simple: **batch many tool turns, then prune once**. Everything be
 │  │  → Prefix cache is STABLE → cache HITS on every turn            │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 │                                    │                                    │
-│                                    │ Agent sends final text reply       │
+│                                    │ Run settles on the final reply     │
 │                                    ▼                                    │
 │  ┌─────────────────────────────────────────────────────────────────┐    │
 │  │  PRUNE PHASE: Single summary replaces batch                     │    │
@@ -555,7 +555,7 @@ graph LR
     end
 
     Phase1 -->|"agent starts<br/>tool work"| Phase2
-    Phase2 -->|"final text reply<br/>or loop ends"| Phase3
+    Phase2 -->|"run settles on<br/>the final reply"| Phase3
     Phase3 -->|"context now<br/>compact & stable"| Phase4
     Phase4 -->|"next task batch"| Phase2
 
@@ -570,10 +570,24 @@ graph LR
 | Mode | Cache Busts per 5 Turns | Context Reclaimed | Recommended for |
 |---|---|---|---|
 | `agent-message` | 1 | After batch | **Default** — best balance |
-| `next-prompt` | 1 | At the next prompt | Sessions that may end after a reply (subagent children, one-shot runs) |
 | `on-demand` | 0–1 | When you say so | Maximum cache preservation |
 
-`next-prompt` batches exactly like `agent-message` but moves the flush from `message_end` to `before_agent_start`: pi emits that event once the user has submitted the next prompt and before it builds the prompt message or sends the first request, so the summaries land in the session ahead of this run's first `context` event. The previous run's final assistant message is already persisted at that point, so the newest chain is closed without threading a `closingMessage`. A session that never gets another prompt skips this deferred flush only: the `turn_end` budget/delta/frontier-gap triggers still summarize mid-run in every mode. An interactive session pays the summarizer's latency at the top of the next prompt instead of during idle time. Queued follow-ups continue the current run without `before_agent_start`, so between a reply and a queued follow-up only the `turn_end` budget/delta/frontier-gap triggers flush. After a reload, or after pruning flips from off to on through `/pruner on` or the Enabled toggle in `/pruner settings`, the rearm probe's recovered work flushes on the next prompt (trigger `rearmed`).
+The final `agent-message` flush runs off the run's critical path. pi emits `agent_settled` once a run has fully ended with no retry, compaction, or queued continuation pending; pi-condense arms the flush there and starts it `SETTLED_FLUSH_DELAY_MS` (1.5 s) later, with session delivery (flush trigger `settled`). The session is idle by then, so the flush holds neither the run's end nor an orchestrator waiting on a child's result.
+
+| Event after the run settles | What the flush does |
+|---|---|
+| Nothing for 1.5 s | Runs while the session is idle |
+| `session_shutdown` during the delay | Never starts: no summarizer request is sent |
+| `session_shutdown` during the summarizer call | Aborts; no summary is written and the handler does not wait for the call |
+| `session_shutdown` during chain compression | Aborts the fuse call; the batch summaries already written stand, and no backfill index or chain entry follows |
+| `session_before_tree` or `session_before_compact` | Cancels, and waits for a running flush to return unprocessed batches to the pending queue; written summaries and the frontier stand |
+| `/pruner compact` | Waits for a running flush, so the two never compress the same chain; during the delay it drops the armed flush, and the next prompt runs it |
+| `before_agent_start` during the delay | Cancels the timer and flushes now, before the run's first request (trigger `next-prompt`) |
+| `before_agent_start` during the summarizer call | Waits for the rest of that flush; no second request is sent |
+
+The delay exists because pi exposes no earlier sign that a session is about to end: an orchestrator asks a finished child to shut down within milliseconds of its result, and interactive pi drains terminal input for up to 1 s before it emits `session_shutdown`. After a canceled flush, batches not yet summarized stay pending for the [reload rearm](#reload-rearm). Batch summaries and the frontier written before an abort during chain compression stand and are not summarized again. Recovered work flushes as `rearmed` at the next prompt in sessions with a UI; no-UI prompt-start flushing requires new queued batches. A prompt that waited on a flush that failed does not retry it; the batches wait for the next trigger.
+
+Queued follow-ups continue the current run without `agent_settled` or `before_agent_start`, so between a reply and a queued follow-up only the `turn_end` budget/delta/frontier-gap triggers flush; those still summarize mid-run in every mode. A session without a UI arms no flush at `agent_settled`: see [Rolling window](#rolling-window).
 
 > **Everything before the previous pruning point stays in the prefix cache.** The cached prefix is the stable foundation; only the new suffix (recent turns since last prune) changes per request.
 
@@ -978,7 +992,7 @@ Any other outcome - zero or multiple matches on either boundary, `finalAssistant
 - With K=3: the three most-recently-closed chains stay as-is; the fourth triggers compression of the oldest. Exactly K closed chains are kept raw (the open/live chain is never counted).
 - `/pruner compact` bypasses the window and compresses every eligible chain immediately (retroactive).
 
-**Closing-message threading.** pi-condense treats `ctx.hasUI === false` sessions (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and skips the final agent-message flush: a single-prompt print child has no later call to read the pruned context. Multi-message print runs and headless SDK hosts still rely on the `turn_end` budget/delta/frontier-gap triggers (`autoBudgetThreshold`, `budgetTurnDelta`, `frontierGapThresholdTokens`) for pruning. In sessions with a UI, the agent-message flush runs from `message_end`, which pi emits to extensions *before* it persists the message to the session (`agent-session.js` runs `_emitExtensionEvent` ahead of `sessionManager.appendMessage`). So at flush time `getBranch()` is missing the just-closed final assistant, and the newest chain would read as open - over-retaining by one (effective K+1). `index.ts` threads the triggering `event.message` through `FlushOptions.closingMessage` into `withClosingMessage` so the chain closes and the window is exactly K.
+**Sessions without a UI.** pi-condense treats `ctx.hasUI === false` sessions (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and arms no final flush when their run settles: a single-prompt print child has no later call to read the pruned context. A multi-message print run or headless SDK host flushes the previous run's pending work at `before_agent_start` of each later prompt, and can add the `turn_end` budget/delta/frontier-gap triggers (`autoBudgetThreshold`, `budgetTurnDelta`, `frontierGapThresholdTokens`) to prune mid-run. Both flush points run after pi has persisted the run's final assistant message, so `getBranch()` already closes the newest chain and the window is exactly K.
 
 ### Synthetic message format
 
@@ -1077,7 +1091,7 @@ See `doc/specs/2026-08-12-single-chain-observability-trigger-repair.md` for the 
 
 ### Reload rearm
 
-A reload (`session_start` or `session_tree`), or enabling pruning through `/pruner on` or the Enabled toggle in `/pruner settings` (off to on), rescans the branch for completed-but-unflushed tool-call batches past the frontier (the same rescan `flushPending` itself uses, no queue reconstruction). If that rescan finds recoverable work, a transient in-memory flag arms: the next `turn_end` evaluates the budget/delta trigger even on a turn that contributes no new tool results itself, instead of silently requiring a fresh batch to reach the gate. No flush runs at reload time - arming only changes what an *existing* trigger sees on the next turn.
+A reload (`session_start` or `session_tree`), or enabling pruning through `/pruner on` or the Enabled toggle in `/pruner settings` (off to on), rescans the branch for completed-but-unflushed tool-call batches past the frontier (the same rescan `flushPending` itself uses, no queue reconstruction). If that rescan finds recoverable work, a transient in-memory flag arms: the next `turn_end` evaluates the budget/delta trigger even on a turn that contributes no new tool results itself, instead of silently requiring a fresh batch to reach the gate. No flush runs at reload time - arming only changes what an *existing* trigger sees: in `agent-message` mode a session with a UI flushes recovered work at `before_agent_start` on its next prompt (trigger `rearmed`), ahead of its first request. A no-UI session skips recovered-only work at prompt start; once a run queues new batches in that extension instance, a later prompt flushes both.
 
 The flag clears the moment any flush attempt runs (any outcome) and is re-evaluated on the next reload or enable. `turn_end` captures nothing while pruning is disabled, so the enable probe puts tool results from a disabled stretch back in front of the gate; neither enable path probes while already enabled. A reload followed by total idleness - no further turns at all - gets visibility only: the footer, `/pruner status`, and the `agent_end` pending notice (`prune: recovered pending (reload)`) all reflect the recoverable work, but nothing flushes automatically. This is by design - no immediate flush at boot (print-mode sessions may die under it; a boot-time compact was not requested by the user).
 
@@ -1225,9 +1239,6 @@ Prune-time degradations - an unresolvable chain range, a detection/render id mis
 │                                                                     │
 │  "I want the best balance of automation, savings, and cache hits"   │
 │       └──► agent-message  ◄── DEFAULT                               │
-│                                                                     │
-│  "My session may end after its reply (subagent child, one-shot)"    │
-│       └──► next-prompt                                              │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```

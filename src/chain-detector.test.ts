@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectChains, isChainAnchorCustom, withClosingMessage } from "./chain-detector.js";
+import { detectChains, isChainAnchorCustom } from "./chain-detector.js";
 import { isProtected } from "./protected.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
@@ -323,48 +323,6 @@ describe("middleOccurrenceKeys", () => {
     const [interrupted] = detectChains(messages);
     expect(interrupted.finalAssistantTimestamp).toBeNull();
     expect(interrupted.middleOccurrenceKeys).toEqual(["bash_1@1150"]);
-  });
-});
-
-describe("withClosingMessage", () => {
-  test("undefined closing returns the same array reference", () => {
-    const msgs = [userMsg(100)];
-    expect(withClosingMessage(msgs, undefined)).toBe(msgs);
-  });
-
-  test("appends closing when branch does not already end with it", () => {
-    const branch = [userMsg(100), assistantWithTools(200, ["tc1"]), toolResult(300, "tc1")];
-    const closing = assistantText(400);
-    const merged = withClosingMessage(branch, closing);
-    expect(merged).toHaveLength(4);
-    expect(merged[3]).toBe(closing);
-    expect(branch).toHaveLength(3); // original not mutated
-  });
-
-  test("does not double-append when branch already ends with the closing message (role+timestamp)", () => {
-    const closing = assistantText(400);
-    const branch = [userMsg(100), assistantWithTools(200, ["tc1"]), toolResult(300, "tc1"), closing];
-    expect(withClosingMessage(branch, closing)).toBe(branch);
-    // also dedups a distinct object with the same role+timestamp
-    const branch2 = [userMsg(100), assistantText(400)];
-    expect(withClosingMessage(branch2, assistantText(400))).toBe(branch2);
-  });
-
-  test("threading the closing message makes the newest chain close (effective window = K)", () => {
-    const branch = [
-      userMsg(100),
-      assistantWithTools(200, ["tc1"]),
-      toolResult(300, "tc1"),
-      assistantText(400),
-      userMsg(500),
-      assistantWithTools(600, ["tc2"]),
-      toolResult(700, "tc2"),
-    ];
-    const closing = assistantText(800);
-    const ranges = detectChains(withClosingMessage(branch, closing));
-    expect(ranges).toHaveLength(2);
-    expect(ranges[1].startUserTimestamp).toBe(500);
-    expect(ranges[1].finalAssistantTimestamp).toBe(800);
   });
 });
 
