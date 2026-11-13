@@ -7,7 +7,7 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
-## [Unreleased]
+## [2.17.1] - 2026-11-13
 
 ### Changed
 
