@@ -76,21 +76,15 @@ pi-condense treats a session without a UI (`pi -p`, `--mode json`, an SDK host w
 
 ### Trigger mode for subagent children
 
-A session reads `contextPrune` from its agent directory's `settings.json` each time it starts, a resume included. A [pi-cohort](https://github.com/jjuraszek/pi-cohort) child, at any depth, runs in the agent directory of the top-level session - the one that is nobody's child - so it uses that session's `pruneOn` unless its own launch gives it another. pi-cohort's `settings` override does that: the child starts in a private agent directory whose `settings.json` is the top-level session's with the override merged in, and pi-condense reads the mode from there. Keep `agent-message` in the preset for the session you type in and set `next-prompt` on a one-shot agent type:
+pi-condense reads `contextPrune` from the agent directory's `settings.json` at each session start, a resume included. Keep `agent-message` in the top-level session's preset and give a one-shot agent type this pi-cohort `settings` override:
 
 ```json
 { "contextPrune": { "pruneOn": "next-prompt" } }
 ```
 
-A child's mode is the first of these that is set:
+[pi-cohort's config fields reference](https://github.com/jjuraszek/pi-cohort/blob/main/skills/pi-cohort/reference/config-fields.md#child-settings-override-settings) defines the launch rules: a child's `pruneOn` uses the first value set by the call's `settings`, the agent config's `settings`, then the top-level session's file. A call-level override is not replayed on resume. An override is not handed down to the child's own children, and there is no single default for all children.
 
-| Source | Applies to |
-|---|---|
-| `settings` on the `subagent` call | That launch only; a resumed child does not get it back |
-| `settings` in the agent's config | Every launch and resume of that agent type |
-| The top-level session's `contextPrune.pruneOn` | Every other child |
-
-An override covers one child and is not handed down: a child on `next-prompt` that launches a child of its own with no override gets one on the top-level session's mode. There is no single default for all children: each agent type that should differ from the top-level session carries its own override. Where the field goes and how it merges: [pi-cohort's config fields reference](https://github.com/jjuraszek/pi-cohort/blob/main/skills/pi-cohort/reference/config-fields.md#child-settings-override-settings). A child without a UI still skips the final `agent-message` flush whatever its mode says. A child on `next-prompt` that gets a new prompt after its reply - a resume, or a message sent to an idle child - flushes its pending work before that prompt's first model request. A `/pruner` change made inside a child that has an override is saved to the child's private directory and ends with it.
+A `next-prompt` child that gets a new prompt after its reply flushes pending work before that prompt's first model request. A `/pruner` change inside an overridden child is saved to its private agent directory and ends with that directory.
 
 Before any summarizer call, a pre-flush pipeline can drop or redirect a batch at zero LLM cost: protected tools/paths are never touched, content-hash duplicates are aliased to the original, batches too small to be worth summarizing are skipped outright, and oversized single results are spilled straight to a sidecar file. Closed tool-call chains older than a rolling window are additionally range-compressed. Full pipeline and each safeguard: [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards), [§ Chain Compression](PRUNING.md#chain-compression).
 
