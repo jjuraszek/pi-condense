@@ -1076,9 +1076,9 @@ export default function (pi: ExtensionAPI) {
   // the first request, so no final flush overlaps a run. A flush in flight holds
   // the prompt only until it finishes; batches it left pending
   // wait for the next trigger rather than a retry that would double the wait. A
-  // prompt that beats the delay, or finds work recovered after a reload, flushes
+  // prompt that beats the delay, or finds recovered work in a UI session, flushes
   // here with session delivery: summaries land in the session before this run's
-  // first `context` event.
+  // first `context` event. No-UI sessions wait for a run to queue new batches.
   pi.on("before_agent_start", async (_event, ctx) => {
     if (settledFlush?.promise) {
       await settledFlush.promise;
@@ -1087,7 +1087,7 @@ export default function (pi: ExtensionAPI) {
     cancelSettledFlush();
     if (!flushesAutomatically()) return;
     const n = pendingBatches.length;
-    if (n === 0 && !rearmedPending) return;
+    if (n === 0 && (!rearmedPending || ctx.hasUI === false)) return;
     if (isFlushing) return;
     await flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : "next-prompt" });
   });

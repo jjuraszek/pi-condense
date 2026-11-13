@@ -2286,8 +2286,39 @@ describe("final flush after the run settles (#37)", () => {
     expect(flushMetrics(appended)).toEqual([]);
   });
 
+  it("defers recovered pending work without a UI until a later prompt after a captured run", async () => {
+    const { handlers, ctx, appended, branch } = await boot(quiet);
+    ctx.hasUI = false;
+    branch.push(finalReply);
+    const callsBefore = summarizerCalls;
+    await handlers.get("session_start")!({}, ctx);
+
+    await handlers.get("before_agent_start")!({ prompt: "first" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore);
+    expect(appended.filter((e) => ["context-prune-summary", "context-prune-index", "context-prune-frontier"].includes(e.type))).toEqual([]);
+    expect(flushMetrics(appended)).toEqual([]);
+
+    branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "first" }] } });
+    await fireTurn(handlers, ctx, branch, "tc-live", "n".repeat(800), 0);
+    branch.push(finalReply);
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    await drainMicrotasks();
+    expect(summarizerCalls).toBe(callsBefore);
+
+    await handlers.get("before_agent_start")!({ prompt: "next" }, ctx);
+
+    expect(summarizerCalls).toBe(callsBefore + 2);
+    expect(summaryEntries(appended)).toHaveLength(2);
+    expect(appended.some((e) => e.type === "context-prune-index")).toBe(true);
+    expect(appended.some((e) => e.type === "context-prune-frontier")).toBe(true);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome, m.processedBatches])).toEqual([["next-prompt", "summarized", 2]]);
+  });
+
   it("flushes recovered pending work on the first prompt after a reload", async () => {
     const { handlers, ctx, appended } = await boot(quiet);
+    ctx.hasUI = true;
     await handlers.get("session_start")!({}, ctx);
     const callsBefore = summarizerCalls;
 
