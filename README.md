@@ -79,6 +79,18 @@ The final `agent-message` flush stays off the run's critical path. The run settl
 
 pi-condense treats a session without a UI (`pi -p`, `--mode json`, an SDK host with no UI context) as single-prompt and starts no flush after its reply: for a single-prompt `-p` / `--mode json` child, nothing reads the pruned context afterwards. A multi-message print run or a headless SDK host flushes the previous run's pending work at the top of each later prompt, and can add those `turn_end` flushes to prune mid-run: set `autoBudgetThreshold` (e.g. `0.8`), `budgetTurnDelta`, or `frontierGapThresholdTokens` to enable them. Recovered-only work does not flush at a no-UI session's first prompt after a fork or resume; prompt-start flushing requires batches queued by that extension instance.
 
+### Trigger mode for subagent children
+
+pi-condense reads `contextPrune` from the agent directory's `settings.json` at each session start or resume: children use the top-level session's values unless their launch overrides them. Children closed when they report send no final flush under either mode, so most need no override. For one agent type's `contextPrune` values, use pi-cohort's `settings` override (8.1.0 or later):
+
+```json
+{ "contextPrune": { "pruneOn": "on-demand" } }
+```
+
+[pi-cohort's launch rules](https://github.com/jjuraszek/pi-cohort/blob/main/skills/pi-cohort/reference/config-fields.md#child-settings-override-settings) take the first value set: call `settings`, agent-config `settings`, then the top-level session's file; a call-level override is not replayed on resume, an override is not handed down to the child's own children, and there is no single default for all children.
+
+`on-demand` flushes on `/pruner now` or configured `turn_end` budget/delta/frontier-gap triggers. A `/pruner` change in an overridden child saves to its private agent directory and ends with it.
+
 Before any summarizer call, a pre-flush pipeline can drop or redirect a batch at zero LLM cost: protected tools/paths are never touched, content-hash duplicates are aliased to the original, batches too small to be worth summarizing are skipped outright, and oversized single results are spilled straight to a sidecar file. Closed tool-call chains older than a rolling window are additionally range-compressed. Full pipeline and each safeguard: [PRUNING.md § Pre-flush Pipeline & Safeguards](PRUNING.md#pre-flush-pipeline--safeguards), [§ Chain Compression](PRUNING.md#chain-compression).
 
 ### External cost channel

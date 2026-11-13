@@ -7,7 +7,7 @@ and the summarizer-model-by-plan table. See the [README](../README.md) for the
 
 ## Full settings JSON
 
-Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. pi's own settings file). `<agent-dir>` is `$PI_CODING_AGENT_DIR` if set, otherwise `~/.pi/agent`. Each pi preset gets its own settings, so you can run different summarizer models per preset.
+Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. pi's own settings file). `<agent-dir>` is `$PI_CODING_AGENT_DIR` if set, otherwise `~/.pi/agent`. Each pi preset gets its own settings, so you can run different summarizer models per preset. A subagent child reads the top-level session's file unless its own launch overrides it: see [Trigger mode for subagent children](../README.md#trigger-mode-for-subagent-children).
 
 ```json
 {
