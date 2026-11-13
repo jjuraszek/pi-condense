@@ -95,7 +95,9 @@ export interface CompressEligibleDeps {
    * the renderer falls back to the per-batch concatenation.
    */
   fuseRange?: (perBatchSummaryText: string) => Promise<string | null>;
-  /** MUST be the same withClosingMessage(...) array chain detection ran on - raw branch messages spuriously fail span resolution on the message_end path (see doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md). */
+  /** Once aborted, no further chain is issued or written; chains already written stand. */
+  signal?: AbortSignal;
+  /** MUST be the same array chain detection ran on (see doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md). */
   messages: any[];
   diagnostics: Pick<DiagnosticSink, "report">;
   backfill: { spillThreshold: number; spillPreviewBytes: number; sessionDir: string; sessionId: string };
@@ -240,12 +242,22 @@ export async function compressEligible(
       }
       try {
         if (fresh.length > 0) {
-          await deps.indexer.backfillChainRecords(fresh, { ...deps.backfill, appendEntry: deps.appendEntry });
+          await deps.indexer.backfillChainRecords(fresh, {
+            ...deps.backfill,
+            // Backfill awaits spill file I/O before this write; throwing keeps the
+            // records out of the in-memory index as well as the session.
+            appendEntry: (type, data) => {
+              if (deps.signal?.aborted) throw new Error("flush aborted");
+              deps.appendEntry(type, data);
+            },
+          });
         }
       } catch {
+        if (deps.signal?.aborted) break;
         skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
         continue;
       }
+      if (deps.signal?.aborted) break;
       const allRecords = [...indexed, ...fresh];
       const toolRefs = deps.indexer.getToolRefsForToolCallIds(lookupKeys);
       const entry: ChainCompressionEntry = {
@@ -266,7 +278,6 @@ export async function compressEligible(
       continue;
     }
 
-    const blockId = deps.blockRefs.issue();
     const toolRefs = deps.indexer.getToolRefsForToolCallIds(lookupKeys);
 
     // B: fuse this span's per-batch summaries into one cohesive summary.
@@ -283,9 +294,10 @@ export async function compressEligible(
         }
       }
     }
+    if (deps.signal?.aborted) break;
 
     const entry: ChainCompressionEntry = {
-      blockId,
+      blockId: deps.blockRefs.issue(),
       startUserTimestamp: chain.startUserTimestamp,
       droppedToolCallIds: chain.middleToolCallIds,
       finalAssistantTimestamp: chain.finalAssistantTimestamp,

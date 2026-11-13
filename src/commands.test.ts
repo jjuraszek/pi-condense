@@ -260,6 +260,27 @@ describe("setPruneStatusWidget", () => {
   });
 });
 
+describe("/pruner prune-on <mode>", () => {
+  it("sets a known mode", async () => {
+    const { run, currentConfig } = setupPrunerCommand({ save: async () => {} });
+
+    await run("prune-on on-demand");
+
+    expect(currentConfig.value.pruneOn).toBe("on-demand");
+  });
+
+  it("rejects an unknown mode and keeps the current one", async () => {
+    const { run, currentConfig, notifications } = setupPrunerCommand({ save: async () => {} });
+
+    await run("prune-on sometimes");
+
+    expect(currentConfig.value.pruneOn).toBe("agent-message");
+    expect(notifications).toEqual([
+      { message: "Invalid prune-on mode: sometimes. Use one of: agent-message, on-demand.", type: "warning" },
+    ]);
+  });
+});
+
 describe("/pruner off with a rejecting save (#15)", () => {
   it("keeps the in-memory change, notifies an error naming the settings path, and raises no unhandledRejection", async () => {
     const unhandled: unknown[] = [];

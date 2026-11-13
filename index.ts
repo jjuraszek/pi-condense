@@ -42,6 +42,7 @@ import {
   CUSTOM_TYPE_STATS,
   CUSTOM_TYPE_FRONTIER,
   CUSTOM_TYPE_FLUSH_METRICS,
+  SETTLED_FLUSH_DELAY_MS,
 } from "./src/types.js";
 import { computeContextMetrics } from "./src/context-metrics.js";
 import { StatsAccumulator, emitExternalCost } from "./src/stats.js";
@@ -49,7 +50,7 @@ import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
 import { createSupersedeState, earliestChainStart, earliestResultTimestamp, lowerFloor } from "./src/supersede.js";
-import { detectChains, withClosingMessage } from "./src/chain-detector.js";
+import { detectChains } from "./src/chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, shouldFrontierGapFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
@@ -100,6 +101,11 @@ export default function (pi: ExtensionAPI) {
   // no queue reconstruction; flushPending's own rescan is the data path.
   // Cleared on every non-concurrent flushPending invocation.
   let rearmedPending = false;
+  // Final flush armed when a run settles: `timer` is set until the delay has
+  // passed, `promise` once the flush is running.
+  let settledFlush:
+    | { abort: AbortController; timer?: ReturnType<typeof setTimeout>; promise?: Promise<void> }
+    | undefined;
 
   const computeMetricsSnapshot = (ctx: any): ContextMetricsSnapshot | undefined => {
     try {
@@ -142,13 +148,6 @@ export default function (pi: ExtensionAPI) {
       if (!isStaleContextError(err)) throw err;
     }
   };
-
-  const assistantMessageHasToolCalls = (message: any) =>
-    message?.role === "assistant" &&
-    Array.isArray(message.content) &&
-    message.content.some((block: any) => block?.type === "toolCall");
-
-  const isFinalAssistantMessage = (message: any) => message?.role === "assistant" && !assistantMessageHasToolCalls(message);
 
   const trimBatchToPendingRange = (batch: CapturedBatch): CapturedBatch | null => {
     const currentFrontier = frontier.get();
@@ -220,16 +219,16 @@ export default function (pi: ExtensionAPI) {
   // (one LLM call each) so the caller can update per-row UI. Otherwise all
   // batches are summarized in parallel (one summarizeBatches call).
   // Runtime delivery is used while the agent/tool loop is active so Pi can place
-  // steer messages at protocol-safe boundaries. Session delivery is used only for
-  // agent-message's final-message flush, where print-mode Pi may invalidate pi.*
-  // while the summarizer LLM call is in flight.
+  // steer messages at protocol-safe boundaries. Session delivery writes straight
+  // to the session: its callers run between agent turns or runs, and print-mode Pi
+  // may invalidate pi.* while the summarizer LLM call is in flight.
   // Range-summary fuser injected into compressEligible (B). Returns undefined
   // when fuseRangeSummary is off so the compressor keeps the per-batch concat.
   // Each successful fusion folds its usage + bumps the rangesSummarized counter.
-  const makeFuseRange = (ctx: any): ((text: string) => Promise<string | null>) | undefined => {
+  const makeFuseRange = (ctx: any, signal?: AbortSignal): ((text: string) => Promise<string | null>) | undefined => {
     if (!currentConfig.value.chainCompression.fuseRangeSummary) return undefined;
     return async (text: string) => {
-      const r = await summarizeRange(text, currentConfig.value, ctx, { controller: fallbackController });
+      const r = await summarizeRange(text, currentConfig.value, ctx, { controller: fallbackController, signal });
       if (r) {
         statsAccum.add(r.usage);
         statsAccum.addRangesSummarized(1);
@@ -465,6 +464,11 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      // An abort can land as the last summarizer call resolves. No summary, index,
+      // frontier or chain entry may be written after it: the session may be
+      // shutting down or switching branch. Only the flush-metrics entry follows.
+      if (options.signal?.aborted) throw new Error("flush aborted");
+
       // Process results in order; stop at first null (individual call failure).
       // Batches before the first failure are persisted; remaining are restored to
       // pendingBatches so they are retried on the next flush.
@@ -674,10 +678,8 @@ export default function (pi: ExtensionAPI) {
       // Non-fatal: a failure here does not roll back the successful summarization.
       if (currentConfig.value.chainCompression.enabled) {
         try {
-          // message_end fires before pi persists the closing assistant, so thread it
-          // in here; otherwise the newest chain reads as open and K over-retains by 1.
           // branchMessages was unwrapped once above, gated on chainCompression.enabled.
-          const detectionMessages = withClosingMessage(branchMessages!, options.closingMessage);
+          const detectionMessages = branchMessages!;
           const chains = detectChains(detectionMessages, protectionPredicate);
           const inGrace = inGraceRecoveryToolCallIds(branchMessages!, currentConfig.value.recoveryGraceTurns);
           const { compressedEntries } = await compressEligible(
@@ -688,7 +690,8 @@ export default function (pi: ExtensionAPI) {
               blockRefs,
               appendEntry: persistAlias,
               now: () => Date.now(),
-              fuseRange: makeFuseRange(ctx),
+              fuseRange: makeFuseRange(ctx, options.signal),
+              signal: options.signal,
               messages: detectionMessages,
               diagnostics,
               backfill: {
@@ -703,13 +706,15 @@ export default function (pi: ExtensionAPI) {
           if (compressedEntries.length > 0) {
             lowerFloor(supersede, earliestChainStart(compressedEntries));
             statsAccum.addChainsCompressed(compressedEntries.length);
-            statsAccum.persist(pi);
-            emitExternalCost(pi, statsAccum);
-            safeNotify(
-              ctx,
-              `pruner: compressed ${compressedEntries.length} chain${compressedEntries.length === 1 ? "" : "s"} (${compressedEntries.map((e) => e.blockId).join(", ")})`,
-              "info",
-            );
+            if (!options.signal?.aborted) {
+              statsAccum.persist(pi);
+              emitExternalCost(pi, statsAccum);
+              safeNotify(
+                ctx,
+                `pruner: compressed ${compressedEntries.length} chain${compressedEntries.length === 1 ? "" : "s"} (${compressedEntries.map((e) => e.blockId).join(", ")})`,
+                "info",
+              );
+            }
           }
         } catch (err) {
           if (!isStaleContextError(err)) {
@@ -890,7 +895,7 @@ export default function (pi: ExtensionAPI) {
 
     const hasToolResults = event.toolResults && event.toolResults.length > 0;
 
-    // Text-only final turns are handled by message_end in agent-message mode.
+    // Text-only final turns are handled once the run settles (agent_settled).
     // In print mode, turn_end can fire after session shutdown, so do not start
     // deferred LLM work from this late lifecycle event — UNLESS a reload probe
     // (session_start/session_tree) found recoverable pending work: that flag
@@ -959,16 +964,12 @@ export default function (pi: ExtensionAPI) {
 
         // Let the user know a batch is queued
         const n = pendingBatches.length;
-        const trigger = currentConfig.value.pruneOn === "agent-message"
-          ? "agent's next text response"
-          : currentConfig.value.pruneOn === "next-prompt"
-            ? "your next prompt"
-            : "/pruner now";
+        const trigger = currentConfig.value.pruneOn === "on-demand" ? "/pruner now" : "the agent's final reply";
         if (currentConfig.value.showPruneStatusLine) {
           setPruneStatusWidget(ctx, currentConfig.value, `prune: ${n} pending`);
           safeNotify(
             ctx,
-            `pruner: ${n} turn${n === 1 ? "" : "s"} queued — will summarize on ${trigger}`,
+            `pruner: ${n} turn${n === 1 ? "" : "s"} queued — will summarize after ${trigger}`,
             "info"
           );
         }
@@ -1019,42 +1020,98 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // ── message_end: flush after the final assistant response in agent-message mode ──
-  // A final assistant message is the earliest reliable boundary where the agent has
-  // finished using the raw tool results. flushPending captures the SessionManager
-  // before awaiting summarization so print-mode shutdown cannot invalidate the
-  // persistence path while the summarizer model is running.
+  const flushesAutomatically = () => currentConfig.value.enabled && currentConfig.value.pruneOn !== "on-demand";
+
+  // Drops the armed final flush: clears the delay, or aborts the summarizer call
+  // in flight. Returns the running flush, if any, for callers that must see it
+  // settle.
+  const cancelSettledFlush = (): Promise<void> | undefined => {
+    const armed = settledFlush;
+    if (!armed) return undefined;
+    settledFlush = undefined;
+    clearTimeout(armed.timer);
+    armed.abort.abort();
+    return armed.promise;
+  };
+
+  // ── agent_settled: arm the final flush ──────────────────────────────────────
+  // The run is over and pi is idle, so the flush holds neither the run's end nor
+  // an orchestrator waiting on it. The final assistant message is already
+  // persisted, so the newest chain is closed in the branch. Queued follow-ups
+  // continue the run before it settles and keep relying on the turn_end triggers.
   //
   // No-UI sessions are treated as single-prompt to avoid a final prune print children never read.
-  // Multi-prompt print/SDK hosts rely on turn_end budget/delta/frontier-gap triggers instead.
-  pi.on("message_end", async (event, ctx) => {
-    if (!currentConfig.value.enabled) return;
-    if (currentConfig.value.pruneOn !== "agent-message") return;
+  // Multi-prompt print/SDK hosts flush at the next prompt (before_agent_start) or on the turn_end triggers.
+  pi.on("agent_settled", async (_event, ctx) => {
+    cancelSettledFlush();
+    if (!flushesAutomatically()) return;
     if (ctx.hasUI === false) return;
-    if (!isFinalAssistantMessage(event.message)) return;
-    await flushPending(ctx, { delivery: "session", closingMessage: event.message, trigger: "message-end" });
-  });
-
-  // ── before_agent_start: next-prompt flush ───────────────────────────────────
-  // The user has just submitted a prompt and pi has not yet built its message or
-  // sent the first request, so this is the latest point where a prune still pays
-  // for itself on this run and the earliest point that proves a next run exists.
-  // The previous run's final assistant message is already persisted, so the
-  // newest chain is closed without threading a closingMessage. Session delivery:
-  // summaries land in the session before this run's first `context` event.
-  // Queued follow-ups continue the current run without this event and keep
-  // relying on the turn_end triggers.
-  pi.on("before_agent_start", async (_event, ctx) => {
-    if (!currentConfig.value.enabled) return;
-    if (currentConfig.value.pruneOn !== "next-prompt") return;
     const n = pendingBatches.length;
     if (n === 0 && !rearmedPending) return;
+    const armed: NonNullable<typeof settledFlush> = { abort: new AbortController() };
+    armed.timer = setTimeout(() => {
+      armed.timer = undefined;
+      // /pruner can turn automatic flushing off during the delay.
+      if (!flushesAutomatically()) {
+        if (settledFlush === armed) settledFlush = undefined;
+        return;
+      }
+      armed.promise = flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : "settled", signal: armed.abort.signal })
+        .then(
+          () => undefined,
+          (err) => {
+            if (!isStaleContextError(err)) console.error("pi-condense: final flush failed", err);
+          },
+        )
+        .finally(() => {
+          if (settledFlush === armed) settledFlush = undefined;
+        });
+    }, SETTLED_FLUSH_DELAY_MS);
+    armed.timer.unref?.();
+    settledFlush = armed;
+  });
+
+  // ── before_agent_start: wait for the final flush, or run it now ─────────────
+  // Every run start emits this before pi builds the starting message or sends
+  // the first request, so no final flush overlaps a run. A flush in flight holds
+  // the prompt only until it finishes; batches it left pending
+  // wait for the next trigger rather than a retry that would double the wait. A
+  // prompt that beats the delay, or finds recovered work in a UI session, flushes
+  // here with session delivery: summaries land in the session before this run's
+  // first `context` event. No-UI sessions wait for a run to queue new batches.
+  pi.on("before_agent_start", async (_event, ctx) => {
+    if (settledFlush?.promise) {
+      await settledFlush.promise;
+      return;
+    }
+    cancelSettledFlush();
+    if (!flushesAutomatically()) return;
+    const n = pendingBatches.length;
+    if (n === 0 && (!rearmedPending || ctx.hasUI === false)) return;
     if (isFlushing) return;
     await flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : "next-prompt" });
   });
 
+  // pi awaits this handler before it exits or replaces the session, so it only
+  // signals the abort and does not wait for the flush to settle.
+  pi.on("session_shutdown", async () => {
+    cancelSettledFlush();
+  });
+
+  // Tree navigation keeps the session alive: wait for the aborted flush to put
+  // its batches back before session_tree discards the old branch's queue.
+  pi.on("session_before_tree", async () => {
+    await cancelSettledFlush();
+  });
+
+  // Compaction rewrites the branch a running flush would write into. A threshold
+  // compaction ahead of a prompt leaves the batches to before_agent_start.
+  pi.on("session_before_compact", async () => {
+    await cancelSettledFlush();
+  });
+
   // ── agent_end: last-chance cleanup only ─────────────────────────────────────
-  // agent-message normally flushes on message_end. By agent_end, print-mode Pi may
+  // The final flush is armed at agent_settled. By agent_end, print-mode Pi may
   // already be disposing the session, so avoid starting a best-effort LLM call here.
   pi.on("agent_end", async (_event, ctx) => {
     if (!currentConfig.value.enabled) return;
@@ -1122,6 +1179,10 @@ export default function (pi: ExtensionAPI) {
 
   // ── Register /pruner command + summary message renderer ────────────
   const compactChains = async (ctx: any) => {
+    // The final flush compresses chains too. Let one in flight finish and drop
+    // one still in its delay, so the two never compress the same chain.
+    await settledFlush?.promise;
+    cancelSettledFlush();
     const branchMessages = projectBranchMessages(ctx.sessionManager.getBranch());
     const chains = detectChains(branchMessages, protectionPredicate);
     const inGrace = inGraceRecoveryToolCallIds(branchMessages, currentConfig.value.recoveryGraceTurns);

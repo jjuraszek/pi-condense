@@ -13,6 +13,13 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 - README documents how a subagent child's `pruneOn` is resolved and how to give one agent type its own mode with pi-cohort's `settings` override, which starts the child in a private agent directory that pi-condense already reads. No pi-condense setting or code change. (#35)
 
+## [2.17.0] - 2026-11-13
+
+### Changed
+
+- The final `agent-message` flush no longer holds the run that just ended; a prompt waits only when submitted before the flush finishes. It was awaited inside `message_end`, so the session stayed busy, and a subagent child's result was held back, for one summarizer call after the reply. It is now armed at `agent_settled` and starts 1.5 s later (`SETTLED_FLUSH_DELAY_MS`), while the session is idle. A `session_shutdown` within the delay sends no summarizer request; one during a summarizer call aborts it and writes no summary; one during chain compression writes no backfill index or chain entry. Batches not yet summarized stay pending for the reload rearm. Batch summaries and the frontier written before an abort during chain compression stand and are not summarized again. A session with a UI flushes recovered work at its first prompt after a resume; a no-UI session skips recovered-only work at prompt start until that extension instance has queued new batches. `session_before_tree` and `session_before_compact` cancel the flush the same way. `/pruner compact` waits for a running flush and drops one still in its delay. A prompt submitted while the flush runs waits only for the rest of it; one submitted before it started runs it at `before_agent_start`, ahead of the first model request. The `FlushTrigger` value `message-end` is replaced by `settled`. (#37)
+- `pruneOn: "next-prompt"` is removed. A session with a UI configured with that value now flushes after about 1.5 s of idle time even if no further prompt comes; in 2.16.0 it sent no summarizer request until the next prompt. A settings file that still holds the value loads as the default, `agent-message`, like any unknown value; `/pruner prune-on next-prompt` is rejected, and `/pruner prune-on` rejects any unknown mode instead of storing it. A session without a UI that gets another prompt now flushes the previous run's pending work before that prompt's first model request. Such a session still starts no flush after a reply. (#37)
+
 ## [2.16.0] - 2026-11-12
 
 ### Added

@@ -2,7 +2,7 @@ import { describe, expect, it, test } from "bun:test";
 import { selectEligible, compressEligible, extractChainRecords, buildDeterministicBody } from "./chain-compressor.js";
 import type { ChainCompressorIndexerDeps } from "./chain-compressor.js";
 import type { ChainRange, ChainCompressionEntry, ToolCallRecord } from "./types.js";
-import { CUSTOM_TYPE_CHAIN } from "./types.js";
+import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_INDEX } from "./types.js";
 import { detectChains } from "./chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 import { occKey } from "./occurrence-key.js";
@@ -763,6 +763,36 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
     expect(result.skipped).toEqual([{ startUserTimestamp: 1000, reason: "no-summary" }]);
     expect(registerChainCalls).toHaveLength(0);
     expect(appended).toHaveLength(0);
+  });
+
+  test("an abort during backfill writes no index entry and stops before the next chain", async () => {
+    const abort = new AbortController();
+    const { deps, backfillCalls, registerChainCalls, appended } = makeDeterministicDeps({
+      backfillImpl: async (_records, backfillOpts) => {
+        // The real indexer awaits spill file I/O before it appends the index entry.
+        await Promise.resolve();
+        abort.abort();
+        (backfillOpts as { appendEntry: (type: string, data: unknown) => void }).appendEntry(CUSTOM_TYPE_INDEX, {});
+        return [];
+      },
+    });
+    const laterMessages = [
+      { role: "user", timestamp: 2000, content: [{ type: "text", text: "u" }] },
+      { role: "assistant", timestamp: 2001, content: [{ type: "toolCall", id: "c3", name: "bash", input: { cmd: "b" } }] },
+      { role: "toolResult", toolCallId: "c3", toolName: "bash", timestamp: 2050, isError: false, content: [{ type: "text", text: "out3" }] },
+      { role: "assistant", timestamp: 2200, content: [{ type: "text", text: "done" }] },
+    ];
+    const laterChain = { ...uncoveredChain(), startUserTimestamp: 2000, middleToolCallIds: ["c3"], finalAssistantTimestamp: 2200 };
+    const result = await compressEligible(
+      [uncoveredChain(), laterChain],
+      0,
+      { ...deps, messages: [...chainMessages(), ...laterMessages], signal: abort.signal } as any,
+    );
+    expect(appended).toHaveLength(0);
+    expect(registerChainCalls).toHaveLength(0);
+    expect(result.compressedEntries).toHaveLength(0);
+    expect(result.skipped).toEqual([]);
+    expect(backfillCalls).toHaveLength(1);
   });
 
   test("retry discriminator: members already indexed, nothing new extracted -> composes from index", async () => {

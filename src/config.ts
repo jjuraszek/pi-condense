@@ -27,8 +27,8 @@ export function settingsPath(): string {
 /** Top-level key under which context-prune state lives in `settings.json`. */
 export const SETTINGS_KEY = "contextPrune" as const;
 
-function isPruneOn(value: unknown): value is PruneOn {
-  return typeof value === "string" && PRUNE_ON_MODES.some((mode) => mode.value === value);
+export function toPruneOn(value: unknown): PruneOn | undefined {
+  return PRUNE_ON_MODES.find((mode) => mode.value === value)?.value;
 }
 
 function isSummarizerThinking(value: unknown): value is SummarizerThinking {
@@ -44,7 +44,7 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
       typeof merged.showPruneStatusLine === "boolean"
         ? merged.showPruneStatusLine
         : DEFAULT_CONFIG.showPruneStatusLine,
-    pruneOn: isPruneOn(merged.pruneOn) ? merged.pruneOn : DEFAULT_CONFIG.pruneOn,
+    pruneOn: toPruneOn(merged.pruneOn) ?? DEFAULT_CONFIG.pruneOn,
     summarizerThinking: isSummarizerThinking(merged.summarizerThinking)
       ? merged.summarizerThinking
       : DEFAULT_CONFIG.summarizerThinking,

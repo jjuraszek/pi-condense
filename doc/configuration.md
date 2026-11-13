@@ -50,7 +50,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `showPruneStatusLine` | `true` / `false` | `true` | Footer widget + startup/queued-turn notifications |
 | `summarizerModel` | `"default"` or `"provider/model-id"` | `"default"` | `default` = your active pi model. See [Choosing a summarizer model](#choosing-a-summarizer-model) |
 | `summarizerThinking` | `default`/`off`/`minimal`/`low`/`medium`/`high`/`xhigh` | `default` | Reasoning level sent with every summarizer call on every provider; `default` and `off` send none. A virtual model's router receives it and may clamp it |
-| `pruneOn` | `agent-message` / `next-prompt` / `on-demand` | `agent-message` | Trigger mode - see README Architecture section |
+| `pruneOn` | `agent-message` / `on-demand` | `agent-message` | Trigger mode - see README Architecture section |
 | `batchingMode` | `turn` / `agent-message` | `turn` | How coarse each summary is (independent of `pruneOn`) |
 | `quietOversizedSkips` | `true` / `false` | `false` | Silences `skipped-oversized` / `skipped-trivial` info notifications |
 | `minBatchChars` | non-negative integer, `0` disables | `1000` | Pre-flush guard - batches smaller than this skip the LLM entirely |
@@ -159,7 +159,7 @@ Both timers can be set to `0` to disable them independently.
 | `/pruner stats` | Detailed cumulative summarizer token/cost stats |
 | `/pruner model [id[:thinking]]` | Get / set summarizer model (and optionally thinking level) |
 | `/pruner thinking [level]` | Get / set summarizer reasoning effort |
-| `/pruner prune-on [mode]` | Get / set trigger mode (`agent-message` / `next-prompt` / `on-demand`) |
+| `/pruner prune-on [mode]` | Get / set trigger mode (`agent-message` / `on-demand`) |
 | `/pruner batching [mode]` | Get / set batching granularity (`turn` / `agent-message`) |
 | `/pruner protected-tools [names]` | Show or edit the never-pruned tool allowlist (comma- or space-separated; `none` clears) |
 | `/pruner protected-paths [globs]` | Show or edit the never-pruned path globs (`none` clears) |
