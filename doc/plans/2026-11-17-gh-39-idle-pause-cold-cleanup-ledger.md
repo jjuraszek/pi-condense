@@ -3,9 +3,9 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 8
+iterations: 9
 allowance: 10
-returned: 11 | home | a3845257a8b9311868bde1890ce3a7274f1fc542
+returned: 11 | home | 037ef22620b997b4fa5cdfd0ee7fe4042f04545f
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -19,7 +19,7 @@ returned: 11 | home | a3845257a8b9311868bde1890ce3a7274f1fc542
 | 8 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 54 passed, 0 failed; longer declared lifetimes delay cleanup with strict boundary checks; the real helper selects long only for PI_CACHE_RETENTION=long and short for short, none, or unset |
 | 9 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 58 passed, 0 failed; no declared lifetime keeps a 60-minute request unchanged and compresses after 240 minutes; the handler uses the threshold when promptCache or its active retention tier is missing |
 | 10 | done | 2 | timeout -k 30 60 bun test ./src/config.test.ts ./src/commands.test.ts ./src/idle-cleanup.integration.test.ts; 130 passed, 0 failed; invalid array settings fall back to 180 without a callback timeout; custom durations and all four settings presets pass |
-| 11 | failed | 1 | timeout -k 30 10 bash -c 'test -z "$(git status --porcelain)"'; unreachable: clean candidate tree for paid twins - committed checkout before ledger dispatch; 127 targeted offline checks passed across scenarios-idle, session, report, and lifecycle tests; paid skill comparison not run |
+| 11 | done | 2 | timeout -k 30 30 bun eval/idle-evidence.ts "${TMPDIR:-/tmp}/pi-condense-eval-au4zjE/claude-haiku-5-5.md" skill-gate-reply; fresh 3/3, paused 3/3, zero retries; paid npm run eval -- --idle --summarizer anthropic/claude-haiku-5-5 --change "idle cleanup twins" passed on clean candidate 037ef22620b997b4fa5cdfd0ee7fe4042f04545f; 18 offline validation cases passed, including stale, incomplete, inconclusive, and regressing evidence |
 | 12 | open | 0 | |
 | 13 | open | 0 | |
 
@@ -38,3 +38,4 @@ row 10 failed | Added threshold normalization, settings presets, and custom-dura
 row 10 done | Wrapped invalid thresholds in object cases, fixing the array-case timeout and passing all 130 configuration, settings, and idle-cleanup checks. | Reuse src/config.test.ts object-wrapped cases to check invalid array inputs without Bun interpreting them as callback tests.
 row 11 failed | Added idle skill twins, isolated runner settings, and request-arm proofs with 127 passing offline checks, but the paid comparison requires a clean tree. | Run --idle from the clean committed checkout before redispatch; reuse compareIdleTwins in eval/report.ts for local report checks.
 amended | 1 item(s) | Clean candidate eval checkout
+row 11 done | The skill-reply twins pass 3/3 each on a clean committed candidate, and offline validation rejects stale or incomplete reports. | Reuse eval/idle-evidence.ts with the saved report path and a fresh scenario ID to validate twins without paid calls.
