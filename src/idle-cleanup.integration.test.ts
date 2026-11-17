@@ -336,6 +336,71 @@ describe("idle cleanup", () => {
     }
   });
 
+  it.each([true, false])("retains unsummarized occurrences in idle chains across reload without changing manual compression (idle=%s)", async (idle) => {
+    const endMs = Date.now() - 240 * 60_000;
+    const branch = closedChainBranch(endMs, 2);
+    const indexer = new ToolCallIndexer();
+    const call = branch[1].message;
+    const summarized = branch[2].message;
+    const batch = captureBatch(call, [summarized], 0, summarized.timestamp);
+    indexer.addBatch(batch, (customType, data) => branch.push({ type: "custom", customType, data }));
+    const summary = "  Earlier work is complete. Keep {b99} literal.\n";
+    branch.push({
+      type: "custom_message", customType: CUSTOM_TYPE_SUMMARY, content: summary, display: false,
+      details: { toolCallRefs: indexer.allocateSummaryRefs(batch) }, timestamp: new Date(endMs + 1).toISOString(),
+    });
+    const latest = {
+      role: "toolResult", toolCallId: summarized.toolCallId, toolName: "plan_tracker", isError: false,
+      timestamp: summarized.timestamp + 2,
+      content: [{ type: "text", text: "Task: install guards\nStatus: in_progress\n  Keep {b99} literal.\n" }],
+    };
+    branch[3].message.stopReason = "error";
+    branch.splice(3, 0,
+      { type: "message", message: { role: "assistant", timestamp: summarized.timestamp + 1, stopReason: "toolUse",
+        content: [{ type: "toolCall", id: latest.toolCallId, name: latest.toolName, arguments: {} }] } },
+      { type: "message", message: latest },
+    );
+    const zeroSummary = branch[8].message;
+    zeroSummary.content.push({ type: "image", mimeType: "image/png", data: "c3ludGhldGlj" });
+    const config = { protectedTools: [], chainCompression: { ...DEFAULT_CONFIG.chainCompression, fuseRangeSummary: false } };
+    const harness = await boot(branch, false, config);
+    let rendered: any[];
+    try {
+      if (idle) await harness.submit();
+      else await harness.compact();
+      const entries = harness.appended.filter((e) => e.type === CUSTOM_TYPE_CHAIN).map((e) => e.data);
+      expect(entries).toHaveLength(2);
+      expect(entries[0].bodySource).toBeUndefined();
+      expect(entries[1].bodySource).toBe("deterministic");
+      rendered = (await harness.request()).slice(0, -1);
+      const bodies = rendered.filter((m) => m.role === "user" && m.content[0]?.text?.startsWith("<compressed-chain"));
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0].content[0].text).toContain(summary);
+      expect(bodies[0].content[0].text).not.toContain(extractToolResultText(summarized));
+      for (const [i, result] of [latest, zeroSummary].entries()) {
+        const text = extractToolResultText(result);
+        const block = `\n\n<protected-output tool="${result.toolName}">\n${text}\n</protected-output>`;
+        expect(bodies[i].content[0].text.includes(block)).toBe(idle);
+        expect(entries[i].protectedToolCallIds ?? []).toEqual(idle ? [`${result.toolCallId}@${result.timestamp}`] : []);
+      }
+      const restoredIndex = new ToolCallIndexer();
+      restoredIndex.reconstructFromSession(harness.ctx);
+      expect(restoredIndex.getRecord(`${zeroSummary.toolCallId}@${zeroSummary.timestamp}`)?.resultText).toBe(extractToolResultText(zeroSummary));
+      expectNoOrphanToolResults(rendered);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+    const reloaded = await boot(JSON.parse(JSON.stringify(branch)), false, config);
+    try {
+      expect((await reloaded.request()).slice(0, -1)).toEqual(rendered!);
+      expect(reloaded.appended.filter((e) => e.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
+    } finally {
+      await reloaded.fire("session_shutdown");
+      reloaded.restore();
+    }
+  });
+
   it.each([
     { mixed: false, newerLimit: undefined, replaced: true },
     { mixed: true, newerLimit: undefined, replaced: true },

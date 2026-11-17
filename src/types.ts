@@ -514,11 +514,10 @@ export interface ChainCompressionEntry {
    */
   droppedOccurrenceKeys?: string[];
   /**
-   * Subset of droppedToolCallIds whose tool was user-protected. Membership is decided
-   * per call by tool name (every call whose name ∈ protectedTools), not a per-id allowlist.
-   * Their verbatim ToolResultMessage text is relocated into the synthetic
-   * <compressed-chain> body at render time (pulled live from the raw branch) instead
-   * of being dropped. Absent/empty ⇒ no protected outputs (identical to pre-feature render).
+   * User-protected bare tool-call ids, plus exact occurrence keys for results
+   * without per-batch summary coverage retained by idle cleanup. Their extracted
+   * ToolResultMessage text is relocated into the synthetic <compressed-chain>
+   * body at render time instead of being dropped. Absent/empty means no relocation.
    */
   protectedToolCallIds?: string[];
   /**

@@ -710,6 +710,23 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
     expect(registerChainCalls).toHaveLength(1);
   });
 
+  test.each([false, true])("idle retention uses summary coverage, not index membership (covered=%s)", async (covered) => {
+    const messages = chainMessages();
+    const keys = [occKey("c1", 1050), occKey("c2", 1150)];
+    const records = extractChainRecords(messages, uncoveredChain(), () => false);
+    const { deps, backfillCalls } = makeDeterministicDeps({
+      messages, indexRecords: new Map(records.map((r, i) => [keys[i], r])),
+    });
+    deps.indexer.hasPerBatchSummaryCoveringAny = (lookup: string[] = []) => covered && lookup.includes(keys[0]);
+    const result = await compressEligible(
+      [{ ...uncoveredChain(), middleOccurrenceKeys: keys }], 0, { ...deps, literalSummary: true } as any,
+    );
+    expect(result.compressedEntries).toHaveLength(1);
+    expect(result.compressedEntries[0].protectedToolCallIds).toEqual(covered ? [keys[1]] : keys);
+    expect(result.compressedEntries[0].bodySource).toBe(covered ? undefined : "deterministic");
+    expect(backfillCalls).toHaveLength(0);
+  });
+
   test("custom-anchored uncovered chain still compresses deterministically and backfills", async () => {
     const messages = [
       { role: "custom", customType: "pi-gauntlet-transition-recovery", timestamp: 1000 },

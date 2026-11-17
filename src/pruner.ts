@@ -3,10 +3,10 @@ import { charsOf } from "./context-metrics.js";
 import type { ToolCallIndexer } from "./indexer.js";
 import type { ChainCompressionConfig, ErrorPurgeConfig } from "./types.js";
 import { isProtected, type ProtectionConfig } from "./protected.js";
-import { applyChainCompressions } from "./chain-range-prune.js";
+import { applyChainCompressions, resolveRange } from "./chain-range-prune.js";
 import { purgeErroredArgs } from "./error-purge.js";
 import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
-import { occKey } from "./occurrence-key.js";
+import { occKey, resultTimestampOf } from "./occurrence-key.js";
 import { sweepOrphanToolResults } from "./orphan-sweep.js";
 import type { DiagnosticSink } from "./diagnostics.js";
 import { applySupersede, type SupersedeState } from "./supersede.js";
@@ -92,8 +92,23 @@ export function pruneMessages(
   let pruned = false;
   const summarizedRefs = new Map<string, string>();
   const inGrace = inGraceRecoveryToolCallIds(messages, recoveryGraceTurns);
-  const next = messages.map((msg) => {
-    if (msg.role !== "toolResult") return msg;
+  // Idle backfill indexes unsummarized results for recovery, but their text must
+  // reach protected-output relocation rather than becoming a phase-1 stub.
+  const retainedIndices = new Set<number>();
+  for (const entry of chainCompression?.enabled ? indexer.getChainEntries() : []) {
+    if (!entry.literalSummary || !entry.protectedToolCallIds?.length) continue;
+    const range = resolveRange(entry, messages);
+    if (!range) continue;
+    const protectedIds = new Set(entry.protectedToolCallIds);
+    for (let i = range.startIndex + 1; i < range.endIndex; i++) {
+      const msg = messages[i];
+      if (msg.role === "toolResult" && (protectedIds.has(msg.toolCallId) || protectedIds.has(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp))))) {
+        retainedIndices.add(i);
+      }
+    }
+  }
+  const next = messages.map((msg, i) => {
+    if (msg.role !== "toolResult" || retainedIndices.has(i)) return msg;
 
     // Fail-closed: when the message carries a timestamp, the occurrence key
     // is tried first. The bare id is consulted only as a fallback, and only

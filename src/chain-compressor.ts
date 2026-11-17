@@ -216,6 +216,18 @@ export async function compressEligible(
     // summaryBodies / toolRefs live in occurrence-key space (src/indexer.ts).
     // Bare ids would match nothing and silently skip every chain.
     const lookupKeys = chain.middleOccurrenceKeys?.length ? chain.middleOccurrenceKeys : chain.middleToolCallIds;
+    const protectedToolCallIds = new Set(chain.protectedToolCallIds ?? []);
+    if (deps.literalSummary) {
+      const range = resolveRange(chain, deps.messages);
+      if (range) {
+        for (let i = range.startIndex + 1; i < range.endIndex; i++) {
+          const msg = deps.messages[i];
+          if (msg.role !== "toolResult" || protectedToolCallIds.has(msg.toolCallId)) continue;
+          const key = occKey(msg.toolCallId, resultTimestampOf(msg.timestamp));
+          if (!deps.indexer.hasPerBatchSummaryCoveringAny([key])) protectedToolCallIds.add(key);
+        }
+      }
+    }
 
     if (!deps.indexer.hasPerBatchSummaryCoveringAny(lookupKeys)) {
       // Deterministic zero-LLM fallback (spec 2026-08-14). Fail-closed: any
@@ -272,7 +284,7 @@ export async function compressEligible(
         rangeSummaryText: buildDeterministicBody(allRecords, toolRefs),
         bodySource: "deterministic",
         ...(deps.literalSummary ? { literalSummary: true } : {}),
-        ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
+        ...(protectedToolCallIds.size ? { protectedToolCallIds: [...protectedToolCallIds] } : {}),
         ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
       };
       deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);
@@ -308,7 +320,7 @@ export async function compressEligible(
       compressedAt: deps.now(),
       ...(rangeSummaryText ? { rangeSummaryText } : {}),
       ...(deps.literalSummary ? { literalSummary: true } : {}),
-      ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
+      ...(protectedToolCallIds.size ? { protectedToolCallIds: [...protectedToolCallIds] } : {}),
       ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
     };
 

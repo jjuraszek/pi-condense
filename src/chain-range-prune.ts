@@ -183,7 +183,7 @@ export function applyChainCompressions(
         inRangeBareIds.push(msg.toolCallId);
         droppedBareIds.add(msg.toolCallId);
         droppedOccKeys.add(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)));
-        if (protectedIds.has(msg.toolCallId)) {
+        if (protectedIds.has(msg.toolCallId) || protectedIds.has(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)))) {
           const arr = protectedByBlock.get(entry.blockId) ?? [];
           arr.push({ tool: msg.toolName, text: extractToolResultText(msg) });
           protectedByBlock.set(entry.blockId, arr);
