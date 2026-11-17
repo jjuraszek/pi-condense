@@ -56,7 +56,7 @@ import { shouldBudgetFlush, shouldDeltaFlush, shouldFrontierGapFlush, usageFract
 import { spillOversizedBatch } from "./src/spill.js";
 import { occKey } from "./src/occurrence-key.js";
 import { DiagnosticSink } from "./src/diagnostics.js";
-import { idleCleanupDue } from "./src/idle-pause.js";
+import { idleCleanupDue, lastCacheRefreshMs } from "./src/idle-pause.js";
 
 const EMPTY_METRICS_SNAPSHOT: ContextMetricsSnapshot = { openCycleThinkingTokens: 0, largestChainSharePct: 0, frontierGapTokens: 0 };
 
@@ -1099,14 +1099,20 @@ export default function (pi: ExtensionAPI) {
     }
     if (event.messageType !== "user" || (source !== "interactive" && source !== "rpc")) return;
     if (!flushesAutomatically() || !currentConfig.value.chainCompression.enabled || isFlushing) return;
+    const branch = ctx.sessionManager.getBranch();
     if (!idleCleanupDue({
-      branch: ctx.sessionManager.getBranch(),
+      branch,
       now: Date.now(),
       thresholdMinutes: currentConfig.value.chainCompression.idleCleanupMinutes ?? DEFAULT_CONFIG.chainCompression.idleCleanupMinutes,
       declaredLifetimeMs: ctx.model ? getPromptCacheTtlMs(ctx.model, undefined) : undefined,
     })) return;
-    activateClosedChainSuperseded(projectBranchMessages(ctx.sessionManager.getBranch()), supersede, protectionPredicate);
-    await compactChains(ctx, { idle: true });
+    const pauseKey = String(lastCacheRefreshMs(branch));
+    try {
+      activateClosedChainSuperseded(projectBranchMessages(branch), supersede, protectionPredicate);
+      await compactChains(ctx, { idle: true });
+    } catch (err) {
+      diagnostics.report("idle-cleanup-failed", pauseKey, errorMessage(err));
+    }
   });
 
   // pi awaits this handler before it exits or replaces the session, so it only

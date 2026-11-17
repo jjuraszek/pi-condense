@@ -1211,7 +1211,7 @@ Every swept id is reported once (hashed batch, not per-id) as an `orphan-sweep` 
 
 ## Diagnostics
 
-Prune-time degradations - an unresolvable chain range, a detection/render id mismatch, a swept orphan, a chain with nothing left to backfill - are recorded on an out-of-band channel instead of surfacing in the model's context. `DiagnosticSink` (`src/diagnostics.ts`) writes a `context-prune-diagnostic` session entry (`{ kind, detail }`) for each of four kinds:
+Prune-time degradations - an unresolvable chain range, a detection/render id mismatch, a swept orphan, a chain with nothing left to backfill - are recorded on an out-of-band channel instead of surfacing in the model's context. `DiagnosticSink` (`src/diagnostics.ts`) writes a `context-prune-diagnostic` session entry (`{ kind, detail }`) for each of five kinds:
 
 | Kind | Emitted from | Meaning |
 |---|---|---|
@@ -1219,6 +1219,7 @@ Prune-time degradations - an unresolvable chain range, a detection/render id mis
 | `range-id-mismatch` | `applyChainCompressions` | The ids actually inside a resolved range don't match the entry's recorded `droppedToolCallIds` - informational only, the range still wins |
 | `orphan-sweep` | `pruneMessages` (Phase 4) | One or more `toolResult` messages were removed for having no open matching `toolCall` |
 | `backfill-empty` | `chain-compressor.compressEligible` | A zero-coverage chain's deterministic-backfill span yielded zero extractable records AND zero members already in the index AND the chain is not fully-protected - a genuine span mismatch, not a partial-failure retry state. Fully-protected zero-coverage chains skip silently instead (see [Deterministic fallback § Fully-protected exception](#deterministic-fallback-uncovered-chains)). Deduped per chain start timestamp (`chain.startUserTimestamp`). Widget letter `b` |
+| `idle-cleanup-failed` | `before_agent_start` idle cleanup | Cleanup threw; the prompt proceeds with appended chains and closed-chain supersede activation kept. Deduped per pause's `lastCacheRefreshMs` value as a string. Widget letter `i` |
 
 **Never in LLM context.** These are session entries only - zero tokens added, zero cache-prefix change, never read back into the message array the model sees.
 
@@ -1226,7 +1227,7 @@ Prune-time degradations - an unresolvable chain range, a detection/render id mis
 
 **Reset on `session_start` and `session_tree`**, matching every other in-memory, non-persisted piece of prune state.
 
-**Surfaced on the status line.** The footer status widget (`setPruneStatusWidget`, gated by `showPruneStatusLine`) appends a self-hiding ` · diag u<N>/m<N>/o<N>/b<N>` segment (u = `unresolved-range`, m = `range-id-mismatch`, o = `orphan-sweep`, b = `backfill-empty`) built from the sink's live counters via `pruneStatusText`. Each letter is omitted when its counter is zero, and the whole segment is absent when all four are zero. `/pruner status` (the slash command) prints a separate settings/stats block and does not include this segment.
+**Surfaced on the status line.** The footer status widget (`setPruneStatusWidget`, gated by `showPruneStatusLine`) appends a self-hiding ` · diag u<N>/m<N>/o<N>/b<N>/i<N>` segment (u = `unresolved-range`, m = `range-id-mismatch`, o = `orphan-sweep`, b = `backfill-empty`, i = `idle-cleanup-failed`) built from the sink's live counters via `pruneStatusText`. Each letter is omitted when its counter is zero, and the whole segment is absent when all five are zero. `/pruner status` (the slash command) prints a separate settings/stats block and does not include this segment.
 
 ---
 

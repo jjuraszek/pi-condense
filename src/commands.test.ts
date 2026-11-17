@@ -341,8 +341,8 @@ describe("/pruner off with a rejecting save (#15)", () => {
 });
 
 describe("diagnostic counters on the status line", () => {
-  const zeroDiag = { "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0 } as const;
-  const mixedDiag = { "unresolved-range": 2, "range-id-mismatch": 0, "orphan-sweep": 1 } as const;
+  const zeroDiag = { "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0, "idle-cleanup-failed": 0 } as const;
+  const mixedDiag = { ...zeroDiag, "unresolved-range": 2, "orphan-sweep": 1 } as const;
 
   it("omits the diagnostic segment when all counters are zero", () => {
     expect(pruneStatusText(cfg(true), undefined, zeroDiag)).toBe("prune: ON");
@@ -359,19 +359,18 @@ describe("diagnostic counters on the status line", () => {
   });
 
   it("setPruneStatusWidget forwards the counters", () => {
-    expect(captureStatus(cfgVisible(true), undefined, { "unresolved-range": 1, "range-id-mismatch": 0, "orphan-sweep": 0 })).toBe(
+    expect(captureStatus(cfgVisible(true), undefined, { ...zeroDiag, "unresolved-range": 1 })).toBe(
       "\u2502 prune: ON \u00b7 diag u1",
     );
   });
 
-  it("appends b<N> for backfill-empty alongside u/m/o", () => {
+  it("appends b<N> for backfill-empty and i<N> for idle-cleanup-failed alongside u/m/o", () => {
     const text = pruneStatusText(cfg(true), undefined, {
-      "unresolved-range": 2,
-      "range-id-mismatch": 0,
-      "orphan-sweep": 1,
+      ...mixedDiag,
       "backfill-empty": 2,
+      "idle-cleanup-failed": 1,
     });
-    expect(text).toBe("prune: ON \u00b7 diag u2/o1/b2");
+    expect(text).toBe("prune: ON \u00b7 diag u2/o1/b2/i1");
   });
 });
 

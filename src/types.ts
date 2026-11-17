@@ -96,7 +96,7 @@ export const CUSTOM_TYPE_DIAGNOSTIC = "context-prune-diagnostic";
  */
 export const CUSTOM_TYPE_FLUSH_METRICS = "context-prune-flush-metrics";
 
-export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep" | "backfill-empty";
+export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep" | "backfill-empty" | "idle-cleanup-failed";
 
 export interface DiagnosticEntryData {
   kind: DiagnosticKind;

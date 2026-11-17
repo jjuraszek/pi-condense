@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,8 @@ import { ToolCallIndexer } from "./indexer.js";
 import { detectChains } from "./chain-detector.js";
 import { expectNoOrphanToolResults } from "./test-support.js";
 import { supersededStub } from "./supersede.js";
-import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
+import { DiagnosticSink } from "./diagnostics.js";
+import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_DIAGNOSTIC, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
 
 function closedChainBranch(endMs: number, count: number): any[] {
   const branch: any[] = [];
@@ -103,7 +104,7 @@ async function boot(branch: any[], hasUI: boolean, config: Record<string, unknow
     await fire("before_agent_start", { messageType, prompt: "Continue.", systemPrompt: "" });
   };
   const compact = () => commands.get("pruner").handler("compact", ctx);
-  return { fire, appended, restore, request, submit, compact, ctx };
+  return { fire, appended, restore, request, submit, compact, ctx, pi };
 }
 
 function summarizedBranch(endMs: number) {
@@ -147,6 +148,77 @@ function summarizedBranch(endMs: number) {
 }
 
 describe("idle cleanup", () => {
+  it.each([
+    { failure: "before the first append", successfulAppends: 0 },
+    { failure: "after one append", successfulAppends: 1 },
+  ])("continues the prompt on failure $failure, preserving partial cleanup across retries and reload", async ({ successfulAppends }) => {
+    const endMs = Date.now() - 240 * 60_000;
+    const branch = closedChainBranch(endMs, 4);
+    const path = "/project/skills/review/SKILL.md";
+    for (const i of [0, 12]) {
+      const call = branch[i + 1].message.content[0];
+      call.name = "read";
+      call.arguments = { path };
+      branch[i + 2].message.toolName = "read";
+    }
+    const newerRead = branch.splice(12);
+    const harness = await boot(branch, false);
+    const report = spyOn(DiagnosticSink.prototype, "report");
+    const append = harness.pi.appendEntry;
+    let failing = true;
+    const appendSpy = spyOn(harness.pi, "appendEntry").mockImplementation((type: string, data: any) => {
+      if (failing && type === CUSTOM_TYPE_CHAIN &&
+          harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN).length === successfulAppends) {
+        throw new Error("idle append failed");
+      }
+      return append(type, data);
+    });
+    let partialBranch: any[];
+    let partialRequest: any[];
+    try {
+      await harness.request(); // Consume the cold floor before the covering read exists.
+      branch.push(...newerRead);
+      const before = await harness.request();
+      expect(before.find((m: any) => m.timestamp === branch[2].message.timestamp)).toEqual(branch[2].message);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(harness.submit()).resolves.toBeUndefined();
+        expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(successfulAppends);
+      }
+      expect(report).toHaveBeenCalledWith("idle-cleanup-failed", String(endMs), expect.stringContaining("idle append failed"));
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_DIAGNOSTIC)).toHaveLength(1);
+      partialRequest = (await harness.request()).slice(0, -1);
+      expect(partialRequest.filter((m: any) => m.role === "toolResult" && m.toolName === "bash")).toHaveLength(2 - successfulAppends);
+      expect(partialRequest.find((m: any) => m.timestamp === branch[2].message.timestamp).content[0].text).toBe(supersededStub(path));
+      expect(partialRequest.find((m: any) => m.timestamp === newerRead[2].message.timestamp)).toEqual(newerRead[2].message);
+      expect(partialRequest.filter((m: any) => m.content?.[0]?.text?.startsWith("<compressed-chain"))).toHaveLength(successfulAppends);
+      expectNoOrphanToolResults(partialRequest);
+      partialBranch = structuredClone(branch);
+
+      failing = false;
+      await harness.submit();
+      const compressed = harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN);
+      expect(compressed).toHaveLength(2);
+      expect(new Set(compressed.map((entry) => entry.data.startUserTimestamp)).size).toBe(2);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_DIAGNOSTIC)).toHaveLength(1);
+      expect((await harness.request()).filter((m: any) => m.role === "toolResult" && m.toolName === "bash")).toHaveLength(0);
+    } finally {
+      appendSpy.mockRestore();
+      report.mockRestore();
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+    const reloaded = await boot(partialBranch!, false);
+    try {
+      expect((await reloaded.request()).slice(0, -1)).toEqual(partialRequest!);
+      await reloaded.submit();
+      expect(reloaded.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(2 - successfulAppends);
+      expectNoOrphanToolResults(await reloaded.request());
+    } finally {
+      await reloaded.fire("session_shutdown");
+      reloaded.restore();
+    }
+  });
+
   it.each([
     { minutes: 0.5, age: 0.25, hasUI: false, compressed: 0 },
     { minutes: 0.5, age: 1, hasUI: false, compressed: 3 },

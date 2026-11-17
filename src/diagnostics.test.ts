@@ -46,7 +46,7 @@ describe("DiagnosticSink", () => {
 
   test("counts are per kind and start at zero", () => {
     const { sink } = sinkWithLog();
-    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0 });
+    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0, "idle-cleanup-failed": 0 });
     sink.report("orphan-sweep", "a,b", "swept 2");
     expect(sink.counts()["orphan-sweep"]).toBe(1);
   });
@@ -95,8 +95,9 @@ describe("DiagnosticSink", () => {
     const { sink } = sinkWithLog();
     sink.report("unresolved-range", "b5", "x");
     sink.report("orphan-sweep", "a", "y");
+    sink.report("idle-cleanup-failed", "1000", "append failed");
     sink.reset();
-    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0 });
+    expect(sink.counts()).toEqual({ "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0, "idle-cleanup-failed": 0 });
   });
 
   test("reset() allows a previously-seen (kind, dedupKey) to report again", () => {
@@ -113,11 +114,16 @@ describe("DiagnosticSink", () => {
   });
 });
 
-test("counts backfill-empty like any other kind", () => {
-  const appended: Array<{ type: string; data: any }> = [];
-  const sink = new DiagnosticSink((type, data) => appended.push({ type, data }));
-  sink.report("backfill-empty", "b5", "middleCount=0");
-  sink.report("backfill-empty", "b5", "middleCount=0"); // deduped
-  expect(sink.counts()["backfill-empty"]).toBe(1);
-  expect(appended.length).toBe(1);
+test.each([
+  { kind: "backfill-empty", key: "b5", nextKey: "b6", detail: "middleCount=0" },
+  { kind: "idle-cleanup-failed", key: "1000", nextKey: "2000", detail: "append failed" },
+] as const)("counts $kind once per key and counts a new key separately", ({ kind, key, nextKey, detail }) => {
+  const { sink, appended } = sinkWithLog();
+  sink.report(kind, key, detail);
+  sink.report(kind, key, detail);
+  expect(sink.counts()[kind]).toBe(1);
+  expect(appended).toHaveLength(1);
+  sink.report(kind, nextKey, detail);
+  expect(sink.counts()[kind]).toBe(2);
+  expect(appended).toHaveLength(2);
 });
