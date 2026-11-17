@@ -9,7 +9,9 @@ async function child() {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const { SUBJECT_MODEL, SUMMARIZER_MODELS, JUDGE_MODEL } = await import("./config");
   const [id, control, dir] = process.argv.slice(3);
-  const scenario = structuredClone((await import(`./scenarios/${id}.ts`)).default);
+  const suite = id.startsWith("skill-gate-reply") ? "idle" : "standard";
+  const scenario = structuredClone((await import(`./${suite === "idle" ? "scenarios-idle" : "scenarios"}/${id}.ts`)).default);
+  if (control === "wrong-arm") scenario.seedAgeMinutes = scenario.twinOf ? 0 : 240;
   if (control === "trivial") for (const turn of scenario.history) if (turn.role === "result") turn.text = "tiny";
   if (control === "missing-index") {
     scenario.history.push({ role: "assistant", toolCalls: [{ id: "protected", name: "read", arguments: { path: "/orbital-ledger/skills/demo/SKILL.md" } }] }, { role: "result", toolCallId: "protected", toolName: "read", text: "protected".repeat(500) });
@@ -67,7 +69,7 @@ async function child() {
       return stream;
     },
   };
-  const result = await runJob({ scenario, summarizer: SUMMARIZER_MODELS[0], runIndex: 0, jobPath: dir, operatorAgentDir: join(dir, "operator"), repo, runtime: runtime as any, ...(control === "disabled" ? { settings: { enabled: false } } : {}) });
+  const result = await runJob({ scenario, summarizer: SUMMARIZER_MODELS[0], runIndex: 0, jobPath: dir, operatorAgentDir: join(dir, "operator"), repo, suite, runtime: runtime as any, ...(control === "disabled" ? { settings: { enabled: false } } : {}) });
   console.log(JSON.stringify(result));
 }
 
@@ -75,7 +77,7 @@ if (process.argv[2] === "--child") {
   await child();
 } else {
   const { test, expect } = await import("bun:test");
-  const { PIPELINE_SETTINGS, SUMMARIZER_MODELS } = await import("./config");
+  const { PIPELINE_SETTINGS, IDLE_PIPELINE_SETTINGS, SUMMARIZER_MODELS } = await import("./config");
   async function run(id: string, control = "normal") {
     const dir = await mkdtemp(join(tmpdir(), "condense-lifecycle-"));
     const child = Bun.spawn([process.execPath, import.meta.path, "--child", id, control, dir], { env: { ...process.env, PI_CODING_AGENT_DIR: join(dir, "agent") }, stdout: "pipe", stderr: "pipe" });
@@ -95,11 +97,23 @@ if (process.argv[2] === "--child") {
     expect(JSON.parse(await readFile(join(dir, "job.json"), "utf8"))).toEqual(result);
     expect(JSON.stringify(result)).not.toContain("private error text");
     expect(JSON.stringify(result)).not.toContain("synthetic-offline");
-    expect(JSON.parse(await readFile(join(dir, "agent/settings.json"), "utf8"))).toEqual({ contextPrune: { ...PIPELINE_SETTINGS, summarizerModel: SUMMARIZER_MODELS[0], ...(control === "disabled" ? { enabled: false } : {}) } });
+    expect(JSON.parse(await readFile(join(dir, "agent/settings.json"), "utf8"))).toEqual({ contextPrune: { ...(id.startsWith("skill-gate-reply") ? IDLE_PIPELINE_SETTINGS : PIPELINE_SETTINGS), summarizerModel: SUMMARIZER_MODELS[0], ...(control === "disabled" ? { enabled: false } : {}) } });
     expect(await readdir(join(dir, "cwd"))).toEqual([]);
     expect(await readdir(join(dir, "agent"))).not.toContain("auth.json");
     return result;
   }
+  test.each(["skill-gate-reply", "skill-gate-reply-paused"])("%s proves the real SDK idle arm before scoring", async id => {
+    const result = await run(id);
+    expect(result.status).toBe("ok");
+    expect(result.verdict).toBe("pass");
+    const outgoing = result.records.find((r: any) => r.phase === "subject").context.messages;
+    expect(JSON.stringify(outgoing).includes("<compressed-chain")).toBe(id.endsWith("-paused"));
+    expect(JSON.stringify(outgoing)).toContain("COBALT_DRAFT");
+    expect(result.shortRefs.map((r: string[]) => r[1])).toEqual(["call_inventory"]);
+    const wrong = await run(id, "wrong-arm");
+    expect(wrong.errorReason).toBe("error:idle-arm");
+    expect(wrong.callCounts.judge).toBe(0);
+  }, 60000);
   test.each(ids)("%s traverses real SDK flush, pruning, recovery and scoring", async id => {
     const result = await run(id);
     expect(result.status).toBe("ok");

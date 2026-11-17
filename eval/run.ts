@@ -5,15 +5,15 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { InMemoryModelsStore, InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { SUBJECT_MODEL, SUBJECT_THINKING_LEVEL, SUMMARIZER_MODELS, JUDGE_MODEL, RUNS_PER_CASE, PIPELINE_SETTINGS, RETRY_POLICY, concurrency, settingsHash, subjectPromptHash, corpusHash } from "./config";
+import { SUBJECT_MODEL, SUBJECT_THINKING_LEVEL, SUMMARIZER_MODELS, JUDGE_MODEL, RUNS_PER_CASE, PIPELINE_SETTINGS, IDLE_PIPELINE_SETTINGS, RETRY_POLICY, concurrency, settingsHash, subjectPromptHash, corpusHash } from "./config";
 import { judgePromptHash } from "./judge";
 import { observe, sumMeasurements } from "./observer";
-import { renderReport, readReport, validateBaseline, assertCompatible, compareReports, header, hasErrors, baselineEstimate, type Report } from "./report";
+import { renderReport, readReport, validateBaseline, assertCompatible, compareReports, compareIdleTwins, header, hasErrors, baselineEstimate, type Report } from "./report";
 import type { Scenario } from "./scenario";
 
-const help = 'Usage: npm run eval -- --change "<what changed>"\n       npm run eval -- --baseline\nOptions: --compare --change <text>, --baseline, --summarizer <id>, --runs <n>; EVAL_CONCURRENCY sets the positive pool limit.';
+const help = 'Usage: npm run eval -- --change "<what changed>"\n       npm run eval -- --baseline\nOptions: --idle --change <text>, --compare --change <text>, --baseline, --summarizer <id>, --runs <n>; EVAL_CONCURRENCY sets the positive pool limit.';
 export function parseArgs(args: string[], env: Record<string, string | undefined> = process.env) {
-  let baseline = false, compare = false, change = "", runs = RUNS_PER_CASE, selected: string | undefined;
+  let baseline = false, compare = false, idle = false, change = "", runs = RUNS_PER_CASE, selected: string | undefined;
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -21,6 +21,7 @@ export function parseArgs(args: string[], env: Record<string, string | undefined
     seen.add(flag);
     if (flag === "--baseline") baseline = true;
     else if (flag === "--compare") compare = true;
+    else if (flag === "--idle") idle = true;
     else if (["--change", "--runs", "--summarizer"].includes(flag)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw Error(`Missing value for ${flag}\n${help}`);
@@ -29,10 +30,10 @@ export function parseArgs(args: string[], env: Record<string, string | undefined
       if (flag === "--summarizer") selected = value;
     } else throw Error(`Unknown flag ${flag}\n${help}`);
   }
-  if ((baseline && (compare || seen.has("--change"))) || (!baseline && !change)) throw Error(help);
+  if ((idle && (baseline || compare)) || (baseline && (compare || seen.has("--change"))) || (!baseline && !change)) throw Error(help);
   if (baseline && runs !== RUNS_PER_CASE) throw Error(`--baseline requires --runs ${RUNS_PER_CASE}`);
   if (selected && !SUMMARIZER_MODELS.includes(selected as any)) throw Error(`Unknown summarizer ${selected}`);
-  return { mode: baseline ? "baseline" as const : "compare" as const, change, runs, summarizers: selected ? [selected] : [...SUMMARIZER_MODELS], concurrency: concurrency(env) };
+  return { mode: idle ? "idle" as const : baseline ? "baseline" as const : "compare" as const, change, runs, summarizers: selected ? [selected] : [...SUMMARIZER_MODELS], concurrency: concurrency(env) };
 }
 interface PreflightSeams {
   git(args: string[]): Promise<string>;
@@ -67,7 +68,7 @@ export async function retryJob(base: string, run: (dir: string) => Promise<any>,
     const result = await run(`${base}/attempt-${attempt + 1}`);
     const terminal = result.records?.at(-1);
     const retry = terminal?.retry;
-    const forbidden = ["error:summarizer", "error:summarizer-fallback", "error:isolation", "error:extension", "error:no-flush", "error:not-pruned"];
+    const forbidden = ["error:summarizer", "error:summarizer-fallback", "error:isolation", "error:extension", "error:no-flush", "error:not-pruned", "error:idle-arm"];
     const retryable = result.status === "error" && !forbidden.includes(result.errorReason) && terminal?.phase !== "summarizer" && terminal?.status !== "ok" && retry?.retryable === true && (retry.kind === "transport" || (retry.kind === "http" && retry.httpStatus === 429));
     if (!retryable || attempt === RETRY_POLICY.retries) {
       const wasted = history.flatMap(j => j.records ?? []);
@@ -129,17 +130,20 @@ export const baselineName = (summarizer: string) => {
 export async function main(args: string[], seams: MainSeams = defaults): Promise<number> {
   const options = parseArgs(args, seams.env);
   const { revision, operatorAgentDir } = await preflight(seams, options.summarizers);
-  const scenarioDir = join(seams.repo, "eval/scenarios");
+  const suite = options.mode === "idle" ? "idle" : "standard";
+  const settings = suite === "idle" ? IDLE_PIPELINE_SETTINGS : PIPELINE_SETTINGS;
+  const scenarioDir = join(seams.repo, suite === "idle" ? "eval/scenarios-idle" : "eval/scenarios");
   const files = (await seams.files(scenarioDir)).filter(f => f.endsWith(".ts")).sort();
   const scenarios = await Promise.all(files.map(f => seams.load(join(scenarioDir, f))));
   const corpus = corpusHash(await Promise.all(files.map(async path => ({ path, bytes: await seams.read(join(scenarioDir, path)) }))));
   const versions = seams.versions(), date = seams.now().toISOString();
   const reports: Report[] = options.summarizers.map(summarizer => ({
-    key: { SUBJECT_MODEL, subjectPromptHash: subjectPromptHash(), SUBJECT_THINKING_LEVEL, summarizer, JUDGE_MODEL, judgePromptHash: judgePromptHash(), settingsHash: settingsHash(), corpusHash: corpus, RUNS_PER_CASE: options.runs },
-    versions, revision, date, scenarios, jobs: [], settings: { ...PIPELINE_SETTINGS, summarizerModel: summarizer }, change: options.change,
+    key: { SUBJECT_MODEL, subjectPromptHash: subjectPromptHash(), SUBJECT_THINKING_LEVEL, summarizer, JUDGE_MODEL, judgePromptHash: judgePromptHash(), settingsHash: settingsHash(settings), corpusHash: corpus, RUNS_PER_CASE: options.runs },
+    versions, revision, date, scenarios, jobs: [], settings: { ...settings, summarizerModel: summarizer }, change: options.change,
   }));
   const baselines = new Map<string, Report>();
   for (const r of reports) {
+    if (options.mode === "idle") { seams.print(header(r)); continue; }
     const name = String(r.key.summarizer);
     let previous: Report | undefined;
     try { previous = readReport(await seams.read(join(seams.repo, "eval/baseline", baselineName(name)))); }
@@ -168,7 +172,7 @@ export async function main(args: string[], seams: MainSeams = defaults): Promise
         await seams.mkdir(jobPath);
         const env = { ...seams.env, PI_CODING_AGENT_DIR: join(jobPath, "agent") };
         try {
-          await seams.spawn([process.execPath, join(seams.repo, "eval/session.ts"), job.scenario.id, job.summarizer, String(job.runIndex), jobPath, operatorAgentDir, seams.repo], env, jobPath, join(jobPath, "subprocess.log"));
+          await seams.spawn([process.execPath, join(seams.repo, "eval/session.ts"), job.scenario.id, job.summarizer, String(job.runIndex), jobPath, operatorAgentDir, seams.repo, suite], env, jobPath, join(jobPath, "subprocess.log"));
           return JSON.parse(await seams.read(join(jobPath, "job.json")));
         } catch { return { status: "error", verdict: "error", errorReason: "error:job", reply: "", records: [] }; }
       }, seams.sleep);
@@ -185,7 +189,11 @@ export async function main(args: string[], seams: MainSeams = defaults): Promise
       const path = join(dir, basename);
       await seams.write(path, text);
       seams.print(`Report: ${path}; retries: ${r.jobs.reduce((n, j) => n + j.attempts - 1, 0)}`);
-      if (options.mode === "compare") { const comparison = compareReports(baselines.get(String(r.key.summarizer))!, r, options.change); seams.print(comparison.text); exitCode = Math.max(exitCode, comparison.exitCode); }
+      if (options.mode === "compare" || options.mode === "idle") {
+        const comparison = options.mode === "idle" ? compareIdleTwins(r) : compareReports(baselines.get(String(r.key.summarizer))!, r, options.change);
+        seams.print(comparison.text);
+        exitCode = Math.max(exitCode, comparison.exitCode);
+      }
     }
     return exitCode;
   } finally {

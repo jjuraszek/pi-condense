@@ -3,7 +3,7 @@ import type { AssistantMessage, ToolCall, ToolResultMessage, UserMessage } from 
 
 export type SeedTurn =
   | { role: "user"; text: string }
-  | { role: "assistant"; text?: string; toolCalls?: Omit<ToolCall, "type">[] }
+  | { role: "assistant"; text?: string; toolCalls?: Omit<ToolCall, "type">[]; stopReason?: "error" | "aborted" }
   | { role: "result"; toolCallId: string; toolName: string; text: string; isError?: boolean };
 
 export type Scenario = {
@@ -12,12 +12,15 @@ export type Scenario = {
   tests: string;
   history: SeedTurn[];
   probe: string;
+  seedAgeMinutes?: number;
+  twinOf?: string;
+  unsummarizedIds?: string[];
   mechanical: { contains?: string[]; recovers?: { id: string; evidence: string }[] };
   judged?: { oracle: string; expected: string };
 };
 
-export function seedEntries(history: SeedTurn[]): FileEntry[] {
-  const epoch = Date.UTC(2026, 0, 1);
+export function seedEntries(history: SeedTurn[], endMs = Date.now()): FileEntry[] {
+  const epoch = endMs - Math.max(0, history.length - 1) * 1000;
   const entries: FileEntry[] = [{ type: "session", version: CURRENT_SESSION_VERSION, id: "seed-session", timestamp: new Date(epoch).toISOString(), cwd: "/orbital-ledger" }];
   history.forEach((turn, i) => {
     const timestamp = epoch + i * 1000;
@@ -27,7 +30,7 @@ export function seedEntries(history: SeedTurn[]): FileEntry[] {
     else message = {
       role: "assistant", content: [...(turn.text ? [{ type: "text" as const, text: turn.text }] : []), ...(turn.toolCalls ?? []).map(c => ({ type: "toolCall" as const, ...c }))],
       api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-5-5", timestamp,
-      stopReason: turn.toolCalls?.length ? "toolUse" : "stop",
+      stopReason: turn.stopReason ?? (turn.toolCalls?.length ? "toolUse" : "stop"),
       // Synthetic history has no measured provider usage.
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     };

@@ -3,9 +3,9 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 7
+iterations: 8
 allowance: 10
-returned: 10 | home | 0462d3b714ee109db4120ad1f4cae8db916f37db
+returned: 11 | home | a3845257a8b9311868bde1890ce3a7274f1fc542
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -19,7 +19,7 @@ returned: 10 | home | 0462d3b714ee109db4120ad1f4cae8db916f37db
 | 8 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 54 passed, 0 failed; longer declared lifetimes delay cleanup with strict boundary checks; the real helper selects long only for PI_CACHE_RETENTION=long and short for short, none, or unset |
 | 9 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 58 passed, 0 failed; no declared lifetime keeps a 60-minute request unchanged and compresses after 240 minutes; the handler uses the threshold when promptCache or its active retention tier is missing |
 | 10 | done | 2 | timeout -k 30 60 bun test ./src/config.test.ts ./src/commands.test.ts ./src/idle-cleanup.integration.test.ts; 130 passed, 0 failed; invalid array settings fall back to 180 without a callback timeout; custom durations and all four settings presets pass |
-| 11 | open | 0 | |
+| 11 | failed | 1 | timeout -k 30 10 bash -c 'test -z "$(git status --porcelain)"'; unreachable: clean candidate tree for paid twins - committed checkout before ledger dispatch; 127 targeted offline checks passed across scenarios-idle, session, report, and lifecycle tests; paid skill comparison not run |
 | 12 | open | 0 | |
 | 13 | open | 0 | |
 
@@ -36,3 +36,4 @@ row 8 done | Checks prove longer declared cache lifetimes delay cleanup through 
 row 9 done | Checks prove the threshold alone controls cleanup when a model lacks a cache lifetime for the active retention tier. | Reuse the undeclared-lifetime cases in src/idle-cleanup.integration.test.ts for models missing promptCache or its long tier.
 row 10 failed | Added threshold normalization, settings presets, and custom-duration checks, but the empty-array config case timed out after 5 s. | Keep the implementation and docs, wrap invalid inputs in object cases to avoid Bun's done-callback interpretation of [], then rerun the three-file check.
 row 10 done | Wrapped invalid thresholds in object cases, fixing the array-case timeout and passing all 130 configuration, settings, and idle-cleanup checks. | Reuse src/config.test.ts object-wrapped cases to check invalid array inputs without Bun interpreting them as callback tests.
+row 11 failed | Added idle skill twins, isolated runner settings, and request-arm proofs with 127 passing offline checks, but the paid comparison requires a clean tree. | Run --idle from the clean committed checkout before redispatch; reuse compareIdleTwins in eval/report.ts for local report checks.

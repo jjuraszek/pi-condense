@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { parseArgs, pool, retryJob, preflight, main, baselineName, installedVersions, type MainSeams } from "./run";
-import { renderReport, compareReports, readReport, assertCompatible, measurement, header, jobTotal, baselineEstimate } from "./report";
+import { renderReport, compareReports, compareIdleTwins, readReport, assertCompatible, measurement, header, jobTotal, baselineEstimate } from "./report";
 import { SUBJECT_MODEL, JUDGE_MODEL, SUMMARIZER_MODELS } from "./config";
 import { sumMeasurements } from "./observer";
 import * as observer from "./observer";
@@ -22,6 +22,15 @@ describe("paid CLI safety", () => {
     expect(parseArgs(["--change", "fix"]).mode).toBe("compare");
     expect(parseArgs(["--baseline"]).summarizers).toEqual([...SUMMARIZER_MODELS]);
     expect(() => parseArgs(["--baseline"], { EVAL_CONCURRENCY: "0" })).toThrow();
+  });
+  test.each([
+    ["--idle"], ["--idle", "--baseline"], ["--idle", "--compare", "--change", "x"],
+    ["--idle", "--baseline", "--change", "x"],
+  ].map(args => ({ args })))("idle rejects incompatible or unannotated invocation %j", ({ args }) => {
+    expect(() => parseArgs(args)).toThrow();
+  });
+  test("idle requires a change and keeps the selected run count", () => {
+    expect(parseArgs(["--idle", "--change", "twins", "--runs", "1", "--summarizer", SUMMARIZER_MODELS[0]])).toMatchObject({ mode: "idle", runs: 1, summarizers: [SUMMARIZER_MODELS[0]] });
   });
   test("dirty tracked and untracked trees never initialize runtime", async () => {
     for (const status of [" M file", "?? file"]) {
@@ -223,6 +232,21 @@ function harness(verdict = "fail") {
 }
 
 describe("offline orchestration boundary", () => {
+  test("idle loads only twins, never reads or writes a baseline, and retains pair metadata", async () => {
+    const h = harness("pass");
+    h.seams.files = async path => { expect(path).toBe("/repo/eval/scenarios-idle"); return ["fresh.ts", "paused.ts"]; };
+    h.seams.load = async path => ({ ...scenario, id: path.endsWith("fresh.ts") ? "fresh" : "paused", ...(path.endsWith("paused.ts") ? { twinOf: "fresh", seedAgeMinutes: 240 } : {}) });
+    const read = h.seams.read;
+    h.seams.read = async path => { expect(path).not.toContain("baseline"); return read(path); };
+    expect(await main(["--idle", "--change", "twins", "--summarizer", SUMMARIZER_MODELS[0]], h.seams)).toBe(0);
+    expect(h.spawns).toHaveLength(6);
+    expect(h.spawns.every(s => s.args.at(-1) === "idle")).toBe(true);
+    expect([...h.writes.keys()].some(p => p.includes("baseline"))).toBe(false);
+    expect(h.messages.join("\n")).toContain("fresh 3/3, paused 3/3");
+    const r = readReport(h.writes.get(`/temp/${baselineName(SUMMARIZER_MODELS[0])}`)!);
+    expect(r.scenarios.find(s => s.id === "paused")?.twinOf).toBe("fresh");
+    expect((r.settings as any).chainCompression.idleCleanupMinutes).toBe(180);
+  });
   test("7x3 per model writes failing baselines only after all jobs and isolates environments", async () => {
     const h = harness();
     h.seams.write = async (path, text) => { expect(h.spawns.length).toBe(42); h.writes.set(path, text); };
@@ -342,6 +366,23 @@ describe("offline orchestration boundary", () => {
     for (let i = 0; i < 7; i++) expect(h.messages.join("\n")).toContain(`case-${i}: baseline 0/3 -> candidate 0/3 =`);
     expect(h.messages.at(-1)).toBe("Retained evidence: /temp");
   });
+});
+
+test.each([
+  { fresh: 3, paused: 3, label: "PASS", exit: 0 },
+  { fresh: 3, paused: 2, label: "REGRESSION CANDIDATE", exit: 1 },
+  { fresh: 2, paused: 3, label: "INCONCLUSIVE", exit: 1 },
+  { fresh: 0, paused: 0, label: "INCONCLUSIVE", exit: 1 },
+])("idle twin floor fresh $fresh paused $paused", ({ fresh, paused, label, exit }) => {
+  const r = { ...report(), scenarios: [{ ...scenario, id: "fresh" }, { ...scenario, id: "paused", twinOf: "fresh" }], jobs: ["fresh", "paused"].flatMap(id => Array.from({ length: 3 }, (_, i) => ({ ...job(i < (id === "fresh" ? fresh : paused) ? "pass" : "fail"), scenario: id, runIndex: i }))) };
+  const comparison = compareIdleTwins(r);
+  expect(comparison.exitCode).toBe(exit);
+  expect(comparison.text).toContain(`fresh ${fresh}/3, paused ${paused}/3`);
+  expect(comparison.text).toContain(label);
+  for (const broken of [[], r.jobs.slice(1), [...r.jobs, r.jobs[0]], [{ ...r.jobs[0], status: "error" }, ...r.jobs.slice(1)]]) {
+    expect(compareIdleTwins({ ...r, jobs: broken }).exitCode).toBe(1);
+  }
+  expect(compareIdleTwins({ ...r, scenarios: [r.scenarios[0]] }).exitCode).toBe(1);
 });
 
 test.each([

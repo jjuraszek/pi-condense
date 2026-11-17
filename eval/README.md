@@ -44,6 +44,20 @@ Recovery outcomes are `hit` (correct source with evidence), `not-found` (matchin
 
 The frozen Opus judge scores judged cases only after mechanical gates pass. It receives the complete synthetic oracle, expected behavior, probe, reply, and ordered tool calls, not raw conversation history. The oracle includes every permitted fixture observation so unsupported claims fail. Judge JSON is `{ "pass": boolean, "reason": string }`; a surrounding JSON code fence is normalized. Malformed output gets one additional judge attempt, then an execution error. Scoring is hands-free, with no manual adjudication. Frozen model/prompt identity does not make sampling deterministic.
 
+## Idle twins
+
+```bash
+npm run eval -- --idle --summarizer anthropic/claude-haiku-5-5 --change "idle cleanup twins"
+```
+
+`--idle` runs only [scenarios-idle/](scenarios-idle/), not the seven-case baseline corpus. It requires `--change`, rejects `--baseline` and `--compare`, and accepts the same summarizer and repetition options. It never reads or writes committed baselines. `IDLE_PIPELINE_SETTINGS` extends the frozen settings with `chainCompression.idleCleanupMinutes: 180`; `PIPELINE_SETTINGS` and the seven-case comparison hashes stay unchanged.
+
+The `skill-gate-reply` pair reads a synthetic pi-gauntlet skill, asks for A/B/C approval, and receives `B`. Passing means choosing the skill's `COBALT_DRAFT` step without applying the plan or choosing either other step. Fresh and paused twins share all history and scoring; only the paused twin ends its seed 240 minutes before the request. Standard and fresh scenarios end their one-second-spaced seed at job start, so they do not accidentally enter idle cleanup.
+
+Before scoring, each paused job proves every seeded closed chain has a persisted entry and a matching `<compressed-chain>` in the first subject request; a fresh job rejects that marker with `error:idle-arm`. Protected results stay verbatim without short refs. Ordinary results must be indexed and stubbed outside a compressed chain, or absent inside one; the retained summary remains visible. Fixture-declared unsummarized results must have no ref after the manual flush and stay raw outside a compressed chain. Jobs save `idleChainEntries` beside their recorded first request for inspection.
+
+The runner prints `fresh n/3, paused m/3`. Fresh below 3/3 is `INCONCLUSIVE`, even when paused ties or improves; a paused drop is `REGRESSION CANDIDATE`. Both exit 1, as do missing pairs, incomplete runs, and execution errors. Re-run a drop once without changing code, fixtures, settings, or models; two consecutive drops are a regression. Twin comparison needs no baseline capture; offline seed-clock and hash assertions protect the seven-case corpus.
+
 ## Baselines and comparisons
 
 The committed [Haiku baseline](baseline/claude-haiku-5-5.md) and [Luna baseline](baseline/gpt-6-luna.md) record source/corpus revision `6c292b403a0cc7d74eebe3fe646d9f2e793165e7`, captured on Pi SDK 1.5.0 (the earlier capture at `6e2bbdd503a04424f1999ad3f968e06009374acf` on SDK 1.4.0 scored Haiku 16/21 and Luna 15/21; the recapture moved Haiku `failed-fix-not-disproof` from 3/3 to 0/3 on identical main code, which is why it was redone). They record genuine behavioral failures: Haiku passed 15/21 and Luna 18/21, with no execution errors.

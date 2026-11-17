@@ -2,7 +2,9 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
-import { PIPELINE_SETTINGS, SUBJECT_MODEL, SUBJECT_SYSTEM_PROMPT, SUBJECT_THINKING_LEVEL, SUMMARIZER_MODELS } from "./config.js";
+import { IDLE_PIPELINE_SETTINGS, PIPELINE_SETTINGS, SUBJECT_MODEL, SUBJECT_SYSTEM_PROMPT, SUBJECT_THINKING_LEVEL, SUMMARIZER_MODELS } from "./config.js";
+import { isProtected } from "../src/protected.js";
+import { detectChains } from "../src/chain-detector.js";
 import { seedEntries, type Scenario } from "./scenario.js";
 import { observe, classifySummarizer, sumMeasurements, type CallRecord } from "./observer.js";
 import { buildShortRefMap, score, type ToolObservation, type Recovery } from "./judge.js";
@@ -14,6 +16,7 @@ export interface JobOptions {
   jobPath: string;
   operatorAgentDir: string;
   repo: string;
+  suite?: "standard" | "idle";
   runtime?: ModelRuntime;
   /** Offline negative control; CLI jobs always use the full pinned settings. */
   settings?: { enabled: false };
@@ -24,6 +27,43 @@ class JobError extends Error {
 }
 const text = (content: any): string => typeof content === "string" ? content : (content ?? []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
 const requireProof = (condition: unknown, reason: string) => { if (!condition) throw new JobError(reason); };
+
+function idleCalls(scenario: Scenario) {
+  return scenario.history.flatMap(turn => turn.role === "assistant" ? turn.toolCalls ?? [] : []).map(call => ({
+    ...call,
+    kind: isProtected(call.name, call.arguments, IDLE_PIPELINE_SETTINGS) ? "protected" : scenario.unsummarizedIds?.includes(call.id) ? "unsummarized" : "summarized",
+  }));
+}
+
+export function idleFlushIndexed(scenario: Scenario, refs: ReadonlyMap<string, string>): boolean {
+  const indexed = new Set(refs.values());
+  return idleCalls(scenario).every(call => indexed.has(call.id) === (call.kind === "summarized"));
+}
+
+export function assertIdleRequest({ scenario, seeded, branch, outgoing, refMap, summaries }: {
+  scenario: Scenario; seeded: any[]; branch: any[]; outgoing: any[];
+  refMap: ReadonlyMap<string, string>; summaries: { content: string }[];
+}): void {
+  const chains = branch.filter(e => e.type === "custom" && e.customType === "context-prune-chain").map(e => e.data)
+    .filter(e => outgoing.some(m => text(m.content).startsWith(`<compressed-chain id="${e.blockId}"`)));
+  const compressed = outgoing.some(m => text(m.content).startsWith("<compressed-chain"));
+  const closed = detectChains(seeded).filter(c => c.finalAssistantTimestamp !== null);
+  requireProof(scenario.twinOf ? closed.every(c => chains.some(e => e.startUserTimestamp === c.startUserTimestamp)) : !compressed, "error:idle-arm");
+  const bodies = outgoing.map(m => text(m.content));
+  requireProof(summaries.some(s => bodies.some(body => body.includes(s.content))), "error:not-pruned");
+  for (const call of idleCalls(scenario)) {
+    const raw = scenario.history.find(t => t.role === "result" && t.toolCallId === call.id);
+    requireProof(raw?.role === "result", "error:not-pruned");
+    const results = outgoing.filter(m => m.role === "toolResult" && m.toolCallId === call.id);
+    const inside = chains.some(e => e.droppedToolCallIds.includes(call.id));
+    if (call.kind === "protected") requireProof(bodies.some(body => body.includes(raw!.text!)), "error:not-pruned");
+    else if (call.kind === "unsummarized") requireProof(inside ? results.length === 0 : results.some(m => text(m.content) === raw!.text), "error:not-pruned");
+    else {
+      requireProof(!bodies.some(body => body.includes(raw!.text!)), "error:not-pruned");
+      requireProof(inside ? results.length === 0 : [...refMap].some(([ref, id]) => id === call.id && results.some(m => text(m.content) === `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`)), "error:not-pruned");
+    }
+  }
+}
 
 export async function runJob(options: JobOptions) {
   const started = performance.now();
@@ -43,6 +83,7 @@ export async function runJob(options: JobOptions) {
   let reason: string | undefined;
   let errorReason: string | undefined;
   let summaries: { content: string; details: unknown }[] = [];
+  let idleChainEntries: unknown[] = [];
   let shortRefs: [string, string][] = [];
   let flushMetrics: unknown[] = [];
   let extensionFailed = false;
@@ -52,7 +93,7 @@ export async function runJob(options: JobOptions) {
     requireProof((await readdir(cwd)).length === 0, "error:isolation");
     requireProof(resolve(process.env.PI_CODING_AGENT_DIR ?? "") === agentDir, "error:isolation");
     requireProof(SUMMARIZER_MODELS.includes(options.summarizer as any), "error:isolation");
-    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ contextPrune: { ...PIPELINE_SETTINGS, summarizerModel: options.summarizer, ...options.settings } }));
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ contextPrune: { ...(options.suite === "idle" ? IDLE_PIPELINE_SETTINGS : PIPELINE_SETTINGS), summarizerModel: options.summarizer, ...options.settings } }));
     const original = options.runtime ?? await ModelRuntime.create({ authPath: join(options.operatorAgentDir, "auth.json"), modelsPath: join(options.operatorAgentDir, "models.json"), modelsStorePath: join(agentDir, "models-cache.json") });
     const observed = observe(original);
     records = observed.records;
@@ -75,7 +116,9 @@ export async function runJob(options: JobOptions) {
     const [provider, id] = SUBJECT_MODEL.split("/");
     const model = observed.runtime.getModel(provider, id);
     requireProof(model, "error:model");
-    const manager = SessionManager.inMemory(cwd, undefined, seedEntries(options.scenario.history));
+    const seeded = seedEntries(options.scenario.history, Date.now() - (options.scenario.seedAgeMinutes ?? 0) * 60_000);
+    const seedMessages = seeded.filter(e => e.type === "message").map(e => e.message);
+    const manager = SessionManager.inMemory(cwd, undefined, seeded);
     ({ session } = await createAgentSession({ cwd, agentDir, model: model!, modelRuntime: sessionRuntime, resourceLoader: loader, sessionManager: manager, noTools: "builtin", thinkingLevel: SUBJECT_THINKING_LEVEL }));
     await session.bindExtensions({ onError: () => { extensionFailed = true; } });
     requireProof(!extensionFailed, "error:extension");
@@ -92,7 +135,7 @@ export async function runJob(options: JobOptions) {
     shortRefs = [...refMap];
     const indexed = new Set(refMap.values());
     const seededIds = options.scenario.history.flatMap(turn => turn.role === "assistant" ? (turn.toolCalls ?? []).map(c => c.id) : []);
-    const flushed = flushMetrics.some((m: any) => m.outcome === "summarized" && m.processedBatches >= 1) && seededIds.every(id => indexed.has(id));
+    const flushed = flushMetrics.some((m: any) => m.outcome === "summarized" && m.processedBatches >= 1) && (options.suite === "idle" ? idleFlushIndexed(options.scenario, refMap) : seededIds.every(id => indexed.has(id)));
     const [summaryProvider, summaryId] = options.summarizer.split("/");
     const summaryStatus = classifySummarizer(records, { provider: summaryProvider, id: summaryId }, flushed);
     requireProof(summaryStatus === "ok", summaryStatus);
@@ -115,7 +158,11 @@ export async function runJob(options: JobOptions) {
     const outgoing = first!.context.messages;
     const serialized = JSON.stringify(outgoing);
     const rawResults = options.scenario.history.filter(t => t.role === "result");
-    requireProof(rawResults.every(t => !serialized.includes(JSON.stringify(t.text).slice(1, -1))) && summaries.some(s => serialized.includes(JSON.stringify(s.content).slice(1, -1))) && seededIds.every(id => [...refMap].some(([ref, indexedId]) => indexedId === id && outgoing.some(m => m.role === "toolResult" && m.toolCallId === id && text(m.content) === `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`))), "error:not-pruned");
+    if (options.suite === "idle") {
+      idleChainEntries = manager.getBranch().filter(e => e.type === "custom" && e.customType === "context-prune-chain");
+      assertIdleRequest({ scenario: options.scenario, seeded: seedMessages, branch: idleChainEntries, outgoing, refMap, summaries });
+    }
+    else requireProof(rawResults.every(t => !serialized.includes(JSON.stringify(t.text).slice(1, -1))) && summaries.some(s => serialized.includes(JSON.stringify(s.content).slice(1, -1))) && seededIds.every(id => [...refMap].some(([ref, indexedId]) => indexedId === id && outgoing.some(m => m.role === "toolResult" && m.toolCallId === id && text(m.content) === `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`))), "error:not-pruned");
     requireProof(classifySummarizer(records, { provider: summaryProvider, id: summaryId }, flushed) === "ok", classifySummarizer(records, { provider: summaryProvider, id: summaryId }, flushed));
     requireProof(records.filter(r => r.phase === "subject").every(r => r.status === "ok" && r.requested.provider === provider && r.requested.id === id && r.answered?.provider === provider && r.answered.id === id), "error:subject");
     const messages = manager.getBranch().slice(before).filter(e => e.type === "message").map(e => (e as any).message);
@@ -151,6 +198,7 @@ export async function runJob(options: JobOptions) {
     finalAssistantIndex, verdict: verdict ?? "error", check: check ?? errorReason, reason: reason ?? errorReason,
     judgeOverhead: { calls: judgeRecords.length, usage: sumMeasurements(judgeRecords.map(r => r.measurements)), elapsedMs: judgeRecords.reduce((sum, r) => sum + r.elapsedMs, 0) },
     summaries, shortRefs, flushMetrics, records,
+    ...(options.suite === "idle" ? { idleChainEntries } : {}),
   };
   await mkdir(jobPath, { recursive: true });
   await writeFile(join(jobPath, "job.json"), JSON.stringify(result, null, 2));
@@ -158,14 +206,14 @@ export async function runJob(options: JobOptions) {
 }
 
 if (import.meta.main) {
-  const [scenarioId, summarizer, runIndex, jobPath, operatorAgentDir, repo] = process.argv.slice(2);
-  if (!scenarioId || !/^[a-z-]+$/.test(scenarioId) || !summarizer || !Number.isSafeInteger(Number(runIndex)) || !jobPath || !operatorAgentDir || !repo) {
-    console.error("Usage: bun eval/session.ts <scenario> <summarizer> <run-index> <job-path> <operator-agent-dir> <repo>");
+  const [scenarioId, summarizer, runIndex, jobPath, operatorAgentDir, repo, suite = "standard"] = process.argv.slice(2);
+  if (!scenarioId || !/^[a-z-]+$/.test(scenarioId) || !summarizer || !Number.isSafeInteger(Number(runIndex)) || !jobPath || !operatorAgentDir || !repo || !["standard", "idle"].includes(suite)) {
+    console.error("Usage: bun eval/session.ts <scenario> <summarizer> <run-index> <job-path> <operator-agent-dir> <repo> [standard|idle]");
     process.exitCode = 1;
   } else {
     try {
-      const scenario = (await import(`./scenarios/${scenarioId}.ts`)).default as Scenario;
-      const result = await runJob({ scenario, summarizer, runIndex: Number(runIndex), jobPath, operatorAgentDir, repo });
+      const scenario = (await import(`./${suite === "idle" ? "scenarios-idle" : "scenarios"}/${scenarioId}.ts`)).default as Scenario;
+      const result = await runJob({ scenario, summarizer, runIndex: Number(runIndex), jobPath, operatorAgentDir, repo, suite: suite as "standard" | "idle" });
       process.exitCode = result.status === "ok" ? 0 : 1;
     } catch {
       await mkdir(jobPath, { recursive: true });
