@@ -2270,6 +2270,51 @@ describe("final flush after the run settles (#37)", () => {
       expect(appended.slice(writtenBefore)).toEqual([]);
     });
 
+    it("/pruner now aborts without touching the stale UI and stops its progress timer", async () => {
+      const { handlers, commands, ctx, appended, widgets, notifications } = await finishedRun();
+      const { release, seen } = heldSummarizer();
+      const writtenBefore = appended.length;
+      const timersBefore = jest.getTimerCount();
+      const requestRender = jest.fn();
+      const setWidget = ctx.ui.setWidget;
+      ctx.ui.setWidget = (id: string, content: unknown) => {
+        setWidget(id, content);
+        if (typeof content === "function") content({ requestRender }, undefined);
+      };
+      const setStatus = jest.fn();
+      ctx.ui.setStatus = setStatus;
+
+      const command = commands.get("pruner")!("now", ctx);
+      const outcome = command.then(() => "resolved", (error) => error);
+      try {
+        await drainMicrotasks();
+        expect(seen.signal).toBeDefined();
+        const rendersBefore = requestRender.mock.calls.length;
+        jest.advanceTimersByTime(1000);
+        expect(requestRender.mock.calls.length).toBeGreaterThan(rendersBefore);
+        const uiCallsBefore = [widgets.length, notifications.length, setStatus.mock.calls.length];
+        const rendersAtShutdown = requestRender.mock.calls.length;
+
+        const down = handlers.get("session_shutdown")!(shutdown, ctx);
+        invalidate(ctx);
+        await down;
+
+        expect(seen.signal?.aborted).toBe(true);
+        expect(await isSettled(outcome)).toBe(true);
+        expect(await outcome).toBe("resolved");
+        expect(jest.getTimerCount()).toBe(timersBefore);
+        jest.advanceTimersByTime(1000);
+        expect(requestRender.mock.calls.length).toBe(rendersAtShutdown);
+        expect([widgets.length, notifications.length, setStatus.mock.calls.length]).toEqual(uiCallsBefore);
+        expect(appended.slice(writtenBefore)).toEqual([]);
+      } finally {
+        release();
+        await drainMicrotasks();
+      }
+
+      expect(appended.slice(writtenBefore)).toEqual([]);
+    });
+
     it("a budget flush in flight is aborted, releases the turn, and writes nothing", async () => {
       const { handlers, ctx, appended, branch } = await finishedRun({ autoBudgetThreshold: 0.5 });
       const { release, seen } = heldSummarizer();
