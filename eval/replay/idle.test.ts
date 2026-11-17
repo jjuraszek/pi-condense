@@ -123,12 +123,12 @@ test.each(["user", "final", "summary", "never summarized", "protected image", "o
   expect(JSON.stringify(report)).not.toContain(target);
 });
 
-test("idle permits only superseded protected reads and keeps the open turn's latest output", async () => {
+test.each(["read", "plan_tracker"])("idle permits a superseded protected %s and keeps the open turn's latest output", async tool => {
   const fixture = corpus();
   const entries = seedEntries([
     { role: "user", text: "Read the state." },
-    { role: "assistant", toolCalls: [{ id: "old", name: "read", arguments: { path: "state.md" } }] },
-    { role: "result", toolCallId: "old", toolName: "read", text: "Old protected state." },
+    { role: "assistant", toolCalls: [{ id: "old", name: tool, arguments: { path: "state.md" } }] },
+    { role: "result", toolCallId: "old", toolName: tool, text: "Old protected state." },
     { role: "assistant", text: "Read complete." },
     { role: "user", text: "Check the state again." },
     { role: "assistant", toolCalls: [{ id: "new", name: "read", arguments: { path: "state.md" } }] },
@@ -192,14 +192,15 @@ test("idle drops a deduplicated result's stub with its chain instead of restorin
 });
 
 test.each([
-  ["accepts", undefined, false],
-  ["rejects a lost chain body beside", "Earlier chain body.", true],
-  ["rejects a lost protected output beside", "Tracker state.", true],
-])("idle %s a superseded read's placeholder inside a chain compressed before the pause", async (_name, lost, violates) => {
+  ["accepts", "read", undefined, false],
+  ["accepts", "plan_tracker", undefined, false],
+  ["rejects a lost chain body beside", "read", "Earlier chain body.", true],
+  ["rejects a lost protected non-candidate output beside", "plan_tracker", "Tracker state.", true],
+])("idle %s a superseded protected %s placeholder inside a chain compressed before the pause", async (_name, tool, lost, violates) => {
   const fixture = pausedSession([
     { role: "user", text: "Read the state." },
-    { role: "assistant", toolCalls: [{ id: "old", name: "read", arguments: { path: "state.md" } }, { id: "tracker", name: "plan_tracker", arguments: {} }] },
-    { role: "result", toolCallId: "old", toolName: "read", text: "Old protected state." },
+    { role: "assistant", toolCalls: [{ id: "old", name: tool, arguments: { path: "state.md" } }, { id: "tracker", name: "plan_tracker", arguments: {} }] },
+    { role: "result", toolCallId: "old", toolName: tool, text: "Old protected state." },
     { role: "result", toolCallId: "tracker", toolName: "plan_tracker", text: "Tracker state." },
     { role: "assistant", text: "Read complete." },
     { role: "user", text: "Check the state again." },
@@ -217,7 +218,7 @@ test.each([
   }, losing(lost, cleaned));
   expect(report.returnsChecked).toBe(1);
   expect(report.violations > 0).toBe(violates);
-  expect(cleaned[0][1].content[0].text).toContain(`<protected-output tool="read">\n[Superseded: state.md`);
+  expect(cleaned[0][1].content[0].text).toContain(`<protected-output tool="${tool}">\n[Superseded: state.md`);
 });
 
 test("idle minutes override and argument validation", async () => {

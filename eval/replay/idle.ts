@@ -63,10 +63,10 @@ export function preservationViolations(before: any[], after: any[], compressed: 
       if (call && isProtected(call.name, call.input ?? call.args ?? call.arguments, config, message.nestedCalls)) protectedPositions.add(i);
     } else calls.clear();
   });
-  const waitingReads = (messages: any[]) => new Map(findSuperseded(messages, (name, args) => isProtected(name, args, config))
-    .filter(candidate => messages[candidate.resultIndex].toolName === "read").map(candidate => [candidate.resultIndex, candidate]));
-  const superseded = waitingReads(before), relocated = waitingReads(request);
-  // A chain compressed before the pause trades a waiting superseded read's block for the placeholder, and nothing else.
+  const waitingCandidates = (messages: any[]) => new Map(findSuperseded(messages, (name, args) => isProtected(name, args, config))
+    .map(candidate => [candidate.resultIndex, candidate]));
+  const superseded = waitingCandidates(before), relocated = waitingCandidates(request);
+  // A chain compressed before the pause trades a waiting superseded candidate's block for the placeholder, and nothing else.
   const withPlaceholders = (message: any): any => {
     const entry = registered.find(entry => textOf(message).startsWith(`<compressed-chain id="${entry.blockId}"`));
     const range = entry ? resolveRange(entry, request) : null;
