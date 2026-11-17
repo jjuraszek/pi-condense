@@ -485,6 +485,22 @@ describe("idle cleanup", () => {
     };
     let rendered: any[];
     try {
+      await harness.request(); // Consume session_start's cold floor before the covering read exists.
+      const older = fixture.protectedResults[0];
+      const callEntry = fixture.branch.find((entry) => entry.message?.content?.some((block: any) => block.type === "toolCall" && block.id === older.toolCallId));
+      const olderCall = callEntry.message.content.find((block: any) => block.type === "toolCall" && block.id === older.toolCallId);
+      const newer = {
+        ...older, toolCallId: "protected-newer", timestamp: older.timestamp + 1,
+        content: [{ type: "text", text: "Updated skill instructions." }],
+      };
+      callEntry.message.content.push({ ...olderCall, id: newer.toolCallId });
+      const olderIndex = fixture.branch.findIndex((entry) => entry.message === older);
+      fixture.branch.splice(olderIndex + 1, 0, { type: "message", timestamp: new Date(newer.timestamp).toISOString(), message: newer });
+      fixture.protectedResults.splice(1, 0, newer);
+      const before = await harness.request();
+      expect(before.find((m: any) => m.toolCallId === older.toolCallId)).toEqual(older);
+      expect(before.find((m: any) => m.toolCallId === newer.toolCallId)).toEqual(newer);
+
       if (idle) await harness.submit();
       else await harness.compact();
       const entries = harness.appended.filter((e) => e.type === CUSTOM_TYPE_CHAIN).map((e) => e.data);
@@ -496,7 +512,11 @@ describe("idle cleanup", () => {
       expect(bodies).toHaveLength(3);
       const storedBody = !idle && fuse ? "FUSED refers to {b1}." : fixture.summaries.slice(1).join("\n\n");
       const expectedBody = idle ? storedBody : storedBody.replace("{b1}", fixture.summaries[0]);
-      const protectedBody = fixture.protectedResults.map((m) => `\n\n<protected-output tool="${m.toolName}">\n${extractToolResultText(m)}\n</protected-output>`).join("");
+      const protectedBody = fixture.protectedResults.map((m) => {
+        const text = m === older ? supersededStub(olderCall.arguments.path) : extractToolResultText(m);
+        return `\n\n<protected-output tool="${m.toolName}">\n${text}\n</protected-output>`;
+      }).join("");
+      expect(bodies[1].content[0].text).not.toContain(extractToolResultText(older));
       expect(bodies[1].content[0].text).toBe(`<compressed-chain id="${entries[1].blockId}" tools="${entries[1].toolRefs.join(",")}">\n${expectedBody}${protectedBody}\n</compressed-chain>`);
       expect(bodies[0].content[0].text).toContain(`\n${fixture.summaries[0]}\n</compressed-chain>`);
       for (const entry of entries) expect(entry.literalSummary).toBe(idle ? true : undefined);
