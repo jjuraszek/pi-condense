@@ -60,6 +60,18 @@ Before scoring, each paused job proves every seeded closed chain has a persisted
 
 The runner prints `fresh n/3, paused m/3`. Fresh below 3/3 is `INCONCLUSIVE`, even when paused ties or improves; otherwise a paused drop is `REGRESSION CANDIDATE`. Both exit 1, as do missing pairs, incomplete runs, and execution errors. Re-run a drop once without changing code, fixtures, settings, or models; two consecutive drops are a regression and block delivery. Preserve both reports, repair the cause, and rerun only after a candidate change. An inconclusive pair requires a reliably solvable control before it can supply evidence. Reports stay in the temporary run directory, not in committed baselines.
 
+Recheck a saved idle report locally before using it as evidence:
+
+```bash
+bun eval/idle-evidence.ts <report.md> <fresh-scenario-id>
+```
+
+The first argument, `report.md`, is the saved Markdown report path. The second argument, `fresh-scenario-id`, is a fresh case id such as `skill-gate-reply` or `plan-progress-continue`, without the `-paused` suffix. This reads saved results and local checkout state; it does not rerun paid jobs.
+
+The check requires the default summarizer `anthropic/claude-haiku-5-5` at three runs per case. It requires the requested fresh pair to exist, validates every pair in the report, and rejects incomplete or errored jobs, an `INCONCLUSIVE` fresh control, or a `REGRESSION CANDIDATE`. It also checks comparison keys, settings, SDK versions, and evaluated code/fixtures against the current checkout.
+
+A nonzero exit means the saved report cannot support the claim for the current checkout. For stale code, fixtures, settings, or versions, evaluate a clean committed candidate with the idle command above and retain the new report; for inconclusive or regressed results, follow the control/confirmation procedure above.
+
 **Seven-case comparison boundary.** The [idle-cleanup spec](../doc/specs/2026-11-17-gh-39-idle-pause-cold-cleanup.md#paid-and-external-actions) authorizes targeted twins instead of a seven-case comparison or baseline recapture for this change. The seven-case corpus, pipeline settings, and committed baselines remain byte-identical. Offline checks in `scenarios-idle.test.ts` verify the corpus/settings hashes and fresh seed clock; the standard suite keeps its flush and request proofs in `session.ts`. These checks establish that idle cleanup is not due at the seeded probe, not that requests are byte-identical after changing the seed clock. Seed timestamps can enter model text through the deterministic body's `Span:` line; the seven-case fixtures summarize every seeded result, so their requests do not use that body. This code fact is not a paid seven-case measurement.
 
 The twins measure the default tracker configuration only. The [private-session replay](#private-session-replay) below compares summarizer inputs and retained summaries, not idle context renders or protected-tracker retention; it cannot substitute for structural idle-render evidence.
