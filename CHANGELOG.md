@@ -13,6 +13,10 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 - The first human prompt after more than 3 hours idle compresses eligible finished turns before its first request, including the newest turns normally kept raw, and replaces waiting superseded reads inside those turns. Cleanup keeps user messages, final answer text, stored summaries, protected output text, and never-summarized result text without fusing summaries or adding a model call. Assistant replies and cache warming restart the clock; a longer declared cache lifetime extends the threshold. Configure `chainCompression.idleCleanupMinutes` or choose a preset in `/pruner settings`; pruning and chain compression must be enabled in `agent-message` mode. (#39)
 
+### Changed
+
+- Minimum supported host is pi 1.5.1, up from 1.3.0: the idle cleanup calls pi-ai's `getPromptCacheTtlMs`, which pi 1.5.0 and older do not export. Dev dependencies on `@earendil-works/pi-ai`, `pi-coding-agent`, and `pi-tui` move from `^1.5.0` to `^1.5.1`.
+
 ## [2.17.2] - 2026-11-17
 
 ### Fixed
