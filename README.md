@@ -146,7 +146,7 @@ These are most informative for long single-chain sessions where Phase 3 (chain c
 
 Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense).
 
-Requires pi >= 1.3.0: the summarizer calls `ctx.modelRegistry.streamSimple()`, which is what lets a virtual (router-backed) model serve as the summarizer. Older hosts are unsupported; before pi 0.86.0 the method does not exist and every summarizer call fails with a `TypeError` notice.
+Requires pi >= 1.5.1: the idle cleanup reads a model's declared cache lifetime with pi-ai's `getPromptCacheTtlMs`, which pi 1.5.0 and older do not export. Older hosts are unsupported.
 
 **User scope** (all repos under your pi profile):
 
