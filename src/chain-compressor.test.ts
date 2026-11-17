@@ -100,6 +100,7 @@ describe("compressEligible", () => {
     return {
       getChainEntries: () => opts.chainEntries ?? [],
       hasPerBatchSummaryCoveringAny: (_ids: string[]) => opts.hasSummary ?? true,
+      isDedupAlias: () => false,
       getPerBatchSummariesForToolCallIds: (_ids: string[]) => opts.perBatchSummaries ?? [],
       getToolRefsForToolCallIds: (_ids: string[]) => opts.toolRefs ?? [],
       registerChain: (_entry: ChainCompressionEntry) => {},
@@ -661,6 +662,7 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
       indexer: {
         getChainEntries: () => [],
         hasPerBatchSummaryCoveringAny: () => false,
+        isDedupAlias: (_key: string) => false,
         getPerBatchSummariesForToolCallIds: () => [],
         getToolRefsForToolCallIds: () => opts.toolRefs ?? ["t1", "t2"],
         registerChain: (entry: ChainCompressionEntry) => registerChainCalls.push(entry),
@@ -725,6 +727,20 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
     expect(result.compressedEntries[0].protectedToolCallIds).toEqual(covered ? [keys[1]] : keys);
     expect(result.compressedEntries[0].bodySource).toBe(covered ? undefined : "deterministic");
     expect(backfillCalls).toHaveLength(0);
+  });
+
+  test.each(["dedup alias", "spilled"])("idle retention skips a %s occurrence the request already carries as a recovery stub", async (kind) => {
+    const messages = chainMessages();
+    const keys = [occKey("c1", 1050), occKey("c2", 1150)];
+    const [stubbed] = extractChainRecords(messages, uncoveredChain(), () => false);
+    const { deps } = makeDeterministicDeps({
+      messages, indexRecords: new Map(kind === "spilled" ? [[keys[0], { ...stubbed, spillPath: "/tmp/blob" }]] : []),
+    });
+    deps.indexer.isDedupAlias = (key: string) => kind === "dedup alias" && key === keys[0];
+    const result = await compressEligible(
+      [{ ...uncoveredChain(), middleOccurrenceKeys: keys }], 0, { ...deps, literalSummary: true } as any,
+    );
+    expect(result.compressedEntries[0].protectedToolCallIds).toEqual([keys[1]]);
   });
 
   test("custom-anchored uncovered chain still compresses deterministically and backfills", async () => {

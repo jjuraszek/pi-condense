@@ -178,7 +178,9 @@ export function applyChainCompressions(
     const inRangeBareIds: string[] = [];
     for (let i = startIndex + 1; i < endIndex; i++) {
       const msg = messages[i];
-      dropIndices.add(i);
+      // An idle entry keeps every summary word for word: one inside its range
+      // leaves only with the chain that owns it, whose body carries the text.
+      if (!(entry.literalSummary && isPerBatchSummaryMessage(msg))) dropIndices.add(i);
       if (msg.role === "toolResult") {
         inRangeBareIds.push(msg.toolCallId);
         droppedBareIds.add(msg.toolCallId);

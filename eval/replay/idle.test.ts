@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seedEntries } from "../scenario";
+import { seedEntries, type SeedTurn } from "../scenario";
 import { captureBatch, extractToolResultText } from "../../src/batch-capture";
 import { ToolCallIndexer } from "../../src/indexer";
-import { DEFAULT_CONFIG, CUSTOM_TYPE_SUMMARY } from "../../src/types";
+import { occKey } from "../../src/occurrence-key";
+import { DEFAULT_CONFIG, CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_SUMMARY } from "../../src/types";
 import { pruneMessages } from "../../src/pruner";
 import { parseIdleArgs, replayIdleSessions } from "./idle";
 import { replayMain } from "./run";
@@ -91,26 +92,31 @@ test("idle keeps partly summarized chains, owned summaries, protected image mark
   expect(report.violationRecords).toEqual([]);
 });
 
+// Renders like production, then loses `target` from every cleaned (second) render.
+function losing(target?: string, cleaned: any[][] = []): typeof pruneMessages {
+  let renders = 0;
+  return (...args) => {
+    const result = pruneMessages(...args);
+    if (++renders % 2 !== 0) return result;
+    if (target !== undefined) result.messages = result.messages.map(message => {
+      const copy = structuredClone(message);
+      if (typeof copy.content === "string") copy.content = copy.content.replaceAll(target, "LOST");
+      else for (const block of copy.content ?? []) {
+        if (block.type === "text") block.text = block.text.replaceAll(target, "LOST");
+        if (block.type === "toolCall" && block.arguments?.command === target) block.arguments.command = "LOST";
+      }
+      return copy;
+    });
+    cleaned.push(result.messages);
+    return result;
+  };
+}
+
 test.each(["user", "final", "summary", "never summarized", "protected image", "open message"])("idle fails a seeded %s preservation violation without leaking content", async kind => {
   const fixture = preservationCorpus();
   const target = { user: "Start synthetic work.", final: "First final answer.", summary: fixture.summary,
     "never summarized": fixture.never, "protected image": fixture.marker, "open message": "OPEN_ARGUMENT_BYTES" }[kind]!;
-  let renders = 0;
-  const report = await replayIdleSessions({ inputs: [fixture.input], out: fixture.out }, protectedConfig, (...args) => {
-    const result = pruneMessages(...args);
-    if (++renders % 2 === 0) {
-      result.messages = result.messages.map(message => {
-        const copy = structuredClone(message);
-        if (typeof copy.content === "string") copy.content = copy.content.replaceAll(target, "LOST");
-        else for (const block of copy.content ?? []) {
-          if (block.type === "text") block.text = block.text.replaceAll(target, "LOST");
-          if (block.type === "toolCall" && block.arguments?.command === target) block.arguments.command = "LOST";
-        }
-        return copy;
-      });
-    }
-    return result;
-  });
+  const report = await replayIdleSessions({ inputs: [fixture.input], out: fixture.out }, protectedConfig, losing(target));
   expect(report.violations).toBeGreaterThan(0);
   expect(report.violationRecords.length).toBeGreaterThan(0);
   expect(Object.keys(report.violationRecords[0]).sort()).toEqual(["entryIndex", "sessionStem"]);
@@ -143,6 +149,75 @@ test("idle permits only superseded protected reads and keeps the open turn's lat
   expect(report).toMatchObject({ returnsFound: 1, returnsChecked: 1, violations: 0 });
   expect(cleaned.find(message => message.toolCallId === "old").content[0].text).toStartWith("[Superseded: state.md");
   expect(cleaned.find(message => message.toolCallId === "new").content[0].text).toBe("Latest protected state.");
+});
+
+// One closed history, then a single return a day later; `extras` adds pruner entries before it.
+function pausedSession(history: SeedTurn[], extras: (entries: any[]) => any[]) {
+  const fixture = corpus();
+  const entries: any[] = seedEntries([...history, { role: "user", text: "Return after a pause." }], Date.UTC(2026, 0, 1));
+  const last = entries.pop();
+  last.timestamp = new Date(Date.UTC(2026, 0, 2)).toISOString();
+  entries.push(...extras(entries), last);
+  entries.slice(1).forEach((entry, i) => { entry.id = `paused-${i}`; entry.parentId = i ? `paused-${i - 1}` : null; entry.timestamp ??= entries[1].timestamp; });
+  writeFileSync(join(fixture.input, "synthetic.jsonl"), entries.map(entry => JSON.stringify(entry)).join("\n"));
+  return fixture;
+}
+
+test("idle drops a deduplicated result's stub with its chain instead of restoring the raw output", async () => {
+  const fixture = pausedSession([
+    { role: "user", text: "Run it." },
+    { role: "assistant", toolCalls: [{ id: "first", name: "bash", arguments: { command: "echo same" } }] },
+    { role: "result", toolCallId: "first", toolName: "bash", text: "Same output." },
+    { role: "assistant", text: "Ran it." },
+    { role: "user", text: "Run it again." },
+    { role: "assistant", toolCalls: [{ id: "again", name: "bash", arguments: { command: "echo same" } }] },
+    { role: "result", toolCallId: "again", toolName: "bash", text: "Same output." },
+    { role: "assistant", text: "Ran it again." },
+  ], entries => {
+    const indexer = new ToolCallIndexer(), extras: any[] = [];
+    const append = (customType: string, data?: unknown) => { extras.push({ type: "custom", customType, data }); };
+    const [call, first, again] = [entries[2].message, entries[3].message, entries[7].message];
+    const batch = captureBatch(call, [first], 0, first.timestamp);
+    indexer.addBatch(batch, append);
+    extras.push({ type: "custom_message", customType: CUSTOM_TYPE_SUMMARY, content: "The first run printed one line.", display: false,
+      details: { toolCallRefs: indexer.allocateSummaryRefs(batch) } });
+    indexer.registerDuplicate(occKey("again", again.timestamp), occKey("first", first.timestamp), append);
+    return extras;
+  });
+  const cleaned: any[][] = [];
+  const report = await replayIdleSessions({ inputs: [fixture.input], out: fixture.out }, protectedConfig, losing(undefined, cleaned));
+  expect(report).toMatchObject({ returnsFound: 1, returnsChecked: 1, violations: 0 });
+  expect(JSON.stringify(cleaned)).toContain("<compressed-chain");
+  expect(JSON.stringify(cleaned)).not.toContain("Same output.");
+});
+
+test.each([
+  ["accepts", undefined, false],
+  ["rejects a lost chain body beside", "Earlier chain body.", true],
+  ["rejects a lost protected output beside", "Tracker state.", true],
+])("idle %s a superseded read's placeholder inside a chain compressed before the pause", async (_name, lost, violates) => {
+  const fixture = pausedSession([
+    { role: "user", text: "Read the state." },
+    { role: "assistant", toolCalls: [{ id: "old", name: "read", arguments: { path: "state.md" } }, { id: "tracker", name: "plan_tracker", arguments: {} }] },
+    { role: "result", toolCallId: "old", toolName: "read", text: "Old protected state." },
+    { role: "result", toolCallId: "tracker", toolName: "plan_tracker", text: "Tracker state." },
+    { role: "assistant", text: "Read complete." },
+    { role: "user", text: "Check the state again." },
+    { role: "assistant", toolCalls: [{ id: "new", name: "read", arguments: { path: "state.md" } }] },
+    { role: "result", toolCallId: "new", toolName: "read", text: "Latest protected state." },
+    { role: "assistant", text: "Checked." },
+  ], entries => [{ type: "custom", customType: CUSTOM_TYPE_CHAIN, data: {
+    blockId: "b1", startUserTimestamp: entries[1].message.timestamp, finalAssistantTimestamp: entries[5].message.timestamp,
+    droppedToolCallIds: ["old", "tracker"], protectedToolCallIds: ["old", "tracker"], toolRefs: [], compressedAt: 1,
+    rangeSummaryText: "Earlier chain body.",
+  } }]);
+  const cleaned: any[][] = [];
+  const report = await replayIdleSessions({ inputs: [fixture.input], out: fixture.out }, {
+    ...protectedConfig, protectedPaths: ["state.md"],
+  }, losing(lost, cleaned));
+  expect(report.returnsChecked).toBe(1);
+  expect(report.violations > 0).toBe(violates);
+  expect(cleaned[0][1].content[0].text).toContain(`<protected-output tool="read">\n[Superseded: state.md`);
 });
 
 test("idle minutes override and argument validation", async () => {

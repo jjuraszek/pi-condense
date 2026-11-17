@@ -42,7 +42,11 @@ export function parseIdleArgs(args: string[]): IdleOptions {
 const textOf = (message: any): string => typeof message.content === "string" ? message.content
   : (message.content ?? []).filter((block: any) => block.type === "text").map((block: any) => block.text).join("\n");
 
-export function preservationViolations(before: any[], after: any[], compressed: ChainCompressionEntry[], config: ContextPruneConfig, neverSummarized: Set<string>): number {
+const occurrence = (message: any): string => occKey(message.toolCallId, resultTimestampOf(message.timestamp));
+
+/** `registered` holds the chain entries that existed before the pause; `request` is the unpruned message array. */
+export function preservationViolations(before: any[], after: any[], compressed: ChainCompressionEntry[], config: ContextPruneConfig, neverSummarized: Set<string>,
+  request: any[], registered: ChainCompressionEntry[]): number {
   let violations = 0;
   const text = after.map(message => message.role === "toolResult" ? extractToolResultText(message) : textOf(message));
   const contains = (value: string) => text.some(part => part.includes(value));
@@ -59,22 +63,42 @@ export function preservationViolations(before: any[], after: any[], compressed: 
       if (call && isProtected(call.name, call.input ?? call.args ?? call.arguments, config, message.nestedCalls)) protectedPositions.add(i);
     } else calls.clear();
   });
-  const predicate = (name: string, args: unknown) => isProtected(name, args, config);
-  const superseded = new Map(findSuperseded(before, predicate).map(candidate => [candidate.resultIndex, candidate]));
+  const waitingReads = (messages: any[]) => new Map(findSuperseded(messages, (name, args) => isProtected(name, args, config))
+    .filter(candidate => messages[candidate.resultIndex].toolName === "read").map(candidate => [candidate.resultIndex, candidate]));
+  const superseded = waitingReads(before), relocated = waitingReads(request);
+  // A chain compressed before the pause trades a waiting superseded read's block for the placeholder, and nothing else.
+  const withPlaceholders = (message: any): any => {
+    const entry = registered.find(entry => textOf(message).startsWith(`<compressed-chain id="${entry.blockId}"`));
+    const range = entry ? resolveRange(entry, request) : null;
+    if (!entry || !range) return message;
+    const relocatedIds = new Set(entry.protectedToolCallIds ?? []);
+    let text = textOf(message), cursor = 0;
+    for (let i = range.startIndex + 1; i < range.endIndex; i++) {
+      const result = request[i];
+      if (result.role !== "toolResult" || !(relocatedIds.has(result.toolCallId) || relocatedIds.has(occurrence(result)))) continue;
+      const block = (body: string) => `<protected-output tool="${result.toolName}">\n${body}\n</protected-output>`;
+      const raw = block(extractToolResultText(result)), at = text.indexOf(raw, cursor), candidate = relocated.get(i);
+      if (at < 0) return message;
+      const kept = candidate ? block(supersededStub(candidate.path)) : raw;
+      text = text.slice(0, at) + kept + text.slice(at + raw.length);
+      cursor = at + kept.length;
+    }
+    return { ...message, content: [{ type: "text", text }] };
+  };
   const lastOpening = closed.at(-1)?.range!.startIndex ?? -1;
   before.forEach((message, i) => {
     const owner = closed.find(({ chain, range }) => (i >= range!.startIndex && i <= range!.endIndex) ||
       (isPerBatchSummaryMessage(message) && perBatchSummaryOverlapsDropped(message, new Set(chain.middleOccurrenceKeys), new Set(chain.middleToolCallIds))));
-    if (message.role === "user" && !exact.has(JSON.stringify(message))) violations++;
+    if (message.role === "user" && !exact.has(JSON.stringify(message)) && !exact.has(JSON.stringify(withPlaceholders(message)))) violations++;
     if (isPerBatchSummaryMessage(message) && !contains(textOf(message))) violations++;
     if (newRanges.some(range => range!.endIndex === i) && !contains(textOf(message))) violations++;
     if (protectedPositions.has(i)) {
       const candidate = superseded.get(i);
-      const replaced = message.toolName === "read" && candidate && contains(supersededStub(candidate.path));
+      const replaced = candidate && contains(supersededStub(candidate.path));
       if (!replaced && !contains(extractToolResultText(message))) violations++;
     }
     if (message.role === "toolResult" && newRanges.some(range => i > range!.startIndex && i < range!.endIndex) &&
-        !protectedPositions.has(i) && neverSummarized.has(occKey(message.toolCallId, resultTimestampOf(message.timestamp))) &&
+        !protectedPositions.has(i) && neverSummarized.has(occurrence(message)) &&
         !contains(extractToolResultText(message))) violations++;
     if (i > lastOpening && !owner && !exact.has(JSON.stringify(message))) violations++;
   });
@@ -111,11 +135,14 @@ export async function replayIdleSessions(options: IdleOptions, config: ContextPr
         const messages = projectBranchMessages(prefix);
         const request = [...messages, entry.message];
         const predicate = (name: string, args: unknown, nested?: any) => isProtected(name, args, config, nested);
-        const neverSummarized = new Set(messages.filter(message => message.role === "toolResult" &&
-          !indexer.hasPerBatchSummaryCoveringAny([occKey(message.toolCallId, resultTimestampOf(message.timestamp))]))
-          .map(message => occKey(message.toolCallId, resultTimestampOf(message.timestamp))));
-        const state = createSupersedeState();
+        const state = createSupersedeState(), registered = indexer.getChainEntries();
         const before = render(request, indexer, config.chainCompression, config.purgeErrors, config, config.recoveryGraceTurns, undefined, { state, isProtected: predicate }).messages;
+        // Never summarized means raw in the unchanged render: a dedup alias or a spilled
+        // result is already a recovery stub there, with no result text left to keep.
+        const rawText = new Map(messages.filter(message => message.role === "toolResult").map(message => [occurrence(message), extractToolResultText(message)]));
+        const neverSummarized = new Set(before.filter(message => message.role === "toolResult" &&
+          rawText.get(occurrence(message)) === extractToolResultText(message) && !indexer.hasPerBatchSummaryCoveringAny([occurrence(message)]))
+          .map(occurrence));
         activateClosedChainSuperseded(messages, state, predicate);
         const blockRefs = new BlockRefIssuer();
         blockRefs.rebuildFrom(indexer.getChainEntries().map(entry => entry.blockId));
@@ -128,7 +155,7 @@ export async function replayIdleSessions(options: IdleOptions, config: ContextPr
           backfill: { spillThreshold: Infinity, spillPreviewBytes: config.spillPreviewBytes, sessionDir: out, sessionId: "idle" },
         }, inGraceRecoveryToolCallIds(messages, config.recoveryGraceTurns));
         const after = render(request, indexer, config.chainCompression, config.purgeErrors, config, config.recoveryGraceTurns, undefined, { state, isProtected: predicate }).messages;
-        const violations = preservationViolations(before, after, result.compressedEntries, config, neverSummarized);
+        const violations = preservationViolations(before, after, result.compressedEntries, config, neverSummarized, request, registered);
         report.returnsChecked++;
         report.violations += violations;
         if (violations) report.violationRecords.push({ sessionStem: basename(file, ".jsonl"), entryIndex });

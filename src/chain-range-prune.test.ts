@@ -274,7 +274,7 @@ describe("applyChainCompressions", () => {
 
   test("does not suppress per-batch summary whose toolCallRefs do not overlap", () => {
     // Summary placed AFTER the resolved range (agent-message batching order) -
-    // positionally-inside summaries are dropped unconditionally regardless of
+    // an ordinary entry drops positionally-inside summaries regardless of
     // coverage; coverage-based suppression only applies outside the range.
     const msgs = [
       userMsg(100),
@@ -289,6 +289,28 @@ describe("applyChainCompressions", () => {
       (m: any) => m.role === "custom" && m.customType === "context-prune-summary",
     );
     expect(hasCustomSummary).toBe(true);
+  });
+
+  test.each([
+    ["an idle entry keeps", true],
+    ["an ordinary entry drops", false],
+  ])("%s a summary inside its range that covers an earlier interrupted turn", (_name, literalSummary) => {
+    const summary = summaryMsg(350, ["tc0"]);
+    const msgs = [
+      userMsg(50),
+      assistantWithTools(60, ["tc0"]),
+      toolResult(70, "tc0"), // interrupted: stays in context, summarized later
+      userMsg(100),
+      assistantWithTools(200, ["tc1"]),
+      toolResult(300, "tc1"),
+      summary,
+      assistantText(400),
+    ];
+    const e = { ...entry("b1", 100, ["tc1"], 400), ...(literalSummary ? { literalSummary } : {}) };
+    const result = applyChainCompressions(msgs, [e], noopSummary, false);
+    expect(result.includes(summary)).toBe(literalSummary);
+    expect(result.some((m: any) => m.toolCallId === "tc0")).toBe(true);
+    expect(result.some((m: any) => m.toolCallId === "tc1")).toBe(false);
   });
 
   test("a live turn's per-batch summary survives even when it reuses a compressed chain's bare id (occurrence collision)", () => {

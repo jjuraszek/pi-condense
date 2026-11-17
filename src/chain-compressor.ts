@@ -65,6 +65,7 @@ export function selectEligible(
 export interface ChainCompressorIndexerDeps {
   getChainEntries(): import("./types.js").ChainCompressionEntry[];
   hasPerBatchSummaryCoveringAny(toolCallIds: string[]): boolean;
+  isDedupAlias(key: string): boolean;
   getPerBatchSummariesForToolCallIds(toolCallIds: string[]): string[];
   getToolRefsForToolCallIds(toolCallIds: string[]): string[];
   registerChain(entry: import("./types.js").ChainCompressionEntry): void;
@@ -224,6 +225,9 @@ export async function compressEligible(
           const msg = deps.messages[i];
           if (msg.role !== "toolResult" || protectedToolCallIds.has(msg.toolCallId)) continue;
           const key = occKey(msg.toolCallId, resultTimestampOf(msg.timestamp));
+          // A dedup alias or a spilled record is already a recovery stub in the
+          // request; retaining it would put back text the request does not hold.
+          if (deps.indexer.isDedupAlias(key) || deps.indexer.getIndex().get(key)?.spillPath) continue;
           if (!deps.indexer.hasPerBatchSummaryCoveringAny([key])) protectedToolCallIds.add(key);
         }
       }
