@@ -43,3 +43,4 @@ row 12 failed | Added workflow twins covering summarized, zero-summary, and inte
 row 12 failed | Two clean-candidate idle runs confirmed workflow regression: fresh 3/3, paused 0/3, while skill twins stayed 3/3. | Keep both reports; fix lost unsummarized tracker state in partly summarized chains without weakening the twins or repeating the unchanged paid comparison.
 amended | 1 item(s) | Retain never-summarized result text
 row 12 failed | Retained unsummarized tracker text through reload with 97 passing checks, but paid workflow evidence still predates the repair. | Keep the repair and unchanged twins; run --idle from this committed candidate and validate plan-progress-continue with eval/idle-evidence.ts.
+row 12 escalated | implModel round | allowed attempts 10
