@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { projectBranchMessages } from "./batch-capture.js";
 import { detectChains } from "./chain-detector.js";
 import { expectNoOrphanToolResults } from "./test-support.js";
-import { CUSTOM_TYPE_CHAIN } from "./types.js";
+import { CUSTOM_TYPE_CHAIN, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
 
 function closedChainBranch(endMs: number, count: number): any[] {
   const branch: any[] = [];
@@ -36,11 +36,11 @@ function closedChainBranch(endMs: number, count: number): any[] {
   return branch;
 }
 
-async function boot(branch: any[], hasUI: boolean) {
+async function boot(branch: any[], hasUI: boolean, config: Record<string, unknown> = {}) {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-condense-idle-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ contextPrune: { enabled: true, showPruneStatusLine: false } }));
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ contextPrune: { enabled: true, showPruneStatusLine: false, ...config } }));
 
   const handlers = new Map<string, (event: any, ctx: any) => any>();
   const appended: Array<{ type: string; data: any }> = [];
@@ -88,34 +88,112 @@ async function boot(branch: any[], hasUI: boolean) {
     restore();
     throw error;
   }
-  return { fire, appended, restore };
+  const request = async () => {
+    const messages = [
+      ...projectBranchMessages(branch),
+      { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: Date.now() },
+    ];
+    return (await fire("context", { messages }))?.messages ?? messages;
+  };
+  const submit = async (source = "interactive", messageType = "user") => {
+    await fire("input", { text: "Continue.", source });
+    await fire("before_agent_start", { messageType, prompt: "Continue.", systemPrompt: "" });
+  };
+  return { fire, appended, restore, request, submit };
 }
 
 describe("idle cleanup", () => {
-  it.each([true, false])("compresses every closed tool-using chain past the threshold (hasUI=%s)", async (hasUI) => {
+  it.each([true, false])("does nothing below the threshold (hasUI=%s)", async (hasUI) => {
+    const branch = closedChainBranch(Date.now() - 60 * 60_000, 3);
+    const harness = await boot(branch, hasUI);
+    try {
+      const messages = [
+        ...projectBranchMessages(branch),
+        { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: Date.now() },
+      ];
+      const before = (await harness.fire("context", { messages }))?.messages ?? messages;
+      await harness.submit();
+      const after = (await harness.fire("context", { messages }))?.messages ?? messages;
+      expect(after).toEqual(before);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each(["no-tool", "graced", "protected-only", "unresolvable"])("keeps %s chains while compressing eligible neighbors", async (exception) => {
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 2);
+    const firstChain = branch.slice(0, 4);
+    if (exception === "no-tool") branch.splice(1, 2);
+    if (exception === "graced" || exception === "protected-only") {
+      const tool = exception === "graced" ? QUERY_TOOL_NAME : "read";
+      firstChain[1].message.content[0].name = tool;
+      firstChain[1].message.content[0].arguments = exception === "graced" ? { ref: "t1" } : { path: "/project/skills/review/SKILL.md" };
+      firstChain[2].message.toolName = tool;
+    }
+    if (exception === "unresolvable") firstChain[1].message.timestamp = firstChain[3].message.timestamp;
+    const harness = await boot(branch, false);
+    try {
+      const before = (await harness.request()).filter((message: any) => firstChain.some((entry) => entry.message.timestamp === message.timestamp));
+      await harness.submit();
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN).map((entry) => entry.data.startUserTimestamp))
+        .toEqual([branch.find((entry) => entry.message?.role === "user" && entry.message.content[0].text === "Run task 1.").message.timestamp]);
+      const request = await harness.request();
+      expect(request.filter((message: any) => firstChain.some((entry) => entry.message.timestamp === message.timestamp))).toEqual(before);
+      expectNoOrphanToolResults(request);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([
+    { source: "extension", messageType: "user", config: {} },
+    { source: "interactive", messageType: "custom", config: {} },
+    { source: "interactive", messageType: "user", config: { enabled: false } },
+    { source: "rpc", messageType: "user", config: { pruneOn: "on-demand" } },
+    { source: "interactive", messageType: "user", config: { chainCompression: { ...DEFAULT_CONFIG.chainCompression, enabled: false } } },
+  ])("gates idle compression by human submission and automatic pruning (%j)", async ({ source, messageType, config }) => {
     const branch = closedChainBranch(Date.now() - 240 * 60_000, 3);
+    const harness = await boot(branch, true, config);
+    try {
+      await harness.submit(source, messageType);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
+      expect((await harness.request()).filter((message: any) => message.role === "toolResult")).toHaveLength(3);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([
+    { hasUI: true, source: "interactive", stopReason: "stop" },
+    { hasUI: false, source: "interactive", stopReason: "stop" },
+    { hasUI: true, source: "rpc", stopReason: "error" },
+    { hasUI: false, source: "rpc", stopReason: "aborted" },
+  ])("compresses every closed tool-using chain past the threshold (%j)", async ({ hasUI, source, stopReason }) => {
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 3);
+    for (let i = 3; i < branch.length; i += 4) branch[i].message.stopReason = stopReason;
     const chains = detectChains(projectBranchMessages(branch));
     expect(chains).toHaveLength(3);
     const harness = await boot(branch, hasUI);
     try {
       expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
-      await harness.fire("input", { text: "Continue.", source: "interactive" });
-      await harness.fire("before_agent_start", { messageType: "user", prompt: "Continue.", systemPrompt: "" });
+      await harness.submit(source);
 
       const compressed = harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN);
       expect(compressed).toHaveLength(3);
       expect(compressed.map((entry) => entry.data.startUserTimestamp)).toEqual(chains.map((chain) => chain.startUserTimestamp));
-      const messages = [
-        ...projectBranchMessages(branch),
-        { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: Date.now() },
-      ];
-      const request = (await harness.fire("context", { messages }))?.messages ?? messages;
+      const request = await harness.request();
       const bodies = request.flatMap((message: any) => Array.isArray(message.content)
         ? message.content.filter((block: any) => block.type === "text" && block.text.startsWith("<compressed-chain"))
         : []);
       expect(bodies).toHaveLength(3);
       expect(request.filter((message: any) => message.role === "toolResult")).toHaveLength(0);
       expectNoOrphanToolResults(request);
+      await harness.submit(source);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(3);
     } finally {
       await harness.fire("session_shutdown");
       harness.restore();

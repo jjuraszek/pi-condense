@@ -551,6 +551,8 @@ export interface ChainCompressionConfig {
   enabled: boolean;
   /** Number of most-recently-closed chains to keep raw (not compressed). Default 3. */
   rollingWindow: number;
+  /** Compress closed chains on the first human prompt after this many idle minutes. Default 180. */
+  idleCleanupMinutes: number;
   /** Strip thinking blocks from the kept final text-only assistant. Default true. */
   stripFinalAssistantThinking: boolean;
   /**
@@ -587,6 +589,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   chainCompression: {
     enabled: true,
     rollingWindow: 3,
+    idleCleanupMinutes: 180,
     stripFinalAssistantThinking: true,
     fuseRangeSummary: true,
   },
