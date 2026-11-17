@@ -2044,7 +2044,25 @@ describe("final flush after the run settles (#37)", () => {
     expect(summaryEntries(appended)).toEqual([]);
   });
 
-  it.each(["session_shutdown", "session_before_tree", "session_before_compact"])("%s while the flush is in flight aborts it and writes no summary", async (eventName) => {
+  it("session_shutdown while the flush is in flight aborts it and writes nothing", async () => {
+    const { handlers, ctx, appended } = await finishedRun();
+    const { release, seen } = heldSummarizer();
+    const writtenBefore = appended.length;
+
+    await handlers.get("agent_settled")!(settled, ctx);
+    jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+    while (!seen.signal) await Promise.resolve();
+
+    // The handler returns while the summarizer response is still outstanding.
+    await handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, ctx);
+    expect(seen.signal.aborted).toBe(true);
+    release();
+    await drainMicrotasks();
+
+    expect(appended.slice(writtenBefore)).toEqual([]);
+  });
+
+  it.each(["session_before_tree", "session_before_compact"])("%s while the flush is in flight aborts it and writes no summary", async (eventName) => {
     const { handlers, ctx, appended } = await finishedRun();
     const { release, seen } = heldSummarizer();
 
@@ -2064,7 +2082,10 @@ describe("final flush after the run settles (#37)", () => {
     expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"]]);
   });
 
-  it("an abort that lands as the summarizer response arrives still writes no summary", async () => {
+  it.each([
+    ["session_shutdown", []],
+    ["session_before_tree", [["settled", "error"]]],
+  ])("a %s abort that lands as the summarizer response arrives still writes no summary", async (eventName, metricsWritten) => {
     const { handlers, ctx, appended } = await finishedRun();
     streamImpl = () => {
       summarizerCalls++;
@@ -2076,7 +2097,7 @@ describe("final flush after the run settles (#37)", () => {
             usage: USAGE,
             // Read after the summarizer has stopped racing the abort signal.
             get content() {
-              void handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, ctx);
+              void handlers.get(eventName)!({ type: eventName, reason: "quit" }, ctx);
               return [{ type: "text", text: "[[1:read]] summary" }];
             },
           };
@@ -2084,14 +2105,15 @@ describe("final flush after the run settles (#37)", () => {
       };
     };
 
+    const callsBefore = summarizerCalls;
     await handlers.get("agent_settled")!(settled, ctx);
-    const flushed = nextFlushDone(appended);
     jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
-    await flushed;
+    await drainMicrotasks();
 
+    expect(summarizerCalls).toBe(callsBefore + 1);
     expect(summaryEntries(appended)).toEqual([]);
     expect(appended.some((e) => e.type === "context-prune-index")).toBe(false);
-    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual([["settled", "error"]]);
+    expect(flushMetrics(appended).map((m) => [m.trigger, m.outcome])).toEqual(metricsWritten);
   });
 
   it.each(["session_before_tree", "session_before_compact"])("%s returns once the aborted flush has put its batches back, and the next prompt flushes them", async (eventName) => {
@@ -2131,19 +2153,111 @@ describe("final flush after the run settles (#37)", () => {
     };
 
     await handlers.get("agent_settled")!(settled, ctx);
-    const flushed = nextFlushDone(appended);
     jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
     for (let i = 0; i < 1000 && !fuseSignal; i++) await Promise.resolve();
     expect(fuseSignal).toBeDefined();
     const writtenBeforeShutdown = appended.length;
+    expect(appended.some((e) => e.type === "context-prune-frontier")).toBe(true);
 
     await handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, ctx);
     expect(fuseSignal!.aborted).toBe(true);
-    await flushed;
     await drainMicrotasks();
 
-    expect(appended.slice(writtenBeforeShutdown).map((e) => e.type)).toEqual(["context-prune-flush-metrics"]);
-    expect(appended.some((e) => e.type === "context-prune-chain")).toBe(false);
+    expect(appended.slice(writtenBeforeShutdown)).toEqual([]);
+  });
+
+  describe("once the session has received session_shutdown", () => {
+    const shutdown = { type: "session_shutdown", reason: "new" };
+
+    // pi invalidates the ctx once every extension's shutdown handler has
+    // returned: its getters throw, while a session manager captured before
+    // that still appends to the outgoing session.
+    function invalidate(ctx: any) {
+      for (const key of ["sessionManager", "ui", "modelRegistry"]) {
+        Object.defineProperty(ctx, key, {
+          get() {
+            throw new Error("This extension ctx is stale after session replacement or reload.");
+          },
+        });
+      }
+    }
+
+    it("a prompt starts no flush and reads nothing from the session", async () => {
+      const { handlers, ctx, appended } = await finishedRun();
+      const callsBefore = summarizerCalls;
+      const writtenBefore = appended.length;
+      let branchReads = 0;
+      const getBranch = ctx.sessionManager.getBranch;
+      ctx.sessionManager.getBranch = () => { branchReads++; return getBranch(); };
+
+      await handlers.get("session_shutdown")!(shutdown, ctx);
+      await handlers.get("before_agent_start")!({ prompt: "late" }, ctx);
+
+      expect(summarizerCalls).toBe(callsBefore);
+      expect(appended.slice(writtenBefore)).toEqual([]);
+      expect(branchReads).toBe(0);
+    });
+
+    it("a turn that crosses the context budget starts no flush", async () => {
+      const { handlers, ctx, appended, branch } = await finishedRun({ autoBudgetThreshold: 0.5 });
+      const callsBefore = summarizerCalls;
+      const writtenBefore = appended.length;
+
+      await handlers.get("session_shutdown")!(shutdown, ctx);
+      ctx.getContextUsage = () => ({ tokens: 600000, contextWindow: 1000000 });
+      await fireTurn(handlers, ctx, branch, "tc-late", "l".repeat(800), 1);
+
+      expect(summarizerCalls).toBe(callsBefore);
+      expect(appended.slice(writtenBefore)).toEqual([]);
+    });
+
+    it("a prompt-start flush in flight is aborted, releases the prompt, and writes nothing", async () => {
+      const { handlers, ctx, appended } = await finishedRun({ chainCompressionEnabled: true });
+      const { release, seen } = heldSummarizer();
+      const callsBefore = summarizerCalls;
+      const writtenBefore = appended.length;
+
+      const prompt = handlers.get("before_agent_start")!({ prompt: "late" }, ctx);
+      for (let i = 0; i < 1000 && summarizerCalls === callsBefore; i++) await Promise.resolve();
+      expect(summarizerCalls).toBe(callsBefore + 1);
+
+      // The ctx goes stale before the aborted flush has unwound.
+      const down = handlers.get("session_shutdown")!(shutdown, ctx);
+      invalidate(ctx);
+      await down;
+
+      expect(seen.signal?.aborted).toBe(true);
+      expect(await isSettled(prompt)).toBe(true);
+      await prompt;
+      release();
+      await drainMicrotasks();
+
+      expect(appended.slice(writtenBefore)).toEqual([]);
+    });
+
+    it("a budget flush in flight is aborted, releases the turn, and writes nothing", async () => {
+      const { handlers, ctx, appended, branch } = await finishedRun({ autoBudgetThreshold: 0.5 });
+      const { release, seen } = heldSummarizer();
+      const callsBefore = summarizerCalls;
+      ctx.getContextUsage = () => ({ tokens: 600000, contextWindow: 1000000 });
+
+      const turn = fireTurn(handlers, ctx, branch, "tc-late", "l".repeat(800), 1);
+      for (let i = 0; i < 1000 && summarizerCalls === callsBefore; i++) await Promise.resolve();
+      expect(summarizerCalls).toBe(callsBefore + 1);
+      const writtenBefore = appended.length;
+
+      const down = handlers.get("session_shutdown")!(shutdown, ctx);
+      invalidate(ctx);
+      await down;
+
+      expect(seen.signal?.aborted).toBe(true);
+      expect(await isSettled(turn)).toBe(true);
+      await turn;
+      release();
+      await drainMicrotasks();
+
+      expect(appended.slice(writtenBefore)).toEqual([]);
+    });
   });
 
   it("/pruner compact waits for a flush in flight instead of compressing the same chain twice", async () => {
