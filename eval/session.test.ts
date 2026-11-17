@@ -76,7 +76,7 @@ const seeded = seedEntries(idleScenario.history, 10000).filter(e => e.type === "
 const resultMessage = (id: string, text: string) => ({ role: "toolResult", toolCallId: id, content: [{ type: "text", text }] });
 const outside = [resultMessage("protected", "protected original text"), resultMessage("tiny", "tiny original text"), resultMessage("summarized", "[Summarized in pruner summary, ref `t1`. Use context_tree_query to retrieve full output.]"), { role: "user", content: "Retained summary" }];
 const chain = { type: "custom", customType: "context-prune-chain", data: { blockId: "b1", startUserTimestamp: seeded[0].timestamp, droppedToolCallIds: ["protected", "tiny", "summarized"] } };
-const inside = [{ role: "user", content: '<compressed-chain id="b1">Retained summary\n<protected-output>protected original text</protected-output></compressed-chain>' }];
+const inside = [{ role: "user", content: '<compressed-chain id="b1">Retained summary\n<protected-output>protected original text</protected-output>\n<protected-output>tiny original text</protected-output></compressed-chain>' }];
 
 test.each([
   { label: "expected index", refs: refMap, valid: true },
@@ -93,6 +93,10 @@ test.each([
   { label: "protected text missing", paused: false, outgoing: outside.slice(1), error: "error:not-pruned" },
   { label: "protected text missing inside", paused: true, outgoing: [{ role: "user", content: '<compressed-chain id="b1">Retained summary</compressed-chain>' }], error: "error:not-pruned" },
   { label: "tiny raw missing", paused: false, outgoing: outside.filter(m => (m as any).toolCallId !== "tiny"), error: "error:not-pruned" },
+  { label: "tiny retained text missing", paused: true, outgoing: [{ ...inside[0], content: inside[0].content.replace("tiny original text", "") }], error: "error:not-pruned" },
+  { label: "tiny retained text altered", paused: true, outgoing: [{ ...inside[0], content: inside[0].content.replace("tiny original text", "tiny changed text") }], error: "error:not-pruned" },
+  { label: "tiny retained in another chain only", paused: true, outgoing: [{ ...inside[0], content: inside[0].content.replace("tiny original text", "") }, { role: "user", content: '<compressed-chain id="b2"><protected-output>tiny original text</protected-output></compressed-chain>' }], error: "error:not-pruned" },
+  { label: "tiny standalone despite relocation", paused: true, outgoing: [...inside, resultMessage("tiny", "tiny original text")], error: "error:not-pruned" },
   { label: "summary raw", paused: false, outgoing: [...outside, resultMessage("summarized", "summarized original text")], error: "error:not-pruned" },
   { label: "summary neither stub nor chain", paused: false, outgoing: outside.filter(m => (m as any).toolCallId !== "summarized"), error: "error:not-pruned" },
   { label: "paused raw chain", paused: true, outgoing: outside, error: "error:idle-arm" },

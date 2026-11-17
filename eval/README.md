@@ -100,6 +100,18 @@ The oracle tracks strings from inline results later reused in assistant text or 
 
 Run model x thinking cells as independent parallel `run` processes with the same `--corpus`, one `--models provider/id`, `--thinking off|low|medium|high` (default: `PIPELINE_SETTINGS.summarizerThinking`), and a distinct outside-checkout `--out <dir>` per cell. The runner creates each output directory for `jobs.json` and `report.md`; without `--out`, execution writes to the corpus directory. After the processes finish, `npm run eval:replay -- matrix /private/cell-a/jobs.json /private/cell-b/jobs.json` prints one aggregate-only table with retention, regressions, gains, judge counts, outcome errors, nearest-rank attempt latency p50/p95, cost carrying `(measured)` or `(estimated)`, and mean retained-summary size; incomplete cells are labeled `INCOMPLETE`.
 
+### Offline idle replay
+
+```bash
+npm run eval:replay -- idle "$PI_CONDENSE_SESSION_DIR" --out "$PI_CONDENSE_REPLAY_DIR"
+```
+
+`idle <session-dir>... [--out <dir>] [--minutes <n>]` accepts multiple session directories without extraction. It makes no model or network calls and reads settings with the production loader from the operator's agent directory (`PI_CODING_AGENT_DIR` when set). `--minutes` overrides the idle threshold; cleanup obeys the enabled and prune-mode settings. Every historical user return is measured against only its preceding active-branch entries and its own timestamp, not the current clock or later activity. Each due return reconstructs production index state and renders the request before and after closed-chain supersede activation and zero-window, literal chain compression without fusion.
+
+The preservation checks require byte-equal user messages, compressed chains' final assistant text, batch summary text wherever its owning chain places it, never-summarized result text, and messages belonging to an open turn. Protected outputs are compared by extracted text, including image marker text, not original image blocks; a protected read replaced by the superseded placeholder is exempt. Any violation exits 1, as do skipped unreadable sessions.
+
+The command prints aggregate counts only. `idle.json` records sessions read/skipped, returns found/checked, violations, total estimated tokens removed, and the median share of the prompt removed. Violation records contain only a session stem and entry index. Keep this file outside every checkout: `--out` uses the existing path guard, and omitting it creates a fresh OS temporary directory. No raw session content, spill sidecars, or prompts are written. Only aggregate counts may leave the output directory.
+
 ### Reading private evidence
 
 `report.md` and `jobs.json` stay in the guarded corpus directory. The `report.md` header lists `Candidate` alongside models, thinking level, and prompt hashes. The report lists regressions first, then gains, and includes source/summary text and private identifiers. Do not commit, paste, or attach these reports. Only aggregate counts and percentages from `## Coverage` and `## Totals` may leave the corpus directory.

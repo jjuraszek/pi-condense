@@ -55,9 +55,12 @@ export function assertIdleRequest({ scenario, seeded, branch, outgoing, refMap, 
     const raw = scenario.history.find(t => t.role === "result" && t.toolCallId === call.id);
     requireProof(raw?.role === "result", "error:not-pruned");
     const results = outgoing.filter(m => m.role === "toolResult" && m.toolCallId === call.id);
-    const inside = chains.some(e => e.droppedToolCallIds.includes(call.id));
+    const owningChain = chains.find(e => e.droppedToolCallIds.includes(call.id));
+    const inside = owningChain !== undefined;
     if (call.kind === "protected") requireProof(bodies.some(body => body.includes(raw!.text!)), "error:not-pruned");
-    else if (call.kind === "unsummarized") requireProof(inside ? results.length === 0 : results.some(m => text(m.content) === raw!.text), "error:not-pruned");
+    else if (call.kind === "unsummarized") requireProof(inside
+      ? results.length === 0 && bodies.some(body => body.startsWith(`<compressed-chain id="${owningChain.blockId}"`) && body.includes(raw!.text!))
+      : results.some(m => text(m.content) === raw!.text), "error:not-pruned");
     else {
       requireProof(!bodies.some(body => body.includes(raw!.text!)), "error:not-pruned");
       requireProof(inside ? results.length === 0 : [...refMap].some(([ref, id]) => id === call.id && results.some(m => text(m.content) === `[Summarized in pruner summary, ref \`${ref}\`. Use context_tree_query to retrieve full output.]`)), "error:not-pruned");
