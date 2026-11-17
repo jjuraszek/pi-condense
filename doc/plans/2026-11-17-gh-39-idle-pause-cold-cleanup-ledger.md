@@ -6,7 +6,6 @@ checks: commands
 iterations: 17
 allowance: 10
 returned: 13 | home | f0353152cde87df43ab5d0d6ede257f4676d3f34
-pending: verify | home | f7e96cd7ca6285cd3283d380ee77903288dd3402
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -49,3 +48,4 @@ row 12 done | Workflow twins score fresh 3/3 and paused 3/3 on clean candidate 8
 row 13 done | Documented the idle threshold, cache-refresh clock, literal retention, closed-turn supersession, settings, and targeted eval limits. | Reuse PRUNING.md#idle-cleanup; idle replay and failure diagnostics still need code before their documentation can be added.
 repair verification | home 6261799 | iteration 15
 repair verification | home 6ef3202 | iteration 16
+repair verification | home bca68a4 | iteration 17
