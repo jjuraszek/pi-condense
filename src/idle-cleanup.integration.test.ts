@@ -659,6 +659,15 @@ describe("idle cleanup", () => {
     open.splice(3, 2);
     open[1].message.content.unshift({ type: "thinking", thinking: "Work still in progress.", thinkingSignature: "keep-signature" });
     branch.splice(3, 2);
+    const indexer = new ToolCallIndexer();
+    const result = branch[4].message;
+    const batch = captureBatch(branch[3].message, [result], 0, result.timestamp);
+    indexer.addBatch(batch, (customType, data) => branch.push({ type: "custom", customType, data }));
+    const summary = "  Last closed chain is complete. Keep {b99} literal.\n";
+    branch.push({
+      type: "custom_message", customType: CUSTOM_TYPE_SUMMARY, content: summary, display: false,
+      details: { toolCallRefs: indexer.allocateSummaryRefs(batch) }, timestamp: new Date(branch[5].message.timestamp + 1).toISOString(),
+    });
     const renders: any[][] = [];
     for (const source of ["extension", "interactive"]) {
       const copy = structuredClone(branch);
@@ -672,8 +681,20 @@ describe("idle cleanup", () => {
         const messages = [...projectBranchMessages(copy), prompt];
         const request = (await harness.fire("context", { messages }))?.messages ?? messages;
         const openTimestamps = new Set([...open.map((entry) => entry.message.timestamp), prompt.timestamp]);
+        // The trailing summary belongs to the closed chain, not the turn in progress.
         renders.push(request.filter((m: any) => openTimestamps.has(m.timestamp)));
         expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(source === "interactive" ? 1 : 0);
+        const summaries = request.filter((m: any) => m.customType === CUSTOM_TYPE_SUMMARY);
+        const bodies = request.filter((m: any) => m.role === "user" && m.content[0]?.text?.startsWith("<compressed-chain"));
+        if (source === "interactive") {
+          expect(summaries).toHaveLength(0);
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0].content[0].text).toContain(summary);
+        } else {
+          expect(summaries).toHaveLength(1);
+          expect(summaries[0].content).toBe(summary);
+          expect(bodies).toHaveLength(0);
+        }
         expectNoOrphanToolResults(request);
       } finally {
         await harness.fire("session_shutdown");
