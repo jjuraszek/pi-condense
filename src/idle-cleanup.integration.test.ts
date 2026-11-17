@@ -1,4 +1,5 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it, jest, spyOn } from "bun:test";
+import * as summarizer from "./summarizer.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { detectChains } from "./chain-detector.js";
 import { expectNoOrphanToolResults } from "./test-support.js";
 import { supersededStub } from "./supersede.js";
 import { DiagnosticSink } from "./diagnostics.js";
-import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_DIAGNOSTIC, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
+import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_DIAGNOSTIC, CUSTOM_TYPE_FLUSH_METRICS, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG, QUERY_TOOL_NAME, SETTLED_FLUSH_DELAY_MS } from "./types.js";
 
 function closedChainBranch(endMs: number, count: number): any[] {
   const branch: any[] = [];
@@ -68,6 +69,9 @@ async function boot(branch: any[], hasUI: boolean, config: Record<string, unknow
     sessionManager: {
       getBranch: () => branch,
       appendCustomEntry: appendEntry,
+      appendCustomMessageEntry: (customType: string, content: string, display: boolean, details: unknown) => {
+        branch.push({ type: "custom_message", customType, content, display, details, timestamp: new Date().toISOString() });
+      },
       getSessionDir: () => agentDir,
       getSessionId: () => "idle-test",
     },
@@ -148,6 +152,114 @@ function summarizedBranch(endMs: number) {
 }
 
 describe("idle cleanup", () => {
+  it.each(["summarized", "error"] as const)("awaits a settled flush (%s) before idle cleanup and the first request", async (outcome) => {
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 2);
+    for (const entry of branch) {
+      if (entry.message.role === "toolResult") entry.message.content[0].text = "raw result ".repeat(20);
+    }
+    const harness = await boot(branch, true, { minBatchChars: 0 });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const summarize = spyOn(summarizer, "summarizeBatches").mockImplementation(async (batches) => {
+      await held;
+      return batches.map(() => outcome === "error" ? null : {
+        summaryText: "Done.",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      });
+    });
+    jest.useFakeTimers();
+    try {
+      await harness.fire("turn_end", { turnIndex: 1, message: branch[5].message, toolResults: [branch[6].message] });
+      await harness.fire("agent_settled");
+      jest.advanceTimersByTime(SETTLED_FLUSH_DELAY_MS);
+      expect(summarize).toHaveBeenCalledTimes(1);
+      let submitted = false;
+      const prompt = harness.submit().then(() => { submitted = true; });
+      await Promise.resolve();
+      expect(submitted).toBe(false);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
+      release();
+      await prompt;
+      expect(summarize).toHaveBeenCalledTimes(1);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_FLUSH_METRICS)
+        .map((entry) => [entry.data.trigger, entry.data.outcome])).toEqual([["settled", outcome]]);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)
+        .map((entry) => entry.data.startUserTimestamp)).toEqual([branch[0].message.timestamp, branch[4].message.timestamp]);
+      const request = await harness.request();
+      const bodies = request.filter((m: any) => m.content?.[0]?.text?.startsWith("<compressed-chain"));
+      expect(bodies).toHaveLength(2);
+      expect(request.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
+      for (const body of bodies) {
+        expect(body.content[0].text).toContain(outcome === "error" ? "raw result ".repeat(20) : "Done.");
+        if (outcome === "summarized") expect(body.content[0].text).not.toContain("raw result");
+      }
+      expectNoOrphanToolResults(request);
+    } finally {
+      release();
+      await harness.fire("session_shutdown");
+      jest.useRealTimers();
+      summarize.mockRestore();
+      harness.restore();
+    }
+  });
+
+  it("skips idle cleanup for an unawaited budget flush still in flight at submission", async () => {
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 2);
+    const harness = await boot(branch, false, { minBatchChars: 0, autoBudgetThreshold: 0.8 });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const summarize = spyOn(summarizer, "summarizeBatches").mockImplementation(async (batches) => {
+      entered();
+      await held;
+      return batches.map(() => null);
+    });
+    let flush: Promise<unknown> | undefined;
+    try {
+      harness.ctx.getContextUsage = () => ({ tokens: 190000, contextWindow: 200000 });
+      flush = harness.fire("turn_end", { turnIndex: 1, message: branch[5].message, toolResults: [branch[6].message] });
+      await started;
+      expect(summarize).toHaveBeenCalledTimes(1);
+      await harness.submit();
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
+      const request = await harness.request();
+      expect(request.filter((m: any) => m.role === "toolResult")).toEqual([branch[2].message, branch[6].message]);
+      expect(request.some((m: any) => m.content?.[0]?.text?.startsWith("<compressed-chain"))).toBe(false);
+      expectNoOrphanToolResults(request);
+    } finally {
+      release();
+      await flush;
+      summarize.mockRestore();
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it("compresses re-armed no-UI chains without flushing before the first request", async () => {
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 2);
+    const harness = await boot(branch, false, { minBatchChars: 0 });
+    const summarize = spyOn(summarizer, "summarizeBatches");
+    try {
+      await harness.submit("rpc");
+      expect(summarize).not.toHaveBeenCalled();
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_FLUSH_METRICS)).toHaveLength(0);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)
+        .map((entry) => entry.data.startUserTimestamp)).toEqual([branch[0].message.timestamp, branch[4].message.timestamp]);
+      const request = await harness.request();
+      const bodies = request.filter((m: any) => m.content?.[0]?.text?.startsWith("<compressed-chain"));
+      expect(bodies).toHaveLength(2);
+      for (const i of [0, 1]) expect(bodies[i].content[0].text).toContain(`raw result for task ${i}`);
+      expect(request.filter((m: any) => m.role === "toolResult")).toHaveLength(0);
+      expectNoOrphanToolResults(request);
+    } finally {
+      summarize.mockRestore();
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
   it.each([
     { failure: "before the first append", successfulAppends: 0 },
     { failure: "after one append", successfulAppends: 1 },
