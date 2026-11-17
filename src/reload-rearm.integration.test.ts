@@ -2235,6 +2235,41 @@ describe("final flush after the run settles (#37)", () => {
       expect(appended.slice(writtenBefore)).toEqual([]);
     });
 
+    it("a prompt waiting on credentials is released before the lookup finishes and writes nothing", async () => {
+      const { handlers, ctx, appended } = await finishedRun();
+      const callsBefore = summarizerCalls;
+      const writtenBefore = appended.length;
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let lookupStarted = false;
+      ctx.modelRegistry.getApiKeyAndHeaders = async () => {
+        lookupStarted = true;
+        await released;
+        return { ok: true, apiKey: "test", headers: {} };
+      };
+
+      const prompt = handlers.get("before_agent_start")!({ prompt: "late" }, ctx);
+      try {
+        expect(await isSettled(prompt)).toBe(false);
+        expect(lookupStarted).toBe(true);
+        expect(summarizerCalls).toBe(callsBefore);
+
+        const down = handlers.get("session_shutdown")!(shutdown, ctx);
+        invalidate(ctx);
+        await down;
+
+        expect(await isSettled(prompt)).toBe(true);
+        await prompt;
+        expect(appended.slice(writtenBefore)).toEqual([]);
+      } finally {
+        release();
+        await drainMicrotasks();
+      }
+
+      expect(summarizerCalls).toBe(callsBefore);
+      expect(appended.slice(writtenBefore)).toEqual([]);
+    });
+
     it("a budget flush in flight is aborted, releases the turn, and writes nothing", async () => {
       const { handlers, ctx, appended, branch } = await finishedRun({ autoBudgetThreshold: 0.5 });
       const { release, seen } = heldSummarizer();
