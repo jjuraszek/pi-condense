@@ -49,3 +49,4 @@ row 13 done | Documented the idle threshold, cache-refresh clock, literal retent
 repair verification | home 6261799 | iteration 15
 repair verification | home 6ef3202 | iteration 16
 repair verification | home bca68a4 | iteration 17
+amended | 3 item(s) | Protected-read reading follows the supersede candidate
