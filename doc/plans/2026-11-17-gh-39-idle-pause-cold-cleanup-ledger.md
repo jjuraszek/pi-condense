@@ -3,9 +3,10 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 17
+iterations: 18
 allowance: 10
 returned: 13 | home | f0353152cde87df43ab5d0d6ede257f4676d3f34
+pending: verify | home | 4754ceee8fb123b54738cc736c11480e286e7c63
 
 | row | status | attempts | evidence |
 |---|---|---|---|
