@@ -3,9 +3,9 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 4
+iterations: 5
 allowance: 10
-returned: 3 | home | d12cadb0aabe546a5b68602f0b508073c7fda57d
+returned: 6 | home | 27a7dc37880d1bc3fe08a9091bd9f377ecdded2d
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -14,10 +14,10 @@ returned: 3 | home | d12cadb0aabe546a5b68602f0b508073c7fda57d
 | 3 | done | 1 | timeout -k 30 120 bun test src/idle-cleanup.integration.test.ts; 25 passed, 0 failed; idle summaries and protected outputs stay literal before and after reload; manual compact still fuses and substitutes nested references |
 | 4 | done | 0 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 22 passed, 0 failed; open-turn messages and the new prompt equal the render without idle cleanup; existing cold-event floors still activate open-turn reads |
 | 5 | done | 0 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 15 passed, 0 failed; a 60-minute pause writes no chain entry in UI and no-UI sessions; first-request messages equal the pre-cleanup render |
-| 6 | open | 0 | |
+| 6 | done | 1 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 41 passed, 0 failed; a 60-minute-old cache_warm preserves the first request in UI and no-UI sessions; both refresh kinds use ISO entry timestamps and the newest refresh wins |
 | 7 | done | 0 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 13 passed, 0 failed; a new extension instance reconstructs a 240-minute-old branch at session_start; its first UI or no-UI prompt compresses all 3 chains |
-| 8 | open | 0 | |
-| 9 | open | 0 | |
+| 8 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 54 passed, 0 failed; longer declared lifetimes delay cleanup with strict boundary checks; the real helper selects long only for PI_CACHE_RETENTION=long and short for short, none, or unset |
+| 9 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 58 passed, 0 failed; no declared lifetime keeps a 60-minute request unchanged and compresses after 240 minutes; the handler uses the threshold when promptCache or its active retention tier is missing |
 | 10 | open | 0 | |
 | 11 | open | 0 | |
 | 12 | open | 0 | |
@@ -31,3 +31,6 @@ row 5 done | A 60-minute pause leaves the first-request render unchanged in UI a
 row 2 done | Idle cleanup activates covered protected reads in closed chains, including when no chain compresses. | Reuse activateClosedChainSuperseded in src/supersede.ts for replay activation without changing the pending floor.
 row 4 done | The open turn and submitted prompt match the render without idle cleanup, including when a cold-event floor is pending. | Reuse the open-turn comparison in src/idle-cleanup.integration.test.ts to check occurrence identity and pending cold floors.
 row 3 done | Idle compression preserves summary and protected-output bytes across reload without fusing, while manual compact keeps its rendering. | Reuse ChainCompressionEntry.literalSummary for durable literal rendering and summarizedBranch in src/idle-cleanup.integration.test.ts for protected-output checks.
+row 6 done | Cache-warm entries restart the idle clock, and both request kinds use ISO entry timestamps rather than assistant message timestamps. | Reuse src/idle-pause.test.ts clock fixtures and the cache-warm integration cases to check pause timing without model calls.
+row 8 done | Checks prove longer declared cache lifetimes delay cleanup through the real helper and restore the retention environment after each case. | Reuse the declared-lifetime matrix in src/idle-cleanup.integration.test.ts for isolated retention-tier checks.
+row 9 done | Checks prove the threshold alone controls cleanup when a model lacks a cache lifetime for the active retention tier. | Reuse the undeclared-lifetime cases in src/idle-cleanup.integration.test.ts for models missing promptCache or its long tier.

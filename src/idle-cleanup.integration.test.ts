@@ -148,6 +148,103 @@ function summarizedBranch(endMs: number) {
 
 describe("idle cleanup", () => {
   it.each([
+    { promptCache: undefined, age: 60, compressed: 0 },
+    { promptCache: undefined, age: 240, compressed: 3 },
+    { promptCache: { short: 300 }, age: 60, compressed: 0 },
+    { promptCache: { short: 300 }, age: 240, compressed: 3 },
+  ])("a model without a declared lifetime uses the threshold (%j)", async ({ promptCache, age, compressed }) => {
+    const harness = await boot(closedChainBranch(Date.now() - age * 60_000, 3), false);
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+    try {
+      process.env.PI_CACHE_RETENTION = "long";
+      harness.ctx.model = { id: "fixture", provider: "fixture", api: "anthropic-messages", promptCache };
+      const before = (await harness.request()).slice(0, -1);
+      await harness.submit();
+      const after = (await harness.request()).slice(0, -1);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(compressed);
+      expect(after.filter((message: any) => message.role === "toolResult")).toHaveLength(3 - compressed);
+      if (compressed === 0) expect(after).toEqual(before);
+      expectNoOrphanToolResults(after);
+    } finally {
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([
+    { retention: "short", age: 4, compressed: 0 },
+    { retention: "short", age: 6, compressed: 3 },
+    { retention: "long", age: 30, compressed: 0 },
+    { retention: "long", age: 61, compressed: 3 },
+    { retention: "none", age: 4, compressed: 0 },
+    { retention: "none", age: 6, compressed: 3 },
+    { retention: undefined, age: 4, compressed: 0 },
+    { retention: undefined, age: 6, compressed: 3 },
+  ])("the handler passes the model's declared lifetime (%j)", async ({ retention, age, compressed }) => {
+    const branch = closedChainBranch(Date.now() - age * 60_000, 3);
+    const harness = await boot(branch, false, {
+      chainCompression: { ...DEFAULT_CONFIG.chainCompression, idleCleanupMinutes: 1 },
+    });
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+    try {
+      if (retention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = retention;
+      harness.ctx.model = { id: "fixture", provider: "fixture", api: "anthropic-messages", promptCache: { short: 300, long: 3600 } };
+      const messages = [
+        ...projectBranchMessages(branch),
+        { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: Date.now() },
+      ];
+      const before = (await harness.fire("context", { messages }))?.messages ?? messages;
+      await harness.submit();
+      const after = (await harness.fire("context", { messages }))?.messages ?? messages;
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(compressed);
+      expect(after.filter((message: any) => message.role === "toolResult")).toHaveLength(3 - compressed);
+      if (compressed === 0) expect(after).toEqual(before);
+      expectNoOrphanToolResults(after);
+    } finally {
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([
+    { hasUI: true, kind: "cache_warm", warmAge: 60, compressed: 0 },
+    { hasUI: false, kind: "cache_warm", warmAge: 60, compressed: 0 },
+    { hasUI: false, kind: "cache_warm", warmAge: 240, compressed: 3 },
+    { hasUI: false, kind: "other", warmAge: 60, compressed: 3 },
+  ])("a cache-warm entry restarts the clock (%j)", async ({ hasUI, kind, warmAge, compressed }) => {
+    const now = Date.now();
+    const branch = closedChainBranch(now - 300 * 60_000, 3);
+    branch.push({
+      type: "usage", id: "warm-entry", parentId: branch.at(-1).id,
+      timestamp: new Date(now - warmAge * 60_000).toISOString(), kind, provider: "fixture", model: "fixture",
+      usage: { input: 0, output: 0, cacheRead: 1, cacheWrite: 0, totalTokens: 1,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    });
+    const harness = await boot(branch, hasUI);
+    try {
+      const messages = [
+        ...projectBranchMessages(branch),
+        { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: now },
+      ];
+      const before = (await harness.fire("context", { messages }))?.messages ?? messages;
+      await harness.submit();
+      const after = (await harness.fire("context", { messages }))?.messages ?? messages;
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(compressed);
+      expect(after.filter((message: any) => message.role === "toolResult")).toHaveLength(3 - compressed);
+      if (compressed === 0) expect(after).toEqual(before);
+      expectNoOrphanToolResults(after);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([
     { idle: true, fuse: true },
     { idle: false, fuse: false },
     { idle: false, fuse: true },
