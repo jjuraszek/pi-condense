@@ -41,3 +41,4 @@ amended | 1 item(s) | Clean candidate eval checkout
 row 11 done | The skill-reply twins pass 3/3 each on a clean committed candidate, and offline validation rejects stale or incomplete reports. | Reuse eval/idle-evidence.ts with the saved report path and a fresh scenario ID to validate twins without paid calls.
 row 12 failed | Added workflow twins covering summarized, zero-summary, and interrupted partial chains, but the saved paid report lacks the workflow pair. | Keep the twins and 7 passing fixture checks; run --idle from this committed candidate, then validate plan-progress-continue with eval/idle-evidence.ts.
 row 12 failed | Two clean-candidate idle runs confirmed workflow regression: fresh 3/3, paused 0/3, while skill twins stayed 3/3. | Keep both reports; fix lost unsummarized tracker state in partly summarized chains without weakening the twins or repeating the unchanged paid comparison.
+amended | 1 item(s) | Retain never-summarized result text
