@@ -366,7 +366,7 @@ function startPrunerWidget(
   batches: CapturedBatch[],
 ): {
   updateRow: (index: number, status: RowStatus, chars?: number) => void;
-  clearWidget: () => void;
+  clearWidget: (updateUI?: boolean) => void;
 } {
   const total = batches.length;
   const rows: WidgetRow[] = batches.map((b, i) => ({
@@ -452,10 +452,10 @@ function startPrunerWidget(
         syncAnimationLoop();
       }
     },
-    clearWidget() {
+    clearWidget(updateUI = true) {
       stopAnimationLoop();
       requestRender = undefined;
-      ctx.ui.setWidget(PROGRESS_WIDGET_ID, undefined);
+      if (updateUI) ctx.ui.setWidget(PROGRESS_WIDGET_ID, undefined);
     },
   };
 }
@@ -1106,8 +1106,10 @@ export function registerCommands(
             },
           });
 
-          // Remove the widget and restore the normal footer status.
-          clearWidget();
+          // Only shutdown aborts a manual flush; stop the timer without touching its stale UI.
+          const aborted = !result.ok && result.reason === "aborted";
+          clearWidget(!aborted);
+          if (aborted) break;
           setPruneStatusWidget(ctx, currentConfig.value, getLiveReclaim(), getDiagnosticCounts?.());
 
           if (!result.ok) {

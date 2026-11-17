@@ -106,8 +106,8 @@ function combineSignals(...signals: (AbortSignal | undefined)[]): AbortSignal | 
   return AbortSignal.any(present); // Node 20+; host runtime is node 24.5.0
 }
 
-// Virtual routing can ignore the signal, so cancellation must end our wait
-// without depending on the underlying stream settling.
+// Credential lookup and virtual routing can ignore the signal, so cancellation
+// must end our wait without depending on the underlying operation settling.
 function untilAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(new Error("summarize: aborted"));
@@ -160,7 +160,7 @@ async function runOnce(
     // Preserve auth classification for physical models without pre-checking
     // a virtual model's provider instead of its routed physical target.
     if (model.api !== VIRTUAL_MODEL_API) {
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      const auth = await untilAbort(ctx.modelRegistry.getApiKeyAndHeaders(model), options.signal);
       if (!auth.ok) {
         const authMessage = "error" in auth ? auth.error : "authentication failed";
         return { kind: "auth", message: authMessage };
