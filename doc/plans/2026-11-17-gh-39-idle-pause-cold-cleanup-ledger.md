@@ -6,7 +6,6 @@ checks: commands
 iterations: 19
 allowance: 10
 returned: 13 | home | f0353152cde87df43ab5d0d6ede257f4676d3f34
-pending: verify | home | c27752429a4b12bdc657315d913f9675c9b4238c
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -52,3 +51,4 @@ repair verification | home 6ef3202 | iteration 16
 repair verification | home bca68a4 | iteration 17
 amended | 3 item(s) | Protected-read reading follows the supersede candidate
 repair verification | home fc2469c | iteration 18
+repair verification | home f447534 | iteration 19
