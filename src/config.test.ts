@@ -82,8 +82,8 @@ describe("loadConfig idle cleanup normalization", () => {
     },
   );
 
-  it.each([undefined, null, 0, -1, "60", false, {}, [], NaN, Infinity, -Infinity])(
-    "falls back to 180 for an invalid threshold (%j)", async (idleCleanupMinutes) => {
+  it.each([undefined, null, 0, -1, "60", false, {}, [], NaN, Infinity, -Infinity].map((idleCleanupMinutes) => ({ idleCleanupMinutes })))(
+    "falls back to 180 for an invalid threshold (%j)", async ({ idleCleanupMinutes }) => {
       await writeContextPrune({ chainCompression: { idleCleanupMinutes } });
       expect((await loadConfig()).chainCompression).toEqual(DEFAULT_CONFIG.chainCompression);
     },
