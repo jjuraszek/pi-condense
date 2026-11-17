@@ -57,9 +57,11 @@ export function assertIdleRequest({ scenario, seeded, branch, outgoing, refMap, 
     const results = outgoing.filter(m => m.role === "toolResult" && m.toolCallId === call.id);
     const owningChain = chains.find(e => e.droppedToolCallIds.includes(call.id));
     const inside = owningChain !== undefined;
-    if (call.kind === "protected") requireProof(bodies.some(body => body.includes(raw!.text!)), "error:not-pruned");
+    const relocated = inside && bodies.some(body => body.startsWith(`<compressed-chain id="${owningChain.blockId}"`)
+      && [...body.matchAll(/<protected-output(?:\s[^>]*)?>([\s\S]*?)<\/protected-output>/g)].some(block => block[1].includes(raw!.text!)));
+    if (call.kind === "protected") requireProof(results.some(m => text(m.content) === raw!.text) || relocated, "error:not-pruned");
     else if (call.kind === "unsummarized") requireProof(inside
-      ? results.length === 0 && bodies.some(body => body.startsWith(`<compressed-chain id="${owningChain.blockId}"`) && body.includes(raw!.text!))
+      ? results.length === 0 && relocated
       : results.some(m => text(m.content) === raw!.text), "error:not-pruned");
     else {
       requireProof(!bodies.some(body => body.includes(raw!.text!)), "error:not-pruned");
