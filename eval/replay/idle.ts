@@ -46,13 +46,16 @@ const occurrence = (message: any): string => occKey(message.toolCallId, resultTi
 
 /** `registered` holds the chain entries that existed before the pause; `request` is the unpruned message array. */
 export function preservationViolations(before: any[], after: any[], compressed: ChainCompressionEntry[], config: ContextPruneConfig, neverSummarized: Set<string>,
-  request: any[], registered: ChainCompressionEntry[]): number {
-  let violations = 0;
+  request: any[], registered: ChainCompressionEntry[], pointerResults = new Set<string>()) {
+  let violations = 0, pointerResultsChecked = 0;
   const text = after.map(message => message.role === "toolResult" ? extractToolResultText(message) : textOf(message));
   const contains = (value: string) => text.some(part => part.includes(value));
   const exact = new Set(after.map(message => JSON.stringify(message)));
   const closed = detectChains(before).map(chain => ({ chain, range: resolveRange(chain, before) })).filter(item => item.range !== null);
-  const newRanges = compressed.map(entry => resolveRange(entry, before)).filter(range => range !== null);
+  const newRanges = compressed.flatMap(entry => {
+    const range = resolveRange(entry, before);
+    return range ? [{ ...range, blockId: entry.blockId }] : [];
+  });
   const protectedPositions = new Set<number>();
   let calls = new Map<string, any>();
   before.forEach((message, i) => {
@@ -97,19 +100,26 @@ export function preservationViolations(before: any[], after: any[], compressed: 
       const replaced = candidate && contains(supersededStub(candidate.path));
       if (!replaced && !contains(extractToolResultText(message))) violations++;
     }
-    if (message.role === "toolResult" && newRanges.some(range => i > range!.startIndex && i < range!.endIndex) &&
-        !protectedPositions.has(i) && neverSummarized.has(occurrence(message)) &&
-        !contains(extractToolResultText(message))) violations++;
+    const compressedOwner = newRanges.find(range => i > range.startIndex && i < range.endIndex);
+    if (message.role === "toolResult" && compressedOwner && neverSummarized.has(occurrence(message))) {
+      if (pointerResults.has(occurrence(message))) {
+        pointerResultsChecked++;
+        const block = `<protected-output tool="${message.toolName}">\n${extractToolResultText(message)}\n</protected-output>`;
+        const relocated = after.find(part => part.role === "user" && textOf(part).startsWith(`<compressed-chain id="${compressedOwner.blockId}"`));
+        const body = relocated ? textOf(relocated) : "", end = body.lastIndexOf("\n</compressed-chain>");
+        if (end < 0 || !body.slice(0, end).includes(block)) violations++;
+      } else if (!protectedPositions.has(i) && !contains(extractToolResultText(message))) violations++;
+    }
     if (i > lastOpening && !owner && !exact.has(JSON.stringify(message))) violations++;
   });
-  return violations;
+  return { violations, pointerResultsChecked };
 }
 
 export async function replayIdleSessions(options: IdleOptions, config: ContextPruneConfig, render = pruneMessages) {
   const out = assertOutsideRepo(options.out ?? mkdtempSync(join(tmpdir(), "pi-condense-idle-")));
   mkdirSync(out, { recursive: true });
   const report = {
-    sessionsRead: 0, sessionsSkipped: 0, returnsFound: 0, returnsChecked: 0, violations: 0,
+    sessionsRead: 0, sessionsSkipped: 0, returnsFound: 0, returnsChecked: 0, violations: 0, pointerResultsChecked: 0,
     estimatedTokensRemoved: 0, medianPromptShareRemoved: 0,
     protectedOutputComparison: "extracted text, including image marker text; not original image blocks",
     violationRecords: [] as { sessionStem: string; entryIndex: number }[],
@@ -137,12 +147,11 @@ export async function replayIdleSessions(options: IdleOptions, config: ContextPr
         const predicate = (name: string, args: unknown, nested?: any) => isProtected(name, args, config, nested);
         const state = createSupersedeState(), registered = indexer.getChainEntries();
         const before = render(request, indexer, config.chainCompression, config.purgeErrors, config, config.recoveryGraceTurns, undefined, { state, isProtected: predicate }).messages;
-        // Never summarized means raw in the unchanged render: a dedup alias or a spilled
-        // result is already a recovery stub there, with no result text left to keep.
-        const rawText = new Map(messages.filter(message => message.role === "toolResult").map(message => [occurrence(message), extractToolResultText(message)]));
         const neverSummarized = new Set(before.filter(message => message.role === "toolResult" &&
-          rawText.get(occurrence(message)) === extractToolResultText(message) && !indexer.hasPerBatchSummaryCoveringAny([occurrence(message)]))
-          .map(occurrence));
+          !indexer.hasPerBatchSummaryCoveringAny([occurrence(message)])).map(occurrence));
+        // Compare pointer stubs to the unchanged render, not the original result text.
+        const pointerResults = new Set([...neverSummarized].filter(key =>
+          indexer.isDedupAlias(key) || indexer.getIndex().get(key)?.spillPath));
         activateClosedChainSuperseded(messages, state, predicate);
         const blockRefs = new BlockRefIssuer();
         blockRefs.rebuildFrom(indexer.getChainEntries().map(entry => entry.blockId));
@@ -155,7 +164,8 @@ export async function replayIdleSessions(options: IdleOptions, config: ContextPr
           backfill: { spillThreshold: Infinity, spillPreviewBytes: config.spillPreviewBytes, sessionDir: out, sessionId: "idle" },
         }, inGraceRecoveryToolCallIds(messages, config.recoveryGraceTurns));
         const after = render(request, indexer, config.chainCompression, config.purgeErrors, config, config.recoveryGraceTurns, undefined, { state, isProtected: predicate }).messages;
-        const violations = preservationViolations(before, after, result.compressedEntries, config, neverSummarized, request, registered);
+        const { violations, pointerResultsChecked } = preservationViolations(before, after, result.compressedEntries, config, neverSummarized, request, registered, pointerResults);
+        report.pointerResultsChecked += pointerResultsChecked;
         report.returnsChecked++;
         report.violations += violations;
         if (violations) report.violationRecords.push({ sessionStem: basename(file, ".jsonl"), entryIndex });

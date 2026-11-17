@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { seedEntries, type SeedTurn } from "../scenario";
 import { captureBatch, extractToolResultText } from "../../src/batch-capture";
 import { ToolCallIndexer } from "../../src/indexer";
+import { applySpill } from "../../src/spill";
 import { occKey } from "../../src/occurrence-key";
 import { DEFAULT_CONFIG, CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_SUMMARY } from "../../src/types";
 import { pruneMessages } from "../../src/pruner";
@@ -163,7 +164,12 @@ function pausedSession(history: SeedTurn[], extras: (entries: any[]) => any[]) {
   return fixture;
 }
 
-test("idle drops a deduplicated result's stub with its chain instead of restoring the raw output", async () => {
+test.each([
+  ["capture spill", "kept"], ["capture spill", "lost"], ["capture spill", "raw restored"],
+  ["capture spill", "outside relocation"], ["capture spill", "wrong chain"],
+  ["dedup alias", "kept"], ["dedup alias", "lost"], ["dedup alias", "raw restored"],
+  ["dedup alias", "outside relocation"], ["dedup alias", "wrong chain"],
+])("idle checks a never-summarized %s pointer in its owning relocation: %s", async (kind, change) => {
   const fixture = pausedSession([
     { role: "user", text: "Run it." },
     { role: "assistant", toolCalls: [{ id: "first", name: "bash", arguments: { command: "echo same" } }] },
@@ -181,14 +187,38 @@ test("idle drops a deduplicated result's stub with its chain instead of restorin
     indexer.addBatch(batch, append);
     extras.push({ type: "custom_message", customType: CUSTOM_TYPE_SUMMARY, content: "The first run printed one line.", display: false,
       details: { toolCallRefs: indexer.allocateSummaryRefs(batch) } });
-    indexer.registerDuplicate(occKey("again", again.timestamp), occKey("first", first.timestamp), append);
+    if (kind === "dedup alias") indexer.registerDuplicate(occKey("again", again.timestamp), occKey("first", first.timestamp), append);
+    else {
+      const spilled = captureBatch(entries[6].message, [again], 1, again.timestamp);
+      applySpill(spilled.toolCalls[0], "/synthetic/spilled-result.txt", 0);
+      indexer.addBatch(spilled, append);
+    }
     return extras;
   });
-  const cleaned: any[][] = [];
-  const report = await replayIdleSessions({ inputs: [fixture.input], out: fixture.out }, protectedConfig, losing(undefined, cleaned));
-  expect(report).toMatchObject({ returnsFound: 1, returnsChecked: 1, violations: 0 });
-  expect(JSON.stringify(cleaned)).toContain("<compressed-chain");
-  expect(JSON.stringify(cleaned)).not.toContain("Same output.");
+  let renders = 0, pointer = "";
+  const report = await replayIdleSessions({ inputs: [fixture.input], out: fixture.out }, protectedConfig, (...args) => {
+    const result = pruneMessages(...args);
+    if (++renders % 2 !== 0) {
+      pointer = extractToolResultText(result.messages.find(message => message.role === "toolResult" && message.toolCallId === "again")!);
+      expect(pointer).not.toBe("Same output.");
+      return result;
+    }
+    const block = `<protected-output tool="bash">\n${pointer}\n</protected-output>`;
+    const owner = result.messages.find(message => message.role === "user" && extractToolResultText(message).includes(block))!;
+    expect(owner).toBeDefined();
+    const content = owner.content as { type: "text"; text: string }[];
+    if (change !== "kept") content[0].text = content[0].text.replace(block,
+      change === "raw restored" ? '<protected-output tool="bash">\nSame output.\n</protected-output>' : "");
+    if (change === "outside relocation") content[0].text += `\n${block}`;
+    if (change === "wrong chain") {
+      const other = result.messages.find(message => message !== owner && message.role === "user" && extractToolResultText(message).startsWith("<compressed-chain"))!;
+      (other.content as { type: "text"; text: string }[])[0].text += `\n${block}`;
+    }
+    return result;
+  });
+  expect(report).toMatchObject({ returnsFound: 1, returnsChecked: 1, pointerResultsChecked: 1 });
+  expect(report.violations > 0).toBe(change !== "kept");
+  expect(JSON.stringify(report)).not.toContain(pointer);
 });
 
 test.each([
