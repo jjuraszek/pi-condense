@@ -6,7 +6,6 @@ checks: commands
 iterations: 15
 allowance: 10
 returned: 13 | home | f0353152cde87df43ab5d0d6ede257f4676d3f34
-pending: verify | home | 3c8bcdd135ceafc0822ba7be0032ad9f2a03b46e
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -47,3 +46,4 @@ row 12 failed | Retained unsummarized tracker text through reload with 97 passin
 row 12 escalated | implModel round | allowed attempts 10
 row 12 done | Workflow twins score fresh 3/3 and paused 3/3 on clean candidate 8cd74a4, with the latest tracker text retained in all three paused first requests. | Reuse the cbQxsB report with eval/idle-evidence.ts for both pairs; row 11's au4zjE report is now stale, and eval/session.ts still lacks the in-chain retained-text proof the spec table names.
 row 13 done | Documented the idle threshold, cache-refresh clock, literal retention, closed-turn supersession, settings, and targeted eval limits. | Reuse PRUNING.md#idle-cleanup; idle replay and failure diagnostics still need code before their documentation can be added.
+repair verification | home 6261799 | iteration 15
