@@ -521,6 +521,13 @@ export interface ChainCompressionEntry {
    */
   protectedToolCallIds?: string[];
   /**
+   * Occurrence keys of results without per-batch summary coverage that were
+   * already a recovery stub (capture spill, dedup alias) when idle cleanup
+   * compressed the chain. The stub the render gives them is relocated into the
+   * <compressed-chain> body like protected output; their raw text is not restored.
+   */
+  stubbedToolCallIds?: string[];
+  /**
    * Timestamp of the final text-only assistant in the chain.
    * Kept in context but with thinking blocks stripped.
    * Null when the chain was truncated (no text-only close found).

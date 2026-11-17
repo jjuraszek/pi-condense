@@ -1,11 +1,19 @@
 import { describe, expect, it, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { selectEligible, compressEligible, extractChainRecords, buildDeterministicBody } from "./chain-compressor.js";
 import type { ChainCompressorIndexerDeps } from "./chain-compressor.js";
 import type { ChainRange, ChainCompressionEntry, ToolCallRecord } from "./types.js";
-import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_INDEX } from "./types.js";
+import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_INDEX, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG } from "./types.js";
 import { detectChains } from "./chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 import { occKey } from "./occurrence-key.js";
+import { captureBatch } from "./batch-capture.js";
+import { BlockRefIssuer } from "./block-refs.js";
+import { ToolCallIndexer } from "./indexer.js";
+import { pruneMessages } from "./pruner.js";
+import { blobPathFor, spillOversizedBatch } from "./spill.js";
 
 function closed(startUserTimestamp: number, toolCallIds: string[] = [`tc-${startUserTimestamp}`]): ChainRange {
   return { startUserTimestamp, middleToolCallIds: toolCallIds, finalAssistantTimestamp: startUserTimestamp + 100 };
@@ -729,20 +737,6 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
     expect(backfillCalls).toHaveLength(0);
   });
 
-  test.each(["dedup alias", "spilled"])("idle retention skips a %s occurrence the request already carries as a recovery stub", async (kind) => {
-    const messages = chainMessages();
-    const keys = [occKey("c1", 1050), occKey("c2", 1150)];
-    const [stubbed] = extractChainRecords(messages, uncoveredChain(), () => false);
-    const { deps } = makeDeterministicDeps({
-      messages, indexRecords: new Map(kind === "spilled" ? [[keys[0], { ...stubbed, spillPath: "/tmp/blob" }]] : []),
-    });
-    deps.indexer.isDedupAlias = (key: string) => kind === "dedup alias" && key === keys[0];
-    const result = await compressEligible(
-      [{ ...uncoveredChain(), middleOccurrenceKeys: keys }], 0, { ...deps, literalSummary: true } as any,
-    );
-    expect(result.compressedEntries[0].protectedToolCallIds).toEqual([keys[1]]);
-  });
-
   test("custom-anchored uncovered chain still compresses deterministically and backfills", async () => {
     const messages = [
       { role: "custom", customType: "pi-gauntlet-transition-recovery", timestamp: 1000 },
@@ -917,5 +911,105 @@ describe("compressEligible - deterministic zero-LLM branch", () => {
     expect(body).toContain("Calls: 1");
     expect(body).toContain("Tools: bash x1");
     expect(body.length).toBeGreaterThan(0);
+  });
+});
+
+describe("compressEligible - idle retention through the real indexer, spill, and render", () => {
+  test.each([true, false])("idle cleanup keeps the stub of a capture-spilled result and of a dedup alias, and the raw text of an ordinary result, across reload; ordinary compression keeps none (idle=%s)", async (idle) => {
+    const sessionDir = await mkdtemp(join(tmpdir(), "pi-condense-idle-pointer-"));
+    const spill = { spillThreshold: 200, spillPreviewBytes: 32, sessionDir, sessionId: "s" };
+    const entries: any[] = [];
+    const appendEntry = (customType: string, data?: unknown) => { entries.push({ type: "custom", customType, data }); };
+    const indexer = new ToolCallIndexer();
+
+    const oversized = (tag: string) => `${tag} payload line\n`.repeat(20);
+    const SUMMARIZED = "short output the flush summarized";
+    const LATEST = "Task 2: in_progress";
+    const turn = (timestamp: number, ids: string[]) => ({
+      role: "assistant", timestamp, content: ids.map((id) => ({ type: "toolCall", id, name: "bash", input: { command: id } })),
+    });
+    const result = (toolCallId: string, timestamp: number, text: string) => ({
+      role: "toolResult", toolCallId, toolName: "bash", timestamp, isError: false, content: [{ type: "text", text }],
+    });
+    const first = [result("summarized", 1010, SUMMARIZED), result("spilled", 1020, oversized("first"))];
+    const second = [result("aliasOfSummarized", 1040, SUMMARIZED), result("aliasOfSpilled", 1050, oversized("first")), result("ordinary", 1060, LATEST)];
+    const unsummarized = [result("loneSpilled", 2010, oversized("second")), result("loneAlias", 2020, SUMMARIZED)];
+    const turns = [
+      turn(1001, ["summarized", "spilled"]),
+      turn(1030, ["aliasOfSummarized", "aliasOfSpilled", "ordinary"]),
+      turn(2001, ["loneSpilled", "loneAlias"]),
+    ];
+    const batches = [first, second, unsummarized].map((results, i) => captureBatch(turns[i], results, i, results.at(-1)!.timestamp));
+
+    // Turn end: capture spill, with its content dedup against earlier spills.
+    for (const batch of batches) {
+      await spillOversizedBatch({ batch, indexer, config: { ...spill, dedupByContentHash: true }, sessionDir, sessionId: "s", appendEntry });
+    }
+    // Flush: one summary for the first turn's remaining call, then the pre-flush dedup of the second turn.
+    const summarizedBatch = { ...batches[0], toolCalls: batches[0].toolCalls.filter((tc) => tc.toolCallId === "summarized") };
+    const refs = indexer.allocateSummaryRefs(summarizedBatch);
+    const summaryText = "Summary of the first batch.";
+    indexer.registerSummaryRefs(refs);
+    indexer.addBatch(summarizedBatch, appendEntry);
+    indexer.registerSummaryBody([occKey("summarized", 1010)], summaryText);
+    const summaryDetails = { toolCallRefs: refs };
+    entries.push({ type: "custom_message", customType: CUSTOM_TYPE_SUMMARY, content: summaryText, details: summaryDetails });
+    for (const alias of [occKey("aliasOfSummarized", 1040), occKey("loneAlias", 2020)]) {
+      indexer.registerDuplicate(alias, indexer.lookupByContent("bash", SUMMARIZED)!, appendEntry);
+    }
+
+    const messages = [
+      { role: "user", timestamp: 1000, content: [{ type: "text", text: "Run it." }] },
+      turns[0], ...first, turns[1], ...second,
+      { role: "assistant", timestamp: 1100, content: [{ type: "text", text: "Done." }] },
+      { role: "custom", customType: CUSTOM_TYPE_SUMMARY, content: summaryText, details: summaryDetails, timestamp: 1101 },
+      { role: "user", timestamp: 2000, content: [{ type: "text", text: "Run the other one." }] },
+      turns[2], ...unsummarized,
+      { role: "assistant", timestamp: 2100, content: [{ type: "text", text: "Done again." }] },
+    ];
+    const render = (from: ToolCallIndexer) => pruneMessages(messages, from, DEFAULT_CONFIG.chainCompression).messages;
+    const stubs = new Map<string, string>(
+      render(indexer).filter((m: any) => m.role === "toolResult").map((m: any) => [m.toolCallId, m.content[0].text]),
+    );
+    expect(stubs.get("spilled")).toContain(blobPathFor(sessionDir, "s", occKey("spilled", 1020)));
+    expect(stubs.get("aliasOfSpilled")).toContain(blobPathFor(sessionDir, "s", occKey("spilled", 1020)));
+    for (const id of ["aliasOfSummarized", "loneAlias"]) expect(stubs.get(id)).toContain(`ref \`${refs[0].shortId}\``);
+    expect(stubs.get("loneSpilled")).toContain(blobPathFor(sessionDir, "s", occKey("loneSpilled", 2010)));
+    expect(stubs.get("ordinary")).toBe(LATEST);
+
+    const { compressedEntries } = await compressEligible(detectChains(messages), 0, {
+      indexer, blockRefs: new BlockRefIssuer(), appendEntry, now: () => 5000, literalSummary: idle,
+      messages, diagnostics: { report: () => {} }, backfill: spill,
+    });
+    expect(compressedEntries.map((e) => e.bodySource)).toEqual([undefined, "deterministic"]);
+    expect(compressedEntries.map((e) => e.protectedToolCallIds)).toEqual(idle ? [[occKey("ordinary", 1060)], undefined] : [undefined, undefined]);
+    expect(compressedEntries.map((e) => e.stubbedToolCallIds)).toEqual(idle
+      ? [
+          [occKey("spilled", 1020), occKey("aliasOfSummarized", 1040), occKey("aliasOfSpilled", 1050)],
+          [occKey("loneSpilled", 2010), occKey("loneAlias", 2020)],
+        ]
+      : [undefined, undefined]);
+
+    const rendered = render(indexer);
+    const [partlySummarized, zeroSummary] = rendered
+      .filter((m: any) => m.role === "user" && m.content[0].text.startsWith("<compressed-chain"))
+      .map((m: any) => m.content[0].text as string);
+    const block = (text: string) => `\n\n<protected-output tool="bash">\n${text}\n</protected-output>`;
+    for (const id of ["spilled", "aliasOfSummarized", "aliasOfSpilled", "ordinary"]) {
+      expect(partlySummarized.includes(block(stubs.get(id)!))).toBe(idle);
+    }
+    for (const id of ["loneSpilled", "loneAlias"]) expect(zeroSummary.includes(block(stubs.get(id)!))).toBe(idle);
+    expect(`${partlySummarized}${zeroSummary}`.includes("<protected-output")).toBe(idle);
+    expect(partlySummarized).toContain(summaryText);
+    const request = JSON.stringify(rendered);
+    for (const raw of [SUMMARIZED, oversized("first"), oversized("second")]) {
+      expect(request).not.toContain(JSON.stringify(raw).slice(1, -1));
+    }
+    expect(rendered.some((m: any) => m.role === "toolResult")).toBe(false);
+
+    const reloaded = new ToolCallIndexer();
+    reloaded.reconstructFromSession({ sessionManager: { getBranch: () => entries } } as any);
+    expect(render(reloaded)).toEqual(rendered);
+    await rm(sessionDir, { recursive: true, force: true });
   });
 });

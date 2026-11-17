@@ -218,6 +218,7 @@ export async function compressEligible(
     // Bare ids would match nothing and silently skip every chain.
     const lookupKeys = chain.middleOccurrenceKeys?.length ? chain.middleOccurrenceKeys : chain.middleToolCallIds;
     const protectedToolCallIds = new Set(chain.protectedToolCallIds ?? []);
+    const stubbedToolCallIds = new Set<string>();
     if (deps.literalSummary) {
       const range = resolveRange(chain, deps.messages);
       if (range) {
@@ -225,10 +226,11 @@ export async function compressEligible(
           const msg = deps.messages[i];
           if (msg.role !== "toolResult" || protectedToolCallIds.has(msg.toolCallId)) continue;
           const key = occKey(msg.toolCallId, resultTimestampOf(msg.timestamp));
+          if (deps.indexer.hasPerBatchSummaryCoveringAny([key])) continue;
           // A dedup alias or a spilled record is already a recovery stub in the
-          // request; retaining it would put back text the request does not hold.
-          if (deps.indexer.isDedupAlias(key) || deps.indexer.getIndex().get(key)?.spillPath) continue;
-          if (!deps.indexer.hasPerBatchSummaryCoveringAny([key])) protectedToolCallIds.add(key);
+          // request: the chain keeps that stub, not text the request no longer holds.
+          if (deps.indexer.isDedupAlias(key) || deps.indexer.getIndex().get(key)?.spillPath) stubbedToolCallIds.add(key);
+          else protectedToolCallIds.add(key);
         }
       }
     }
@@ -258,9 +260,12 @@ export async function compressEligible(
         skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
         continue;
       }
+      // A stubbed alias already recovers through its original; indexing it
+      // again would replace the ref its stub names.
+      const unindexed = fresh.filter((r) => !stubbedToolCallIds.has(occKey(r.toolCallId, r.resultTimestamp)));
       try {
-        if (fresh.length > 0) {
-          await deps.indexer.backfillChainRecords(fresh, {
+        if (unindexed.length > 0) {
+          await deps.indexer.backfillChainRecords(unindexed, {
             ...deps.backfill,
             // Backfill awaits spill file I/O before this write; throwing keeps the
             // records out of the in-memory index as well as the session.
@@ -289,6 +294,7 @@ export async function compressEligible(
         bodySource: "deterministic",
         ...(deps.literalSummary ? { literalSummary: true } : {}),
         ...(protectedToolCallIds.size ? { protectedToolCallIds: [...protectedToolCallIds] } : {}),
+        ...(stubbedToolCallIds.size ? { stubbedToolCallIds: [...stubbedToolCallIds] } : {}),
         ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
       };
       deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);
@@ -325,6 +331,7 @@ export async function compressEligible(
       ...(rangeSummaryText ? { rangeSummaryText } : {}),
       ...(deps.literalSummary ? { literalSummary: true } : {}),
       ...(protectedToolCallIds.size ? { protectedToolCallIds: [...protectedToolCallIds] } : {}),
+      ...(stubbedToolCallIds.size ? { stubbedToolCallIds: [...stubbedToolCallIds] } : {}),
       ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
     };
 

@@ -174,7 +174,9 @@ export function applyChainCompressions(
   const protectedByBlock = new Map<string, { tool: string; text: string }[]>();
 
   for (const { entry, startIndex, endIndex } of accepted) {
-    const protectedIds = new Set(entry.protectedToolCallIds ?? []);
+    // Phase 1 has already rendered a stubbed occurrence as its stub, so the
+    // same relocation carries that text instead of the raw result.
+    const protectedIds = new Set([...(entry.protectedToolCallIds ?? []), ...(entry.stubbedToolCallIds ?? [])]);
     const inRangeBareIds: string[] = [];
     for (let i = startIndex + 1; i < endIndex; i++) {
       const msg = messages[i];
