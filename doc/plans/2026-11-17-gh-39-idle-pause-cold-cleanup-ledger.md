@@ -3,9 +3,9 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 13
+iterations: 14
 allowance: 10
-returned: 12 | home | 8cd74a4a20cf09e1498cddbe2333214ffda04d99
+returned: 13 | home | f0353152cde87df43ab5d0d6ede257f4676d3f34
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -21,7 +21,7 @@ returned: 12 | home | 8cd74a4a20cf09e1498cddbe2333214ffda04d99
 | 10 | done | 2 | timeout -k 30 60 bun test ./src/config.test.ts ./src/commands.test.ts ./src/idle-cleanup.integration.test.ts; 130 passed, 0 failed; invalid array settings fall back to 180 without a callback timeout; custom durations and all four settings presets pass |
 | 11 | done | 2 | timeout -k 30 30 bun eval/idle-evidence.ts "${TMPDIR:-/tmp}/pi-condense-eval-au4zjE/claude-haiku-5-5.md" skill-gate-reply; fresh 3/3, paused 3/3, zero retries; paid npm run eval -- --idle --summarizer anthropic/claude-haiku-5-5 --change "idle cleanup twins" passed on clean candidate 037ef22620b997b4fa5cdfd0ee7fe4042f04545f; 18 offline validation cases passed, including stale, incomplete, inconclusive, and regressing evidence |
 | 12 | done | 4 | timeout -k 30 30 bun eval/idle-evidence.ts "${TMPDIR:-/tmp}/pi-condense-eval-cbQxsB/claude-haiku-5-5.md" plan-progress-continue; fresh 3/3, paused 3/3, zero retries; paid npm run eval -- --idle --summarizer anthropic/claude-haiku-5-5 --change "idle cleanup twins" exited 0 on clean candidate 8cd74a4a20cf09e1498cddbe2333214ffda04d99; all three paused first requests carry three compressed chains with the latest plan_tracker text in a protected-output block |
-| 13 | open | 0 | |
+| 13 | done | 1 | timeout -k 30 10 python3 -c 'assert all(text in __import__("pathlib").Path("PRUNING.md").read_text() for text in ("sixth cold moment", "### Idle cleanup", "idleCleanupMinutes", "cache_warm", "word for word", "literalSummary", "never-summarized"))'; 7 documentation assertions passed; 0 failures |
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 1: extend src/idle-cleanup.integration.test.ts and wire the idle check before the first request
@@ -45,3 +45,4 @@ amended | 1 item(s) | Retain never-summarized result text
 row 12 failed | Retained unsummarized tracker text through reload with 97 passing checks, but paid workflow evidence still predates the repair. | Keep the repair and unchanged twins; run --idle from this committed candidate and validate plan-progress-continue with eval/idle-evidence.ts.
 row 12 escalated | implModel round | allowed attempts 10
 row 12 done | Workflow twins score fresh 3/3 and paused 3/3 on clean candidate 8cd74a4, with the latest tracker text retained in all three paused first requests. | Reuse the cbQxsB report with eval/idle-evidence.ts for both pairs; row 11's au4zjE report is now stale, and eval/session.ts still lacks the in-chain retained-text proof the spec table names.
+row 13 done | Documented the idle threshold, cache-refresh clock, literal retention, closed-turn supersession, settings, and targeted eval limits. | Reuse PRUNING.md#idle-cleanup; idle replay and failure diagnostics still need code before their documentation can be added.
