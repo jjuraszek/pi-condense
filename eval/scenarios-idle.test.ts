@@ -5,6 +5,8 @@ import { IDLE_PIPELINE_SETTINGS, PIPELINE_SETTINGS, corpusHash, settingsHash } f
 import { detectChains } from "../src/chain-detector";
 import { isProtected } from "../src/protected";
 import { idleCleanupDue } from "../src/idle-pause";
+import { captureUnindexedBatchesFromSession, groupBatchesByMode, projectBranchMessages } from "../src/batch-capture";
+import { idleFlushIndexed } from "./session";
 
 const directory = `${import.meta.dir}/scenarios-idle`;
 const files = readdirSync(directory).filter(f => f.endsWith(".ts"));
@@ -18,6 +20,40 @@ test("skill twins share synthetic history and differ only in pause metadata", ()
   expect(fresh.probe).toMatch(/^[A-Z]$/);
   expect(fresh.mechanical.contains).toHaveLength(1);
   expect(fresh.judged?.expected).toContain(fresh.mechanical.contains![0]);
+});
+
+test("workflow twins cover summarized, zero-summary, and interrupted partial chains", () => {
+  const fresh = scenarios.find(s => s.id === "plan-progress-continue");
+  expect(fresh, "workflow fixture is required").toBeDefined();
+  if (!fresh) return;
+  const paused = scenarios.find(s => s.twinOf === fresh.id)!;
+  expect(paused.history).toBe(fresh.history);
+  expect(paused).toEqual({ ...fresh, id: "plan-progress-continue-paused", twinOf: fresh.id, seedAgeMinutes: 240 });
+  expect(fresh.probe).toBe("Continue.");
+  expect(fresh.mechanical.contains).toEqual(["COBALT_REPAIR"]);
+  expect(fresh.judged?.expected).toContain("COBALT_REPAIR");
+  expect(fresh.history.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
+
+  const entries = seedEntries(fresh.history);
+  const chains = detectChains(projectBranchMessages(entries));
+  expect(chains).toHaveLength(3);
+  const batches = groupBatchesByMode(captureUnindexedBatchesFromSession(entries, { isSummarized: () => false },
+    (tool, args) => isProtected(tool, args, IDLE_PIPELINE_SETTINGS)), IDLE_PIPELINE_SETTINGS.batchingMode);
+  const summarized = (batch: typeof batches[number]) => batch.toolCalls.reduce((n, c) => n + c.resultText.length, 0) >= IDLE_PIPELINE_SETTINGS.minBatchChars;
+  expect(chains.map(chain => batches.filter(b => b.toolCalls.some(c => chain.middleToolCallIds.includes(c.toolCallId))).map(summarized)))
+    .toEqual([[true], [false], [true, false]]);
+  const skipped = batches.filter(b => !summarized(b)).flatMap(b => b.toolCalls);
+  expect(skipped.map(c => c.toolCallId)).toEqual(fresh.unsummarizedIds!);
+  expect(skipped.map(c => c.toolName)).toEqual(["plan_tracker", "phase_tracker", "plan_tracker", "phase_tracker"]);
+  const results = batches.flatMap(b => b.toolCalls);
+  expect(new Set(results.map(c => `${c.toolName}:${c.resultText.trim()}`)).size).toBe(results.length);
+  const plans = results.filter(c => c.toolName === "plan_tracker");
+  expect(plans.map(c => c.resultText.match(/\u2192 \[\d\] (\w+)/)?.[1]))
+    .toEqual(["AMBER_SCAN", "VIOLET_COMPARE", "COBALT_REPAIR"]);
+  expect(plans.at(-1)!.resultText).toContain("Plan: 2/4 done (1 in progress, 1 pending)");
+  const refs = new Map(batches.filter(summarized).flatMap(b => b.toolCalls).map((c, i) => [`t${i + 1}`, c.toolCallId]));
+  expect(idleFlushIndexed(fresh, refs)).toBe(true);
+  expect(idleFlushIndexed(fresh, new Map([...refs, ["t99", fresh.unsummarizedIds![0]]]))).toBe(false);
 });
 
 test.each(scenarios)("$id reaches only the intended idle arm", s => {
