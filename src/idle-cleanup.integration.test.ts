@@ -148,6 +148,34 @@ function summarizedBranch(endMs: number) {
 
 describe("idle cleanup", () => {
   it.each([
+    { minutes: 0.5, age: 0.25, hasUI: false, compressed: 0 },
+    { minutes: 0.5, age: 1, hasUI: false, compressed: 3 },
+    { minutes: 60, age: 59, hasUI: true, compressed: 0 },
+    { minutes: 60, age: 61, hasUI: true, compressed: 3 },
+    { minutes: 480, age: 240, hasUI: false, compressed: 0 },
+    { minutes: 480, age: 481, hasUI: false, compressed: 3 },
+  ])("honors a custom threshold loaded from partial settings (%j)", async ({ minutes, age, hasUI, compressed }) => {
+    const branch = closedChainBranch(Date.now() - age * 60_000, 3);
+    const harness = await boot(branch, hasUI, { chainCompression: { idleCleanupMinutes: minutes } });
+    try {
+      const messages = [
+        ...projectBranchMessages(branch),
+        { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: Date.now() },
+      ];
+      const before = (await harness.fire("context", { messages }))?.messages ?? messages;
+      await harness.submit();
+      const after = (await harness.fire("context", { messages }))?.messages ?? messages;
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(compressed);
+      expect(after.filter((message: any) => message.role === "toolResult")).toHaveLength(3 - compressed);
+      if (compressed === 0) expect(after).toEqual(before);
+      expectNoOrphanToolResults(after);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([
     { promptCache: undefined, age: 60, compressed: 0 },
     { promptCache: undefined, age: 240, compressed: 3 },
     { promptCache: { short: 300 }, age: 60, compressed: 0 },

@@ -106,6 +106,7 @@ describe("/pruner settings descriptions", () => {
     ["purgeErrorsCooldown", "Error purge cooldown (turns)", "Wait this many turns after a tool error before purging its argument body."],
     ["purgeErrorsMinArgChars", "Argument purge min arg chars", "Only purge summarized or errored argument bodies at least this many chars."],
     ["protectedPaths", "Protected paths", "reads made inside codemode scripts"],
+    ["chainCompressionIdleCleanupMinutes", "Idle cleanup (minutes)", "first human prompt after this many idle minutes"],
   ])("describes %s through the settings overlay", async (id, label, description) => {
     const harness = setupPrunerCommand({ save: async () => {} });
     await harness.run("settings");
@@ -121,6 +122,29 @@ describe("/pruner settings descriptions", () => {
       expect(rendered).toContain("incomplete nested-call record is kept verbatim regardless of this setting");
       expect(rendered).toContain("Set to 'none' to disable path matching only");
     }
+  });
+
+  it("cycles and saves all four idle thresholds beside the chain window", async () => {
+    const saved: ContextPruneConfig[] = [];
+    const harness = setupPrunerCommand({ save: async (config) => { saved.push(structuredClone(config)); } });
+    const initial = structuredClone(harness.currentConfig.value);
+    await harness.run("settings");
+    const list = harness.overlay.children.find((child) => child instanceof SettingsList) as SettingsList;
+    list.selectItem("chainCompressionIdleCleanupMinutes");
+    const rendered = harness.overlay.render(400).join("\n");
+    expect(rendered.indexOf("Chain window (K)")).toBeLessThan(rendered.indexOf("Idle cleanup (minutes)"));
+    expect(rendered.indexOf("Idle cleanup (minutes)")).toBeLessThan(rendered.indexOf("Strip final thinking"));
+    expect(rendered).toContain("Currently 180 minutes.");
+
+    const cycle = [480, 1440, 60, 180];
+    for (const minutes of cycle) {
+      harness.overlay.handleInput(" ");
+      expect(harness.overlay.render(400).join("\n")).toContain(`Currently ${minutes} minutes.`);
+    }
+    expect(saved).toEqual(cycle.map((idleCleanupMinutes) => ({
+      ...initial, chainCompression: { ...initial.chainCompression, idleCleanupMinutes },
+    })));
+    expect(harness.currentConfig.value).toEqual(saved.at(-1));
   });
 
   it("persists the shared disabled toggle and minimum using only existing purgeErrors fields", async () => {

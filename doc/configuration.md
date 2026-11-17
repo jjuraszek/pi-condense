@@ -35,6 +35,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
     "chainCompression": {
       "enabled": true,
       "rollingWindow": 3,
+      "idleCleanupMinutes": 180,
       "stripFinalAssistantThinking": true,
       "fuseRangeSummary": true
     }
@@ -68,6 +69,7 @@ Settings live under the `contextPrune` key in `<agent-dir>/settings.json` (i.e. 
 | `maxImagesPerRequest` | `number \| null` | `null` | Request-validity guard: once an outgoing request carries more than N image blocks, the oldest are replaced with a text note, in steps of half of N so the prompt prefix (and the provider's prompt cache) changes only once per step; a long session then never exceeds a provider's per-request image limit. `null` uses the built-in limit for the current model's wire API (`anthropic-messages`: `100`, the documented Anthropic maximum; other APIs: no cap). A number overrides the built-in for every API - set it for a gateway with a stricter limit (one rejects more than `30`). Request-local: the session file keeps every image. Applies even when `enabled` is `false`. Validated finite and `>= 1`, floored to an integer; any other value resets to `null`. Config-file-only - no `/pruner settings` row |
 | `chainCompression.enabled` | `true` / `false` | `true` | Master toggle for chain-level range compression |
 | `chainCompression.rollingWindow` | positive integer | `3` | Keep this many most-recent closed chains raw; compress older ones |
+| `chainCompression.idleCleanupMinutes` | finite positive number (minutes) | `180` | With pruning and chain compression enabled in `agent-message` mode, clean up eligible closed chains and superseded reads before the first human request after an idle gap exceeding the greater of this threshold and the provider's declared cache lifetime (when available). Uses existing summaries without new LLM calls. The clock tracks assistant and `cache_warm` usage entries. Missing, invalid, or non-positive values load as `180`; positive fractions are kept. `/pruner settings` cycles `60`, `180`, `480`, `1440` beside the chain window. |
 | `chainCompression.stripFinalAssistantThinking` | `true` / `false` | `true` | Strip thinking blocks from the kept final text-only assistant when compressing |
 | `chainCompression.fuseRangeSummary` | `true` / `false` | `true` | Fuse a compressed chain's per-batch summaries into one cohesive LLM summary (one extra summarizer call per multi-batch span); off keeps the per-batch concatenation |
 | `purgeErrors.enabled` | `true` / `false` | `true` | Shrink strings over 200 chars inside failed toolCall arguments after cooldown, keeping keys and types |

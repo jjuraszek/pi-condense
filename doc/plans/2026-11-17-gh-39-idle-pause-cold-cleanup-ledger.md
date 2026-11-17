@@ -3,9 +3,9 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 5
+iterations: 6
 allowance: 10
-returned: 6 | home | 27a7dc37880d1bc3fe08a9091bd9f377ecdded2d
+returned: 10 | home | 7f432e184017a4847345ee07b5e896667b532b32
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -18,7 +18,7 @@ returned: 6 | home | 27a7dc37880d1bc3fe08a9091bd9f377ecdded2d
 | 7 | done | 0 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 13 passed, 0 failed; a new extension instance reconstructs a 240-minute-old branch at session_start; its first UI or no-UI prompt compresses all 3 chains |
 | 8 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 54 passed, 0 failed; longer declared lifetimes delay cleanup with strict boundary checks; the real helper selects long only for PI_CACHE_RETENTION=long and short for short, none, or unset |
 | 9 | done | 0 | timeout -k 30 60 bun test ./src/idle-pause.test.ts ./src/idle-cleanup.integration.test.ts; 58 passed, 0 failed; no declared lifetime keeps a 60-minute request unchanged and compresses after 240 minutes; the handler uses the threshold when promptCache or its active retention tier is missing |
-| 10 | open | 0 | |
+| 10 | failed | 1 | timeout -k 30 60 bun test ./src/config.test.ts ./src/commands.test.ts ./src/idle-cleanup.integration.test.ts; 129 passed, 1 failed; timed out after 5 s in the config invalid-array case; Bun treats the empty it.each array as a done-callback test |
 | 11 | open | 0 | |
 | 12 | open | 0 | |
 | 13 | open | 0 | |
@@ -34,3 +34,4 @@ row 3 done | Idle compression preserves summary and protected-output bytes acros
 row 6 done | Cache-warm entries restart the idle clock, and both request kinds use ISO entry timestamps rather than assistant message timestamps. | Reuse src/idle-pause.test.ts clock fixtures and the cache-warm integration cases to check pause timing without model calls.
 row 8 done | Checks prove longer declared cache lifetimes delay cleanup through the real helper and restore the retention environment after each case. | Reuse the declared-lifetime matrix in src/idle-cleanup.integration.test.ts for isolated retention-tier checks.
 row 9 done | Checks prove the threshold alone controls cleanup when a model lacks a cache lifetime for the active retention tier. | Reuse the undeclared-lifetime cases in src/idle-cleanup.integration.test.ts for models missing promptCache or its long tier.
+row 10 failed | Added threshold normalization, settings presets, and custom-duration checks, but the empty-array config case timed out after 5 s. | Keep the implementation and docs, wrap invalid inputs in object cases to avoid Bun's done-callback interpretation of [], then rerun the three-file check.

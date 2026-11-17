@@ -37,6 +37,7 @@ function isSummarizerThinking(value: unknown): value is SummarizerThinking {
 
 function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
   const merged = { ...DEFAULT_CONFIG, ...existing };
+  const chainCompression = { ...DEFAULT_CONFIG.chainCompression, ...existing.chainCompression };
   return {
     ...merged,
     enabled: typeof merged.enabled === "boolean" ? merged.enabled : DEFAULT_CONFIG.enabled,
@@ -45,6 +46,15 @@ function normalize(existing: Partial<ContextPruneConfig>): ContextPruneConfig {
         ? merged.showPruneStatusLine
         : DEFAULT_CONFIG.showPruneStatusLine,
     pruneOn: toPruneOn(merged.pruneOn) ?? DEFAULT_CONFIG.pruneOn,
+    chainCompression: {
+      ...chainCompression,
+      idleCleanupMinutes:
+        typeof chainCompression.idleCleanupMinutes === "number" &&
+        Number.isFinite(chainCompression.idleCleanupMinutes) &&
+        chainCompression.idleCleanupMinutes > 0
+          ? chainCompression.idleCleanupMinutes
+          : DEFAULT_CONFIG.chainCompression.idleCleanupMinutes,
+    },
     summarizerThinking: isSummarizerThinking(merged.summarizerThinking)
       ? merged.summarizerThinking
       : DEFAULT_CONFIG.summarizerThinking,

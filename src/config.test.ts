@@ -72,6 +72,39 @@ describe("loadConfig pruneOn normalization", () => {
   });
 });
 
+describe("loadConfig idle cleanup normalization", () => {
+  it.each([undefined, {}, { enabled: false, rollingWindow: 5, fuseRangeSummary: false }])(
+    "defaults the idle threshold in old or partial settings (%j)", async (chainCompression) => {
+      await writeContextPrune({ chainCompression });
+      expect((await loadConfig()).chainCompression).toEqual({
+        ...DEFAULT_CONFIG.chainCompression, ...chainCompression, idleCleanupMinutes: 180,
+      });
+    },
+  );
+
+  it.each([undefined, null, 0, -1, "60", false, {}, [], NaN, Infinity, -Infinity])(
+    "falls back to 180 for an invalid threshold (%j)", async (idleCleanupMinutes) => {
+      await writeContextPrune({ chainCompression: { idleCleanupMinutes } });
+      expect((await loadConfig()).chainCompression).toEqual(DEFAULT_CONFIG.chainCompression);
+    },
+  );
+
+  it("rejects a non-finite JSON number", async () => {
+    await writeFile(settingsPath(), '{"contextPrune":{"chainCompression":{"idleCleanupMinutes":1e400}}}');
+    expect((await loadConfig()).chainCompression.idleCleanupMinutes).toBe(180);
+  });
+
+  it.each([0.5, 60, 180, 480, 1440])("keeps and round-trips %s minutes without rounding", async (idleCleanupMinutes) => {
+    await writeContextPrune({ chainCompression: { idleCleanupMinutes, rollingWindow: 5, fuseRangeSummary: false } });
+    const config = await loadConfig();
+    expect(config.chainCompression).toEqual({
+      ...DEFAULT_CONFIG.chainCompression, idleCleanupMinutes, rollingWindow: 5, fuseRangeSummary: false,
+    });
+    await saveConfig(config);
+    expect(await loadConfig()).toEqual(config);
+  });
+});
+
 describe("loadConfig recoveryGraceTurns normalization", () => {
   it("preserves an explicit 0", async () => {
     await writeContextPrune({ recoveryGraceTurns: 0 });
