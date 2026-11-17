@@ -125,7 +125,7 @@ The status-line `diag u<N>/m<N>/o<N>/b<N>` segment above is backed by `context-p
 Three metrics the pruner cannot yet reclaim - open-cycle thinking tokens, largest-chain share (%), frontier gap tokens - surface in two places, both backed by `computeContextMetrics` (`src/context-metrics.ts`). They are deliberately kept off the footer status line, which stays limited to prune state, reclaim, and diagnostics:
 
 - `/pruner status` prints a `--- context ---` block: `thinking:`, `chain share:`, `frontier gap:`, plus a `rearmed: yes` line while a reload-rearm probe (below) has recoverable work armed.
-- Each flush attempt (every outcome, including empty/error) writes one `context-prune-flush-metrics` session entry with the pre-flush snapshot - session-log-only, never added to what the model sees, and not reconstructed on reload.
+- Each flush attempt (every outcome, including empty/error) writes one `context-prune-flush-metrics` session entry with the pre-flush snapshot - session-log-only, never added to what the model sees, and not reconstructed on reload. A flush cut short by `session_shutdown` writes none.
 
 These are most informative for long single-chain sessions where Phase 3 (chain compression) never gets a closed chain to act on - see [PRUNING.md § Single-chain sessions](PRUNING.md#single-chain-sessions) for the limitation and config guidance, and [PRUNING.md § Reload rearm](PRUNING.md#reload-rearm) for how a reload with recoverable pending work re-arms the automatic flush trigger.
 

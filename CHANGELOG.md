@@ -13,6 +13,12 @@ publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
 - The first human prompt after more than 3 hours idle compresses eligible finished turns before its first request, including the newest turns normally kept raw, and replaces waiting superseded reads inside those turns. Cleanup keeps user messages, final answer text, stored summaries, protected output text, and never-summarized result text without fusing summaries or adding a model call. Assistant replies and cache warming restart the clock; a longer declared cache lifetime extends the threshold. Configure `chainCompression.idleCleanupMinutes` or choose a preset in `/pruner settings`; pruning and chain compression must be enabled in `agent-message` mode. (#39)
 
+## [2.17.2] - 2026-11-17
+
+### Fixed
+
+- No flush starts or writes on a session after its `session_shutdown`. pi delivers events to a runtime until every extension's shutdown handler has returned, so a prompt that arrived while another extension's handler was still running started a `next-prompt` flush on the outgoing session: the run waited for the summarizer call, and the summary, index and flush-metrics entries were appended after pi had replaced the session. `session_shutdown` now aborts a flush in flight whatever its trigger, where it aborted only the `settled` one, and no trigger starts one afterwards. A flush cut short this way writes nothing, including the flush-metrics entry an aborted `settled` flush used to write.
+
 ## [2.17.1] - 2026-11-13
 
 ### Changed

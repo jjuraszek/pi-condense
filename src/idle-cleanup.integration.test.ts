@@ -759,10 +759,12 @@ describe("idle cleanup", () => {
     { source: "interactive", messageType: "user", config: { enabled: false } },
     { source: "rpc", messageType: "user", config: { pruneOn: "on-demand" } },
     { source: "interactive", messageType: "user", config: { chainCompression: { ...DEFAULT_CONFIG.chainCompression, enabled: false } } },
-  ])("gates idle compression by human submission and automatic pruning (%j)", async ({ source, messageType, config }) => {
+    { source: "interactive", messageType: "user", config: {}, shutdown: true },
+  ])("gates idle compression by human submission, automatic pruning, and a live session (%j)", async ({ source, messageType, config, shutdown }) => {
     const branch = closedChainBranch(Date.now() - 240 * 60_000, 3);
     const harness = await boot(branch, true, config);
     try {
+      if (shutdown) await harness.fire("session_shutdown");
       await harness.submit(source, messageType);
       expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
       expect((await harness.request()).filter((message: any) => message.role === "toolResult")).toHaveLength(3);

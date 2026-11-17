@@ -108,6 +108,11 @@ export default function (pi: ExtensionAPI) {
   let settledFlush:
     | { abort: AbortController; timer?: ReturnType<typeof setTimeout>; promise?: Promise<void> }
     | undefined;
+  // Aborted at session_shutdown. pi delivers events to this runtime until every
+  // extension's shutdown handler has returned, so a turn can still start on the
+  // outgoing session; pi then invalidates the ctx and may replace the session
+  // file. After the abort no flush starts, and one in flight appends nothing.
+  const sessionEnd = new AbortController();
 
   const computeMetricsSnapshot = (ctx: any): ContextMetricsSnapshot | undefined => {
     try {
@@ -240,7 +245,9 @@ export default function (pi: ExtensionAPI) {
   };
 
   const flushPending = async (ctx: any, options: FlushOptions = {}): Promise<FlushResult> => {
+    if (sessionEnd.signal.aborted) return { ok: false, reason: "aborted" };
     if (isFlushing) return { ok: false, reason: "already-flushing" };
+    const signal = options.signal ? AbortSignal.any([options.signal, sessionEnd.signal]) : sessionEnd.signal;
 
     // Clear on every non-concurrent invocation, regardless of outcome — the
     // rearm is a one-shot nudge for the very next eligible gate check.
@@ -265,6 +272,7 @@ export default function (pi: ExtensionAPI) {
 
     // Non-fatal by construction: observability must never affect the flush outcome.
     const emitFlushMetricsOnce = () => {
+      if (sessionEnd.signal.aborted) return;
       const entry: FlushMetricsEntry = {
         ts: Date.now(),
         trigger,
@@ -312,7 +320,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Bail out before we drain pendingBatches so they don't need restoring.
-      if (options.signal?.aborted) {
+      if (signal.aborted) {
         outcome = "error";
         return { ok: false, reason: "aborted" };
       }
@@ -433,7 +441,7 @@ export default function (pi: ExtensionAPI) {
           }
           options.onProgress(i, batches.length, batches[i], "start");
           const r = await summarizeBatch(batches[i], currentConfig.value, ctx, {
-            signal: options.signal,
+            signal,
             controller: fallbackController,
             onTextProgress: (receivedChars) => {
               reportBatchTextProgress(i, batches.length, batches[i], receivedChars);
@@ -457,7 +465,7 @@ export default function (pi: ExtensionAPI) {
               const origIndex = nonTrivialIndices[ntIndex];
               reportBatchTextProgress(origIndex, batches.length, batch, receivedChars);
             },
-            signal: options.signal,
+            signal,
             controller: fallbackController,
           });
           for (let k = 0; k < nonTrivialIndices.length; k++) {
@@ -468,8 +476,9 @@ export default function (pi: ExtensionAPI) {
 
       // An abort can land as the last summarizer call resolves. No summary, index,
       // frontier or chain entry may be written after it: the session may be
-      // shutting down or switching branch. Only the flush-metrics entry follows.
-      if (options.signal?.aborted) throw new Error("flush aborted");
+      // shutting down or switching branch. Only the flush-metrics entry follows,
+      // and not even that once the session is shutting down.
+      if (signal.aborted) throw new Error("flush aborted");
 
       // Process results in order; stop at first null (individual call failure).
       // Batches before the first failure are persisted; remaining are restored to
@@ -692,8 +701,8 @@ export default function (pi: ExtensionAPI) {
               blockRefs,
               appendEntry: persistAlias,
               now: () => Date.now(),
-              fuseRange: makeFuseRange(ctx, options.signal),
-              signal: options.signal,
+              fuseRange: makeFuseRange(ctx, signal),
+              signal,
               messages: detectionMessages,
               diagnostics,
               backfill: {
@@ -708,7 +717,7 @@ export default function (pi: ExtensionAPI) {
           if (compressedEntries.length > 0) {
             lowerFloor(supersede, earliestChainStart(compressedEntries));
             statsAccum.addChainsCompressed(compressedEntries.length);
-            if (!options.signal?.aborted) {
+            if (!signal.aborted) {
               statsAccum.persist(pi);
               emitExternalCost(pi, statsAccum);
               safeNotify(
@@ -800,8 +809,11 @@ export default function (pi: ExtensionAPI) {
       outcome = "error";
       // When the abort signal fired, summarizeBatch rethrows rather than
       // swallowing the error.  Don't show a UI error — the user intended this.
-      if (options.signal?.aborted) {
-        setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
+      if (signal.aborted) {
+        // After a shutdown the ctx may already be invalid.
+        if (!sessionEnd.signal.aborted) {
+          setPruneStatusWidget(ctx, currentConfig.value, statsAccum.getLiveReclaim(), diagnostics.counts());
+        }
         return { ok: false, reason: "aborted" };
       }
       if (isStaleContextError(err)) {
@@ -1098,6 +1110,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
     if (event.messageType !== "user" || (source !== "interactive" && source !== "rpc")) return;
+    if (sessionEnd.signal.aborted) return;
     if (!flushesAutomatically() || !currentConfig.value.chainCompression.enabled || isFlushing) return;
     const branch = ctx.sessionManager.getBranch();
     if (!idleCleanupDue({
@@ -1116,8 +1129,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // pi awaits this handler before it exits or replaces the session, so it only
-  // signals the abort and does not wait for the flush to settle.
+  // signals the abort and does not wait for a flush to settle.
   pi.on("session_shutdown", async () => {
+    sessionEnd.abort();
     cancelSettledFlush();
   });
 
