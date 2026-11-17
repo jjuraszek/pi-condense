@@ -48,7 +48,7 @@ function retainedEvidence(j: any): string {
   return `${(j?.recovery ?? []).filter((r: { summaryRetained?: boolean }) => r.summaryRetained === true).length}/${j?.recovery?.length ?? 0}`;
 }
 export function renderReport(r: Report): string {
-  const safe = { ...r, scenarios: r.scenarios.map(({ id, title, tests, mechanical, judged }) => ({ id, title, tests, mechanical, judged })), jobs: r.jobs.map(safeJob) };
+  const safe = { ...r, scenarios: r.scenarios.map(({ id, title, tests, mechanical, judged, twinOf, seedAgeMinutes }) => ({ id, title, tests, mechanical, judged, twinOf, seedAgeMinutes })), jobs: r.jobs.map(safeJob) };
   let out = header(r);
   for (const s of r.scenarios) {
     const jobs = r.jobs.filter(j => j.scenario === s.id);
@@ -110,6 +110,25 @@ export function assertCompatible(a: Report, b: Report): string {
 function delta(a?: Measurement, b?: Measurement): string {
   return !a || !b || a.provenance === "unavailable" || b.provenance === "unavailable" ? "unavailable" : measurement({ value: b.value - a.value, provenance: a.provenance === "estimated" || b.provenance === "estimated" ? "estimated" : "measured" });
 }
+export function compareIdleTwins(r: Report) {
+  try { validateBaseline(r, r.scenarios); }
+  catch { return { text: "ERROR: incomplete or errored idle jobs", exitCode: 1 }; }
+  const twins = r.scenarios.filter(s => s.twinOf);
+  const fresh = r.scenarios.filter(s => !s.twinOf);
+  if (!twins.length || twins.length !== fresh.length || fresh.some(s => twins.filter(t => t.twinOf === s.id).length !== 1)) {
+    return { text: "ERROR: idle suite must contain one paused twin per fresh scenario", exitCode: 1 };
+  }
+  const runs = r.key.RUNS_PER_CASE ?? r.key.runs;
+  let exitCode = 0;
+  const lines = twins.map(twin => {
+    const n = passes(r, twin.twinOf!), m = passes(r, twin.id);
+    const label = n !== runs ? "INCONCLUSIVE" : m < n ? "REGRESSION CANDIDATE" : "PASS";
+    if (label !== "PASS") exitCode = 1;
+    return `${twin.twinOf}: fresh ${n}/${runs}, paused ${m}/${runs} ${label}`;
+  });
+  return { text: lines.join("\n"), exitCode };
+}
+
 export function compareReports(a: Report, b: Report, change: string) {
   let text = `${assertCompatible(a, b)}\nChange: ${escape(change)}\n`;
   let dropped = false;

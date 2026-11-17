@@ -45,7 +45,7 @@ export function buildSyntheticChainMessage(
   blockSummaryLookup?: (blockId: string) => string | undefined,
   protectedOutputs: { tool: string; text: string }[] = [],
 ): UserMessage {
-  const resolvedSummary = blockSummaryLookup
+  const resolvedSummary = blockSummaryLookup && !entry.literalSummary
     ? substituteBlockRefs(summary, blockSummaryLookup, { selfBlockId: entry.blockId })
     : summary;
   const tools = entry.toolRefs.join(",");
@@ -174,16 +174,20 @@ export function applyChainCompressions(
   const protectedByBlock = new Map<string, { tool: string; text: string }[]>();
 
   for (const { entry, startIndex, endIndex } of accepted) {
-    const protectedIds = new Set(entry.protectedToolCallIds ?? []);
+    // Phase 1 has already rendered a stubbed occurrence as its stub, so the
+    // same relocation carries that text instead of the raw result.
+    const protectedIds = new Set([...(entry.protectedToolCallIds ?? []), ...(entry.stubbedToolCallIds ?? [])]);
     const inRangeBareIds: string[] = [];
     for (let i = startIndex + 1; i < endIndex; i++) {
       const msg = messages[i];
-      dropIndices.add(i);
+      // An idle entry keeps every summary word for word: one inside its range
+      // leaves only with the chain that owns it, whose body carries the text.
+      if (!(entry.literalSummary && isPerBatchSummaryMessage(msg))) dropIndices.add(i);
       if (msg.role === "toolResult") {
         inRangeBareIds.push(msg.toolCallId);
         droppedBareIds.add(msg.toolCallId);
         droppedOccKeys.add(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)));
-        if (protectedIds.has(msg.toolCallId)) {
+        if (protectedIds.has(msg.toolCallId) || protectedIds.has(occKey(msg.toolCallId, resultTimestampOf(msg.timestamp)))) {
           const arr = protectedByBlock.get(entry.blockId) ?? [];
           arr.push({ tool: msg.toolName, text: extractToolResultText(msg) });
           protectedByBlock.set(entry.blockId, arr);

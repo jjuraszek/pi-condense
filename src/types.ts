@@ -96,7 +96,7 @@ export const CUSTOM_TYPE_DIAGNOSTIC = "context-prune-diagnostic";
  */
 export const CUSTOM_TYPE_FLUSH_METRICS = "context-prune-flush-metrics";
 
-export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep" | "backfill-empty";
+export type DiagnosticKind = "unresolved-range" | "range-id-mismatch" | "orphan-sweep" | "backfill-empty" | "idle-cleanup-failed";
 
 export interface DiagnosticEntryData {
   kind: DiagnosticKind;
@@ -514,13 +514,19 @@ export interface ChainCompressionEntry {
    */
   droppedOccurrenceKeys?: string[];
   /**
-   * Subset of droppedToolCallIds whose tool was user-protected. Membership is decided
-   * per call by tool name (every call whose name ∈ protectedTools), not a per-id allowlist.
-   * Their verbatim ToolResultMessage text is relocated into the synthetic
-   * <compressed-chain> body at render time (pulled live from the raw branch) instead
-   * of being dropped. Absent/empty ⇒ no protected outputs (identical to pre-feature render).
+   * User-protected bare tool-call ids, plus exact occurrence keys for results
+   * without per-batch summary coverage retained by idle cleanup. Their extracted
+   * ToolResultMessage text is relocated into the synthetic <compressed-chain>
+   * body at render time instead of being dropped. Absent/empty means no relocation.
    */
   protectedToolCallIds?: string[];
+  /**
+   * Occurrence keys of results without per-batch summary coverage that were
+   * already a recovery stub (capture spill, dedup alias) when idle cleanup
+   * compressed the chain. The stub the render gives them is relocated into the
+   * <compressed-chain> body like protected output; their raw text is not restored.
+   */
+  stubbedToolCallIds?: string[];
   /**
    * Timestamp of the final text-only assistant in the chain.
    * Kept in context but with thinking blocks stripped.
@@ -545,12 +551,16 @@ export interface ChainCompressionEntry {
    * per-batch semantics, unchanged.
    */
   bodySource?: "deterministic";
+  /** Idle cleanup keeps stored summary bytes literal, including nested block refs, across reload. */
+  literalSummary?: boolean;
 }
 
 export interface ChainCompressionConfig {
   enabled: boolean;
   /** Number of most-recently-closed chains to keep raw (not compressed). Default 3. */
   rollingWindow: number;
+  /** Compress closed chains on the first human prompt after this many idle minutes. Default 180. */
+  idleCleanupMinutes: number;
   /** Strip thinking blocks from the kept final text-only assistant. Default true. */
   stripFinalAssistantThinking: boolean;
   /**
@@ -587,6 +597,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   chainCompression: {
     enabled: true,
     rollingWindow: 3,
+    idleCleanupMinutes: 180,
     stripFinalAssistantThinking: true,
     fuseRangeSummary: true,
   },

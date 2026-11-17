@@ -72,6 +72,7 @@ export function pruneStatusText(
         diagnostics["range-id-mismatch"] ? `m${diagnostics["range-id-mismatch"]}` : "",
         diagnostics["orphan-sweep"] ? `o${diagnostics["orphan-sweep"]}` : "",
         diagnostics["backfill-empty"] ? `b${diagnostics["backfill-empty"]}` : "",
+        diagnostics["idle-cleanup-failed"] ? `i${diagnostics["idle-cleanup-failed"]}` : "",
       ].filter(Boolean)
     : [];
   const suffix = diag.length > 0 ? ` \u00b7 diag ${diag.join("/")}` : "";
@@ -257,6 +258,10 @@ function protectedToolsDescription(config: ContextPruneConfig): string {
 
 function protectedPathsDescription(config: ContextPruneConfig): string {
   return `Glob patterns match a tool call's \`args.path\` and reads recorded in a result's \`nestedCalls\`, including reads made inside codemode scripts. Matching outputs bypass summarization. An incomplete nested-call record is kept verbatim regardless of this setting. Set to 'none' to disable path matching only. Currently: ${protectedToolsDisplay(config.protectedPaths)}. Edit via \`/pruner protected-paths\` (interactive) or \`/pruner protected-paths <comma-separated globs>\`. Default protects skill files and per-repo gauntlet overrides: **/skills/**/*.md, **/gauntlet-overrides.md`;
+}
+
+function idleCleanupDescription(config: ContextPruneConfig): string {
+  return `In agent-message mode, clean up closed chains and superseded reads before the first human prompt after this many idle minutes reaches the model. No new summaries are generated. Currently ${config.chainCompression.idleCleanupMinutes} minutes.`;
 }
 
 const HELP_TEXT = `pruner — automatically summarizes tool-call outputs to keep context lean.
@@ -658,6 +663,13 @@ export function registerCommands(
               description: `Keep the K most-recently-closed chains raw; compress older ones. Currently ${config.chainCompression.rollingWindow}.`,
             },
             {
+              id: "chainCompressionIdleCleanupMinutes",
+              label: "Idle cleanup (minutes)",
+              values: ["60", "180", "480", "1440"],
+              currentValue: String(config.chainCompression.idleCleanupMinutes),
+              description: idleCleanupDescription(config),
+            },
+            {
               id: "chainCompressionStripThinking",
               label: "Strip final thinking",
               values: ["true", "false"],
@@ -805,6 +817,10 @@ export function registerCommands(
                 ...newConfig.chainCompression,
                 rollingWindow: Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_CONFIG.chainCompression.rollingWindow,
               };
+            } else if (id === "chainCompressionIdleCleanupMinutes") {
+              newConfig.chainCompression = { ...newConfig.chainCompression, idleCleanupMinutes: Number(newValue) };
+              const idleItem = items.find((item) => item.id === "chainCompressionIdleCleanupMinutes");
+              if (idleItem) idleItem.description = idleCleanupDescription(newConfig);
             } else if (id === "chainCompressionStripThinking") {
               newConfig.chainCompression = { ...newConfig.chainCompression, stripFinalAssistantThinking: newValue === "true" };
             } else if (id === "chainCompressionFuseRange") {

@@ -14,6 +14,7 @@ export class DiagnosticSink {
     "range-id-mismatch": 0,
     "orphan-sweep": 0,
     "backfill-empty": 0,
+    "idle-cleanup-failed": 0,
   };
 
   constructor(private readonly appendEntry: (customType: string, data?: unknown) => void) {}

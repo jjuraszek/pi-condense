@@ -106,6 +106,7 @@ describe("/pruner settings descriptions", () => {
     ["purgeErrorsCooldown", "Error purge cooldown (turns)", "Wait this many turns after a tool error before purging its argument body."],
     ["purgeErrorsMinArgChars", "Argument purge min arg chars", "Only purge summarized or errored argument bodies at least this many chars."],
     ["protectedPaths", "Protected paths", "reads made inside codemode scripts"],
+    ["chainCompressionIdleCleanupMinutes", "Idle cleanup (minutes)", "first human prompt after this many idle minutes"],
   ])("describes %s through the settings overlay", async (id, label, description) => {
     const harness = setupPrunerCommand({ save: async () => {} });
     await harness.run("settings");
@@ -121,6 +122,29 @@ describe("/pruner settings descriptions", () => {
       expect(rendered).toContain("incomplete nested-call record is kept verbatim regardless of this setting");
       expect(rendered).toContain("Set to 'none' to disable path matching only");
     }
+  });
+
+  it("cycles and saves all four idle thresholds beside the chain window", async () => {
+    const saved: ContextPruneConfig[] = [];
+    const harness = setupPrunerCommand({ save: async (config) => { saved.push(structuredClone(config)); } });
+    const initial = structuredClone(harness.currentConfig.value);
+    await harness.run("settings");
+    const list = harness.overlay.children.find((child) => child instanceof SettingsList) as SettingsList;
+    list.selectItem("chainCompressionIdleCleanupMinutes");
+    const rendered = harness.overlay.render(400).join("\n");
+    expect(rendered.indexOf("Chain window (K)")).toBeLessThan(rendered.indexOf("Idle cleanup (minutes)"));
+    expect(rendered.indexOf("Idle cleanup (minutes)")).toBeLessThan(rendered.indexOf("Strip final thinking"));
+    expect(rendered).toContain("Currently 180 minutes.");
+
+    const cycle = [480, 1440, 60, 180];
+    for (const minutes of cycle) {
+      harness.overlay.handleInput(" ");
+      expect(harness.overlay.render(400).join("\n")).toContain(`Currently ${minutes} minutes.`);
+    }
+    expect(saved).toEqual(cycle.map((idleCleanupMinutes) => ({
+      ...initial, chainCompression: { ...initial.chainCompression, idleCleanupMinutes },
+    })));
+    expect(harness.currentConfig.value).toEqual(saved.at(-1));
   });
 
   it("persists the shared disabled toggle and minimum using only existing purgeErrors fields", async () => {
@@ -317,8 +341,8 @@ describe("/pruner off with a rejecting save (#15)", () => {
 });
 
 describe("diagnostic counters on the status line", () => {
-  const zeroDiag = { "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0 } as const;
-  const mixedDiag = { "unresolved-range": 2, "range-id-mismatch": 0, "orphan-sweep": 1 } as const;
+  const zeroDiag = { "unresolved-range": 0, "range-id-mismatch": 0, "orphan-sweep": 0, "backfill-empty": 0, "idle-cleanup-failed": 0 } as const;
+  const mixedDiag = { ...zeroDiag, "unresolved-range": 2, "orphan-sweep": 1 } as const;
 
   it("omits the diagnostic segment when all counters are zero", () => {
     expect(pruneStatusText(cfg(true), undefined, zeroDiag)).toBe("prune: ON");
@@ -335,19 +359,18 @@ describe("diagnostic counters on the status line", () => {
   });
 
   it("setPruneStatusWidget forwards the counters", () => {
-    expect(captureStatus(cfgVisible(true), undefined, { "unresolved-range": 1, "range-id-mismatch": 0, "orphan-sweep": 0 })).toBe(
+    expect(captureStatus(cfgVisible(true), undefined, { ...zeroDiag, "unresolved-range": 1 })).toBe(
       "\u2502 prune: ON \u00b7 diag u1",
     );
   });
 
-  it("appends b<N> for backfill-empty alongside u/m/o", () => {
+  it("appends b<N> for backfill-empty and i<N> for idle-cleanup-failed alongside u/m/o", () => {
     const text = pruneStatusText(cfg(true), undefined, {
-      "unresolved-range": 2,
-      "range-id-mismatch": 0,
-      "orphan-sweep": 1,
+      ...mixedDiag,
       "backfill-empty": 2,
+      "idle-cleanup-failed": 1,
     });
-    expect(text).toBe("prune: ON \u00b7 diag u2/o1/b2");
+    expect(text).toBe("prune: ON \u00b7 diag u2/o1/b2/i1");
   });
 });
 

@@ -65,6 +65,7 @@ export function selectEligible(
 export interface ChainCompressorIndexerDeps {
   getChainEntries(): import("./types.js").ChainCompressionEntry[];
   hasPerBatchSummaryCoveringAny(toolCallIds: string[]): boolean;
+  isDedupAlias(key: string): boolean;
   getPerBatchSummariesForToolCallIds(toolCallIds: string[]): string[];
   getToolRefsForToolCallIds(toolCallIds: string[]): string[];
   registerChain(entry: import("./types.js").ChainCompressionEntry): void;
@@ -95,6 +96,8 @@ export interface CompressEligibleDeps {
    * the renderer falls back to the per-batch concatenation.
    */
   fuseRange?: (perBatchSummaryText: string) => Promise<string | null>;
+  /** Persist literal rendering for idle cleanup; absent keeps ordinary compaction semantics. */
+  literalSummary?: boolean;
   /** Once aborted, no further chain is issued or written; chains already written stand. */
   signal?: AbortSignal;
   /** MUST be the same array chain detection ran on (see doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md). */
@@ -214,6 +217,23 @@ export async function compressEligible(
     // summaryBodies / toolRefs live in occurrence-key space (src/indexer.ts).
     // Bare ids would match nothing and silently skip every chain.
     const lookupKeys = chain.middleOccurrenceKeys?.length ? chain.middleOccurrenceKeys : chain.middleToolCallIds;
+    const protectedToolCallIds = new Set(chain.protectedToolCallIds ?? []);
+    const stubbedToolCallIds = new Set<string>();
+    if (deps.literalSummary) {
+      const range = resolveRange(chain, deps.messages);
+      if (range) {
+        for (let i = range.startIndex + 1; i < range.endIndex; i++) {
+          const msg = deps.messages[i];
+          if (msg.role !== "toolResult" || protectedToolCallIds.has(msg.toolCallId)) continue;
+          const key = occKey(msg.toolCallId, resultTimestampOf(msg.timestamp));
+          if (deps.indexer.hasPerBatchSummaryCoveringAny([key])) continue;
+          // A dedup alias or a spilled record is already a recovery stub in the
+          // request: the chain keeps that stub, not text the request no longer holds.
+          if (deps.indexer.isDedupAlias(key) || deps.indexer.getIndex().get(key)?.spillPath) stubbedToolCallIds.add(key);
+          else protectedToolCallIds.add(key);
+        }
+      }
+    }
 
     if (!deps.indexer.hasPerBatchSummaryCoveringAny(lookupKeys)) {
       // Deterministic zero-LLM fallback (spec 2026-08-14). Fail-closed: any
@@ -240,9 +260,12 @@ export async function compressEligible(
         skipped.push({ startUserTimestamp: chain.startUserTimestamp, reason: "no-summary" });
         continue;
       }
+      // A stubbed alias already recovers through its original; indexing it
+      // again would replace the ref its stub names.
+      const unindexed = fresh.filter((r) => !stubbedToolCallIds.has(occKey(r.toolCallId, r.resultTimestamp)));
       try {
-        if (fresh.length > 0) {
-          await deps.indexer.backfillChainRecords(fresh, {
+        if (unindexed.length > 0) {
+          await deps.indexer.backfillChainRecords(unindexed, {
             ...deps.backfill,
             // Backfill awaits spill file I/O before this write; throwing keeps the
             // records out of the in-memory index as well as the session.
@@ -269,7 +292,9 @@ export async function compressEligible(
         compressedAt: deps.now(),
         rangeSummaryText: buildDeterministicBody(allRecords, toolRefs),
         bodySource: "deterministic",
-        ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
+        ...(deps.literalSummary ? { literalSummary: true } : {}),
+        ...(protectedToolCallIds.size ? { protectedToolCallIds: [...protectedToolCallIds] } : {}),
+        ...(stubbedToolCallIds.size ? { stubbedToolCallIds: [...stubbedToolCallIds] } : {}),
         ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
       };
       deps.appendEntry(CUSTOM_TYPE_CHAIN, entry);
@@ -304,7 +329,9 @@ export async function compressEligible(
       toolRefs,
       compressedAt: deps.now(),
       ...(rangeSummaryText ? { rangeSummaryText } : {}),
-      ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
+      ...(deps.literalSummary ? { literalSummary: true } : {}),
+      ...(protectedToolCallIds.size ? { protectedToolCallIds: [...protectedToolCallIds] } : {}),
+      ...(stubbedToolCallIds.size ? { stubbedToolCallIds: [...stubbedToolCallIds] } : {}),
       ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
     };
 

@@ -44,6 +44,38 @@ Recovery outcomes are `hit` (correct source with evidence), `not-found` (matchin
 
 The frozen Opus judge scores judged cases only after mechanical gates pass. It receives the complete synthetic oracle, expected behavior, probe, reply, and ordered tool calls, not raw conversation history. The oracle includes every permitted fixture observation so unsupported claims fail. Judge JSON is `{ "pass": boolean, "reason": string }`; a surrounding JSON code fence is normalized. Malformed output gets one additional judge attempt, then an execution error. Scoring is hands-free, with no manual adjudication. Frozen model/prompt identity does not make sampling deterministic.
 
+## Idle twins
+
+```bash
+npm run eval -- --idle --summarizer anthropic/claude-haiku-5-5 --change "idle cleanup twins"
+```
+
+`--idle` runs only [scenarios-idle/](scenarios-idle/), not the seven-case baseline corpus. It requires `--change`, rejects `--baseline` and `--compare`, and accepts the same summarizer and repetition options. It never reads or writes committed baselines. `IDLE_PIPELINE_SETTINGS` extends the frozen settings with `chainCompression.idleCleanupMinutes: 180`; `PIPELINE_SETTINGS` and the seven-case comparison hashes stay unchanged.
+
+The `skill-gate-reply` pair reads a synthetic pi-gauntlet skill, asks for A/B/C approval, and receives `B`. Passing means choosing the skill's `COBALT_DRAFT` step without applying the plan or choosing either other step. Fresh and paused twins share all history and scoring; only the paused twin ends its seed 240 minutes before the request. Standard and fresh scenarios end their one-second-spaced seed at job start, so they do not accidentally enter idle cleanup.
+
+The `plan-progress-continue` pair records synthetic `plan_tracker` and `phase_tracker` snapshots in three closed chains: a summarized tracker batch, a tracker-only batch below `minBatchChars`, and an interrupted chain with summarized ordinary work followed by a below-threshold tracker batch. `Continue.` must resume `COBALT_REPAIR`, which only the latest plan snapshot marks in progress. The twins use `protectedTools: []`; their results measure the default tracker configuration, not protected trackers. Offline fixture checks verify each batch's size class and the four never-summarized tracker ids before paid scoring.
+
+Before scoring, each paused job proves every seeded closed chain has a persisted entry and a matching `<compressed-chain>` in the first subject request; a fresh job rejects that marker with `error:idle-arm`. Protected results stay verbatim without short refs. Ordinary results must be indexed and stubbed outside a compressed chain, or absent inside one; the retained summary remains visible. Fixture-declared unsummarized results must have no ref after the manual flush and stay raw outside a compressed chain. Jobs save `idleChainEntries` beside their recorded first request for inspection.
+
+The runner prints `fresh n/3, paused m/3`. Fresh below 3/3 is `INCONCLUSIVE`, even when paused ties or improves; otherwise a paused drop is `REGRESSION CANDIDATE`. Both exit 1, as do missing pairs, incomplete runs, and execution errors. Re-run a drop once without changing code, fixtures, settings, or models; two consecutive drops are a regression and block delivery. Preserve both reports, repair the cause, and rerun only after a candidate change. An inconclusive pair requires a reliably solvable control before it can supply evidence. Reports stay in the temporary run directory, not in committed baselines.
+
+Recheck a saved idle report locally before using it as evidence:
+
+```bash
+bun eval/idle-evidence.ts <report.md> <fresh-scenario-id>
+```
+
+The first argument, `report.md`, is the saved Markdown report path. The second argument, `fresh-scenario-id`, is a fresh case id such as `skill-gate-reply` or `plan-progress-continue`, without the `-paused` suffix. This reads saved results and local checkout state; it does not rerun paid jobs.
+
+The check requires the default summarizer `anthropic/claude-haiku-5-5` at three runs per case. It requires the requested fresh pair to exist, validates every pair in the report, and rejects incomplete or errored jobs, an `INCONCLUSIVE` fresh control, or a `REGRESSION CANDIDATE`. It also checks comparison keys, settings, SDK versions, and evaluated code/fixtures against the current checkout.
+
+A nonzero exit means the saved report cannot support the claim for the current checkout. For stale code, fixtures, settings, or versions, evaluate a clean committed candidate with the idle command above and retain the new report; for inconclusive or regressed results, follow the control/confirmation procedure above.
+
+**Seven-case comparison boundary.** The [idle-cleanup spec](../doc/specs/2026-11-17-gh-39-idle-pause-cold-cleanup.md#paid-and-external-actions) authorizes targeted twins instead of a seven-case comparison or baseline recapture for this change. The seven-case corpus, pipeline settings, and committed baselines remain byte-identical. Offline checks in `scenarios-idle.test.ts` verify the corpus/settings hashes and fresh seed clock; the standard suite keeps its flush and request proofs in `session.ts`. These checks establish that idle cleanup is not due at the seeded probe, not that requests are byte-identical after changing the seed clock. Seed timestamps can enter model text through the deterministic body's `Span:` line; the seven-case fixtures summarize every seeded result, so their requests do not use that body. This code fact is not a paid seven-case measurement.
+
+The twins measure the default tracker configuration only. The [private-session replay](#private-session-replay) below compares summarizer inputs and retained summaries, not idle context renders or protected-tracker retention; it cannot substitute for structural idle-render evidence.
+
 ## Baselines and comparisons
 
 The committed [Haiku baseline](baseline/claude-haiku-5-5.md) and [Luna baseline](baseline/gpt-6-luna.md) record source/corpus revision `6c292b403a0cc7d74eebe3fe646d9f2e793165e7`, captured on Pi SDK 1.5.0 (the earlier capture at `6e2bbdd503a04424f1999ad3f968e06009374acf` on SDK 1.4.0 scored Haiku 16/21 and Luna 15/21; the recapture moved Haiku `failed-fix-not-disproof` from 3/3 to 0/3 on identical main code, which is why it was redone). They record genuine behavioral failures: Haiku passed 15/21 and Luna 18/21, with no execution errors.
@@ -79,6 +111,18 @@ For example: `npm run eval:replay -- run --corpus "$PI_CONDENSE_REPLAY_DIR" --ca
 The oracle tracks strings from inline results later reused in assistant text or tool arguments but absent from earlier user/assistant text and arguments, including the batch's own inputs. It compares source visibility and verbatim retained-summary evidence, not merely recovery. For each scored batch/model a regression is `retainedCurrent && !retainedCandidate`; any regression yields exit 2 with `Gate: FAIL` even when the run is incomplete, while a complete run without regressions exits 0. Exit 1 means execution failure without a regression; a header saying pass in an incomplete report is not a go decision. The judge sees the full unclipped batch, never either arm's serialization. Judge A/B assignments alternate deterministically and are stored in `jobs.json`; verdicts are advisory and never override the deterministic gate.
 
 Run model x thinking cells as independent parallel `run` processes with the same `--corpus`, one `--models provider/id`, `--thinking off|low|medium|high` (default: `PIPELINE_SETTINGS.summarizerThinking`), and a distinct outside-checkout `--out <dir>` per cell. The runner creates each output directory for `jobs.json` and `report.md`; without `--out`, execution writes to the corpus directory. After the processes finish, `npm run eval:replay -- matrix /private/cell-a/jobs.json /private/cell-b/jobs.json` prints one aggregate-only table with retention, regressions, gains, judge counts, outcome errors, nearest-rank attempt latency p50/p95, cost carrying `(measured)` or `(estimated)`, and mean retained-summary size; incomplete cells are labeled `INCOMPLETE`.
+
+### Offline idle replay
+
+```bash
+npm run eval:replay -- idle "$PI_CONDENSE_SESSION_DIR" --out "$PI_CONDENSE_REPLAY_DIR"
+```
+
+`idle <session-dir>... [--out <dir>] [--minutes <n>]` accepts multiple session directories without extraction. It makes no model or network calls and reads settings with the production loader from the operator's agent directory (`PI_CODING_AGENT_DIR` when set). `--minutes` overrides the idle threshold; cleanup obeys the enabled and prune-mode settings. Every historical user return is measured against only its preceding active-branch entries and its own timestamp, not the current clock or later activity. Each due return reconstructs production index state and renders the request before and after closed-chain supersede activation and zero-window, literal chain compression without fusion.
+
+The preservation checks require byte-equal user messages, compressed chains' final assistant text, batch summary text wherever its owning chain places it, never-summarized result text, and messages belonging to an open turn. Protected outputs are compared by extracted text, including image marker text, not original image blocks; a protected read replaced by the superseded placeholder is exempt. Any violation exits 1, as do skipped unreadable sessions.
+
+The command prints aggregate counts only. `idle.json` records sessions read/skipped, returns found/checked, violations, total estimated tokens removed, and the median share of the prompt removed. Violation records contain only a session stem and entry index. Keep this file outside every checkout: `--out` uses the existing path guard, and omitting it creates a fresh OS temporary directory. No raw session content, spill sidecars, or prompts are written. Only aggregate counts may leave the output directory.
 
 ### Reading private evidence
 

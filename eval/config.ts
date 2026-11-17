@@ -33,6 +33,11 @@ export const PIPELINE_SETTINGS = {
   maxImagesPerRequest: null,
 } as const;
 
+export const IDLE_PIPELINE_SETTINGS = {
+  ...PIPELINE_SETTINGS,
+  chainCompression: { ...PIPELINE_SETTINGS.chainCompression, idleCleanupMinutes: 180 },
+} as const;
+
 export function concurrency(env = process.env): number {
   const value = Number(env.EVAL_CONCURRENCY ?? DEFAULT_CONCURRENCY);
   if (!Number.isSafeInteger(value) || value < 1) throw new Error("EVAL_CONCURRENCY must be a positive integer");

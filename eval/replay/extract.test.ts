@@ -37,7 +37,7 @@ test("opens branch sessions, excludes protected calls and joins spills by occurr
     { role: "assistant", toolCalls: [{ id: "same", name: "read", arguments: {} }] },
     { role: "result", toolCallId: "same", toolName: "read", text: "x".repeat(70000) },
     { role: "assistant", text: "later evidence" },
-  ]);
+  ], Date.UTC(2026, 0, 1) + 8000);
   entries.push({ type: "custom", id: "index", parentId: "seed-message-9", timestamp: new Date().toISOString(), customType: "context-prune-index", data: { toolCalls: [
     { toolCallId: "same", resultTimestamp: Date.UTC(2026, 0, 1) + 2000, spillPath: sidecar },
     { toolCallId: "same", resultTimestamp: Date.UTC(2026, 0, 1) + 5000, spillPath: join(dir, "missing") },

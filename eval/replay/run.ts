@@ -220,6 +220,10 @@ async function storedRuntime(models: string[]): Promise<Runtime> {
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export async function replayMain(args: string[], seams: { runtime?: () => Promise<Runtime>; print?: (text: string) => void; sleep?: Sleep } = {}): Promise<number> {
   const print = seams.print ?? console.log;
+  if (args[0] === "idle") {
+    const { idleMain } = await import("./idle.js");
+    return idleMain(args.slice(1), print);
+  }
   if (args[0] === "extract") {
     if (!args[1] || (args.length !== 2 && (args.length !== 4 || args[2] !== "--out"))) throw Error("Usage: extract <session-dir> [--out <dir>]");
     print(JSON.stringify(extractSessions(args[1], args[3]))); return 0;

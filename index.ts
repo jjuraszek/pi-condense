@@ -13,8 +13,8 @@
  * Usage:  pi -e .
  */
 
-import type { NestedToolCalls } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { getPromptCacheTtlMs, type NestedToolCalls } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, InputSource, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./src/config.js";
 import { capImages, imageLimitFor } from "./src/image-cap.js";
 import { captureBatch, captureUnindexedBatchesFromSession, deriveLiveTurnIndex, groupBatchesByMode, projectBranchMessages } from "./src/batch-capture.js";
@@ -49,13 +49,14 @@ import { StatsAccumulator, emitExternalCost } from "./src/stats.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
-import { createSupersedeState, earliestChainStart, earliestResultTimestamp, lowerFloor } from "./src/supersede.js";
+import { activateClosedChainSuperseded, createSupersedeState, earliestChainStart, earliestResultTimestamp, lowerFloor } from "./src/supersede.js";
 import { detectChains } from "./src/chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, shouldFrontierGapFlush, usageFraction } from "./src/budget.js";
 import { spillOversizedBatch } from "./src/spill.js";
 import { occKey } from "./src/occurrence-key.js";
 import { DiagnosticSink } from "./src/diagnostics.js";
+import { idleCleanupDue, lastCacheRefreshMs } from "./src/idle-pause.js";
 
 const EMPTY_METRICS_SNAPSHOT: ContextMetricsSnapshot = { openCycleThinkingTokens: 0, largestChainSharePct: 0, frontierGapTokens: 0 };
 
@@ -95,6 +96,7 @@ export default function (pi: ExtensionAPI) {
   const pendingBatches: CapturedBatch[] = [];
   let isFlushing = false;
   let previousFraction: number | null = null;
+  let inputSource: InputSource | undefined;
   // Set on session_start/session_tree when the branch rescan finds recoverable
   // work but pendingBatches was just zeroed (reload/tree-switch). Lets the
   // turn_end budget gate fire without a freshly pushed batch. Boolean only —
@@ -1091,17 +1093,39 @@ export default function (pi: ExtensionAPI) {
   // prompt that beats the delay, or finds recovered work in a UI session, flushes
   // here with session delivery: summaries land in the session before this run's
   // first `context` event. No-UI sessions wait for a run to queue new batches.
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("input", (event) => {
+    inputSource = event.source;
+  });
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    const source = inputSource;
+    inputSource = undefined;
     if (settledFlush?.promise) {
       await settledFlush.promise;
-      return;
+    } else {
+      cancelSettledFlush();
+      const n = pendingBatches.length;
+      if (flushesAutomatically() && !isFlushing && (n > 0 || (rearmedPending && ctx.hasUI !== false))) {
+        await flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : "next-prompt" });
+      }
     }
-    cancelSettledFlush();
-    if (!flushesAutomatically()) return;
-    const n = pendingBatches.length;
-    if (n === 0 && (!rearmedPending || ctx.hasUI === false)) return;
-    if (isFlushing) return;
-    await flushPending(ctx, { delivery: "session", trigger: n === 0 ? "rearmed" : "next-prompt" });
+    if (event.messageType !== "user" || (source !== "interactive" && source !== "rpc")) return;
+    if (sessionEnd.signal.aborted) return;
+    if (!flushesAutomatically() || !currentConfig.value.chainCompression.enabled || isFlushing) return;
+    const branch = ctx.sessionManager.getBranch();
+    if (!idleCleanupDue({
+      branch,
+      now: Date.now(),
+      thresholdMinutes: currentConfig.value.chainCompression.idleCleanupMinutes ?? DEFAULT_CONFIG.chainCompression.idleCleanupMinutes,
+      declaredLifetimeMs: ctx.model ? getPromptCacheTtlMs(ctx.model, undefined) : undefined,
+    })) return;
+    const pauseKey = String(lastCacheRefreshMs(branch));
+    try {
+      activateClosedChainSuperseded(projectBranchMessages(branch), supersede, protectionPredicate);
+      await compactChains(ctx, { idle: true });
+    } catch (err) {
+      diagnostics.report("idle-cleanup-failed", pauseKey, errorMessage(err));
+    }
   });
 
   // pi awaits this handler before it exits or replaces the session, so it only
@@ -1191,7 +1215,7 @@ export default function (pi: ExtensionAPI) {
   registerQueryTool(pi, indexer);
 
   // ── Register /pruner command + summary message renderer ────────────
-  const compactChains = async (ctx: any) => {
+  const compactChains = async (ctx: any, { idle = false }: { idle?: boolean } = {}) => {
     // The final flush compresses chains too. Let one in flight finish and drop
     // one still in its delay, so the two never compress the same chain.
     await settledFlush?.promise;
@@ -1207,7 +1231,8 @@ export default function (pi: ExtensionAPI) {
         blockRefs,
         appendEntry: (type: string, data: unknown) => pi.appendEntry(type, data),
         now: () => Date.now(),
-        fuseRange: makeFuseRange(ctx),
+        fuseRange: idle ? undefined : makeFuseRange(ctx),
+        literalSummary: idle,
         messages: branchMessages,
         diagnostics,
         backfill: {
@@ -1220,7 +1245,7 @@ export default function (pi: ExtensionAPI) {
       inGrace,
     );
     if (result.compressedEntries.length > 0) {
-      lowerFloor(supersede, earliestChainStart(result.compressedEntries));
+      if (!idle) lowerFloor(supersede, earliestChainStart(result.compressedEntries));
       statsAccum.addChainsCompressed(result.compressedEntries.length);
       statsAccum.persist(pi);
       emitExternalCost(pi, statsAccum);

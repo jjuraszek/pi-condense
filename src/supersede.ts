@@ -1,4 +1,5 @@
 import { normalizePath } from "./protected.js";
+import { detectChains } from "./chain-detector.js";
 import { occKey, resultTimestampOf } from "./occurrence-key.js";
 
 /** Protected reads stay verbatim until a later same-path read covers their delivered lines. */
@@ -120,6 +121,18 @@ export function findSuperseded(messages: any[], isProtected: IsProtectedFn): Sup
 }
 
 const keyOf = (c: SupersededCandidate) => occKey(c.toolCallId, c.timestamp);
+
+export function activateClosedChainSuperseded(messages: any[], state: SupersedeState, isProtected: IsProtectedFn): void {
+  const closedKeys = new Set(detectChains(messages)
+    .filter((chain) => chain.finalAssistantTimestamp !== null)
+    .flatMap((chain) => chain.middleOccurrenceKeys ?? []));
+  // A pending floor belongs to the existing cold/flush path; idle activation must
+  // neither consume it nor extend its reach into the turn in progress.
+  for (const candidate of findSuperseded(messages, isProtected)) {
+    const key = keyOf(candidate);
+    if (closedKeys.has(key)) state.activated.add(key);
+  }
+}
 
 /**
  * Phase 1b of pruneMessages. Reference-preserving when nothing is stubbed.
