@@ -1212,6 +1212,7 @@ export default function (pi: ExtensionAPI) {
         appendEntry: (type: string, data: unknown) => pi.appendEntry(type, data),
         now: () => Date.now(),
         fuseRange: idle ? undefined : makeFuseRange(ctx),
+        literalSummary: idle,
         messages: branchMessages,
         diagnostics,
         backfill: {

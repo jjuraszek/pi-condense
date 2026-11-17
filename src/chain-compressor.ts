@@ -95,6 +95,8 @@ export interface CompressEligibleDeps {
    * the renderer falls back to the per-batch concatenation.
    */
   fuseRange?: (perBatchSummaryText: string) => Promise<string | null>;
+  /** Persist literal rendering for idle cleanup; absent keeps ordinary compaction semantics. */
+  literalSummary?: boolean;
   /** Once aborted, no further chain is issued or written; chains already written stand. */
   signal?: AbortSignal;
   /** MUST be the same array chain detection ran on (see doc/specs/2026-08-14-uncovered-chain-deterministic-backfill.md). */
@@ -269,6 +271,7 @@ export async function compressEligible(
         compressedAt: deps.now(),
         rangeSummaryText: buildDeterministicBody(allRecords, toolRefs),
         bodySource: "deterministic",
+        ...(deps.literalSummary ? { literalSummary: true } : {}),
         ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
         ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
       };
@@ -304,6 +307,7 @@ export async function compressEligible(
       toolRefs,
       compressedAt: deps.now(),
       ...(rangeSummaryText ? { rangeSummaryText } : {}),
+      ...(deps.literalSummary ? { literalSummary: true } : {}),
       ...(chain.protectedToolCallIds?.length ? { protectedToolCallIds: chain.protectedToolCallIds } : {}),
       ...(chain.middleOccurrenceKeys?.length ? { droppedOccurrenceKeys: chain.middleOccurrenceKeys } : {}),
     };

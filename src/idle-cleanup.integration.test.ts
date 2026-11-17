@@ -2,11 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectBranchMessages } from "./batch-capture.js";
+import { captureBatch, extractToolResultText, projectBranchMessages } from "./batch-capture.js";
+import { ToolCallIndexer } from "./indexer.js";
 import { detectChains } from "./chain-detector.js";
 import { expectNoOrphanToolResults } from "./test-support.js";
 import { supersededStub } from "./supersede.js";
-import { CUSTOM_TYPE_CHAIN, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
+import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
 
 function closedChainBranch(endMs: number, count: number): any[] {
   const branch: any[] = [];
@@ -44,6 +45,7 @@ async function boot(branch: any[], hasUI: boolean, config: Record<string, unknow
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ contextPrune: { enabled: true, showPruneStatusLine: false, ...config } }));
 
   const handlers = new Map<string, (event: any, ctx: any) => any>();
+  const commands = new Map<string, any>();
   const appended: Array<{ type: string; data: any }> = [];
   const appendEntry = (type: string, data: any) => {
     const id = `entry-${branch.length}`;
@@ -54,7 +56,7 @@ async function boot(branch: any[], hasUI: boolean, config: Record<string, unknow
   const pi: any = {
     on: (name: string, fn: (event: any, ctx: any) => any) => handlers.set(name, fn),
     appendEntry,
-    registerCommand() {},
+    registerCommand: (name: string, command: any) => commands.set(name, command),
     registerTool() {},
     registerMessageRenderer() {},
     sendMessage() { throw new Error("The idle fixture must not send a summary message."); },
@@ -100,10 +102,115 @@ async function boot(branch: any[], hasUI: boolean, config: Record<string, unknow
     await fire("input", { text: "Continue.", source });
     await fire("before_agent_start", { messageType, prompt: "Continue.", systemPrompt: "" });
   };
-  return { fire, appended, restore, request, submit };
+  const compact = () => commands.get("pruner").handler("compact", ctx);
+  return { fire, appended, restore, request, submit, compact, ctx };
+}
+
+function summarizedBranch(endMs: number) {
+  const branch = closedChainBranch(endMs, 4);
+  const summaries = ["  First batch.\nKeep this spacing.  ", "Second batch refers to {b1}.\n", "\nThird batch stays separate."];
+  const indexer = new ToolCallIndexer();
+  for (let i = 0; i < summaries.length; i++) {
+    const call = branch[i * 4 + 1].message;
+    const result = branch[i * 4 + 2].message;
+    const batch = captureBatch(call, [result], i, result.timestamp);
+    indexer.addBatch(batch, (customType, data) => branch.push({ type: "custom", customType, data }));
+    branch.push({
+      type: "custom_message", customType: CUSTOM_TYPE_SUMMARY, content: summaries[i], display: false,
+      details: { toolCallRefs: indexer.allocateSummaryRefs(batch) }, timestamp: new Date(endMs + i + 1).toISOString(),
+    });
+  }
+  branch.splice(7, 2); // Two batches in the second chain make fusion observable.
+  const protectedResults = [
+    { tool: "read", args: { path: "/project/skills/review/SKILL.md" }, text: "1. Inspect.\n2. Ask: A) Apply or B) Stop?\n" },
+    { tool: "plan_tracker", args: {}, text: "Task 1: complete\nTask 2: in_progress\n  Keep {b1} literal." },
+    { tool: "phase_tracker", args: {}, text: "Phase: implementation\nNext: verification\n" },
+    { tool: "read", args: { path: "/project/skills/review/diagram.md" }, text: "Diagram caption.  " },
+  ].map(({ tool, args, text }, i) => {
+    const id = `protected-${i}`;
+    branch[5].message.content.push({ type: "toolCall", id, name: tool, arguments: args });
+    const message = {
+      role: "toolResult", toolCallId: id, toolName: tool, isError: false,
+      timestamp: branch[6].message.timestamp + i + 1,
+      content: [{ type: "text", text }] as any[],
+    };
+    if (i === 3) message.content.push({ type: "image", mimeType: "image/png", data: "c3ludGhldGlj" });
+    return message;
+  });
+  branch.splice(7, 0, ...protectedResults.map((message) => ({ type: "message", timestamp: new Date(message.timestamp).toISOString(), message })));
+  const messages = projectBranchMessages(branch);
+  const users = messages.filter((m) => m.role === "user");
+  const finals = messages.filter((m) => m.role === "assistant" && m.stopReason === "stop");
+  for (const user of users) user.content.push({ type: "text", text: "\n  Preserve the user's exact words.\n" });
+  for (const final of finals) final.content.unshift({ type: "thinking", thinking: "Private deliberation.", thinkingSignature: "signature" });
+  return { branch, summaries, protectedResults, users, finals };
 }
 
 describe("idle cleanup", () => {
+  it.each([
+    { idle: true, fuse: true },
+    { idle: false, fuse: false },
+    { idle: false, fuse: true },
+  ])("keeps literal idle summaries and protected outputs across reload, while compact keeps its rendering (%j)", async ({ idle, fuse }) => {
+    const fixture = summarizedBranch(Date.now() - 240 * 60_000);
+    const config = {
+      protectedTools: ["plan_tracker", "phase_tracker"], summarizerModel: "default",
+      chainCompression: { ...DEFAULT_CONFIG.chainCompression, fuseRangeSummary: fuse },
+    };
+    const harness = await boot(fixture.branch, false, config);
+    const fuseInputs: string[] = [];
+    harness.ctx.model = { id: "fixture", provider: "fixture", api: "fixture" };
+    harness.ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "synthetic" });
+    harness.ctx.modelRegistry.streamSimple = (_model: any, input: any) => {
+      fuseInputs.push(input.messages[0].content[0].text);
+      return {
+        async *[Symbol.asyncIterator]() {},
+        async result() {
+          return {
+            stopReason: "stop", content: [{ type: "text", text: "FUSED refers to {b1}." }],
+            usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          };
+        },
+      };
+    };
+    let rendered: any[];
+    try {
+      if (idle) await harness.submit();
+      else await harness.compact();
+      const entries = harness.appended.filter((e) => e.type === CUSTOM_TYPE_CHAIN).map((e) => e.data);
+      expect(entries).toHaveLength(3);
+      expect(fuseInputs).toHaveLength(!idle && fuse ? 1 : 0);
+      if (!idle && fuse) expect(fuseInputs[0]).toContain(fixture.summaries.slice(1).join("\n\n"));
+      rendered = (await harness.request()).slice(0, -1);
+      const bodies = rendered.filter((m: any) => m.role === "user" && m.content[0]?.text?.startsWith("<compressed-chain"));
+      expect(bodies).toHaveLength(3);
+      const storedBody = !idle && fuse ? "FUSED refers to {b1}." : fixture.summaries.slice(1).join("\n\n");
+      const expectedBody = idle ? storedBody : storedBody.replace("{b1}", fixture.summaries[0]);
+      const protectedBody = fixture.protectedResults.map((m) => `\n\n<protected-output tool="${m.toolName}">\n${extractToolResultText(m)}\n</protected-output>`).join("");
+      expect(bodies[1].content[0].text).toBe(`<compressed-chain id="${entries[1].blockId}" tools="${entries[1].toolRefs.join(",")}">\n${expectedBody}${protectedBody}\n</compressed-chain>`);
+      expect(bodies[0].content[0].text).toContain(`\n${fixture.summaries[0]}\n</compressed-chain>`);
+      for (const entry of entries) expect(entry.literalSummary).toBe(idle ? true : undefined);
+      for (const user of fixture.users) expect(rendered.find((m) => m.timestamp === user.timestamp)).toEqual(user);
+      for (const final of fixture.finals) expect(rendered.find((m) => m.timestamp === final.timestamp)).toEqual({
+        ...final, content: final.content.filter((b: any) => b.type !== "thinking"),
+      });
+      expect(rendered.some((m) => m.customType === CUSTOM_TYPE_SUMMARY || m.role === "toolResult")).toBe(false);
+      expectNoOrphanToolResults(rendered);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+    const reloaded = await boot(JSON.parse(JSON.stringify(fixture.branch)), false, config);
+    try {
+      expect((await reloaded.request()).slice(0, -1)).toEqual(rendered!);
+      expect(reloaded.appended.filter((e) => e.type === CUSTOM_TYPE_CHAIN)).toHaveLength(0);
+    } finally {
+      await reloaded.fire("session_shutdown");
+      reloaded.restore();
+    }
+  });
+
   it.each([
     { mixed: false, newerLimit: undefined, replaced: true },
     { mixed: true, newerLimit: undefined, replaced: true },

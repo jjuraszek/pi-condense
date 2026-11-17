@@ -3,15 +3,15 @@
 base: e76989b77ea139c728a737cd5c0844350cd09f8a
 verification: bun test src/
 checks: commands
-iterations: 3
+iterations: 4
 allowance: 10
-returned: 2 | home | 1a4ad9dac97d8c8dd2833c4ec74ed64ae13518a8
+returned: 3 | home | d12cadb0aabe546a5b68602f0b508073c7fda57d
 
 | row | status | attempts | evidence |
 |---|---|---|---|
 | 1 | done | 1 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 13 passed, 0 failed; UI and no-UI human prompts compress all 3 closed chains after 240 minutes; four exceptions and extension or disabled gates preserved |
 | 2 | done | 1 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 18 passed, 0 failed; waiting covered reads become placeholders with or without chain compression; a partial covering read leaves the older read unchanged |
-| 3 | open | 0 | |
+| 3 | done | 1 | timeout -k 30 120 bun test src/idle-cleanup.integration.test.ts; 25 passed, 0 failed; idle summaries and protected outputs stay literal before and after reload; manual compact still fuses and substitutes nested references |
 | 4 | done | 0 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 22 passed, 0 failed; open-turn messages and the new prompt equal the render without idle cleanup; existing cold-event floors still activate open-turn reads |
 | 5 | done | 0 | timeout -k 30 60 bun test ./src/idle-cleanup.integration.test.ts; 15 passed, 0 failed; a 60-minute pause writes no chain entry in UI and no-UI sessions; first-request messages equal the pre-cleanup render |
 | 6 | open | 0 | |
@@ -30,3 +30,4 @@ row 7 done | The handler check proves a fresh extension instance cleans a rebuil
 row 5 done | A 60-minute pause leaves the first-request render unchanged in UI and no-UI sessions. | Reuse the below-threshold case in src/idle-cleanup.integration.test.ts to compare request messages across idle gating.
 row 2 done | Idle cleanup activates covered protected reads in closed chains, including when no chain compresses. | Reuse activateClosedChainSuperseded in src/supersede.ts for replay activation without changing the pending floor.
 row 4 done | The open turn and submitted prompt match the render without idle cleanup, including when a cold-event floor is pending. | Reuse the open-turn comparison in src/idle-cleanup.integration.test.ts to check occurrence identity and pending cold floors.
+row 3 done | Idle compression preserves summary and protected-output bytes across reload without fusing, while manual compact keeps its rendering. | Reuse ChainCompressionEntry.literalSummary for durable literal rendering and summarizedBranch in src/idle-cleanup.integration.test.ts for protected-output checks.

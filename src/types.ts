@@ -545,6 +545,8 @@ export interface ChainCompressionEntry {
    * per-batch semantics, unchanged.
    */
   bodySource?: "deterministic";
+  /** Idle cleanup keeps stored summary bytes literal, including nested block refs, across reload. */
+  literalSummary?: boolean;
 }
 
 export interface ChainCompressionConfig {

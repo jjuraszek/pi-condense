@@ -45,7 +45,7 @@ export function buildSyntheticChainMessage(
   blockSummaryLookup?: (blockId: string) => string | undefined,
   protectedOutputs: { tool: string; text: string }[] = [],
 ): UserMessage {
-  const resolvedSummary = blockSummaryLookup
+  const resolvedSummary = blockSummaryLookup && !entry.literalSummary
     ? substituteBlockRefs(summary, blockSummaryLookup, { selfBlockId: entry.blockId })
     : summary;
   const tools = entry.toolRefs.join(",");
