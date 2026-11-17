@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { projectBranchMessages } from "./batch-capture.js";
 import { detectChains } from "./chain-detector.js";
 import { expectNoOrphanToolResults } from "./test-support.js";
+import { supersededStub } from "./supersede.js";
 import { CUSTOM_TYPE_CHAIN, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
 
 function closedChainBranch(endMs: number, count: number): any[] {
@@ -103,6 +104,88 @@ async function boot(branch: any[], hasUI: boolean, config: Record<string, unknow
 }
 
 describe("idle cleanup", () => {
+  it.each([
+    { mixed: false, newerLimit: undefined, replaced: true },
+    { mixed: true, newerLimit: undefined, replaced: true },
+    { mixed: false, newerLimit: 50, replaced: false },
+  ])("stubs a waiting superseded protected read (%j)", async ({ mixed, newerLimit, replaced }) => {
+    const path = "/project/skills/review/SKILL.md";
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 3);
+    for (const i of [0, 8]) {
+      const call = branch[i + 1].message.content[0];
+      call.id = "read-again";
+      call.name = "read";
+      call.arguments = { path, limit: i === 0 ? 100 : newerLimit };
+      branch[i + 2].message.toolCallId = call.id;
+      branch[i + 2].message.toolName = "read";
+    }
+    const newer = branch.splice(8);
+    if (mixed) branch.splice(3, 2); // One closed chain holds the read and ordinary tool work.
+    else branch.splice(4);
+    const original = branch[2].message.content[0].text;
+    const harness = await boot(branch, false);
+    try {
+      await harness.request(); // Consume session_start's cold floor before the covering read exists.
+      branch.push(...newer);
+      const before = await harness.request();
+      expect(before.find((m: any) => m.timestamp === branch[2].message.timestamp).content[0].text).toBe(original);
+      await harness.submit();
+      const request = await harness.request();
+      const text = request.flatMap((m: any) => Array.isArray(m.content) ? m.content.filter((b: any) => b.type === "text").map((b: any) => b.text) : []).join("\n");
+      expect(text.includes(supersededStub(path))).toBe(replaced);
+      expect(text.includes(original)).toBe(!replaced);
+      expect(request.find((m: any) => m.timestamp === newer[2].message.timestamp)).toEqual(newer[2].message);
+      expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(mixed ? 1 : 0);
+      expectNoOrphanToolResults(request);
+    } finally {
+      await harness.fire("session_shutdown");
+      harness.restore();
+    }
+  });
+
+  it.each([undefined, "model_select", "session_compact", "thinking_level_select"])("keeps the turn in progress and any pending cold floor (%s)", async (coldEvent) => {
+    const branch = closedChainBranch(Date.now() - 240 * 60_000, 4);
+    for (const i of [0, 8, 12]) {
+      const call = branch[i + 1].message.content[0];
+      call.id = "read-again";
+      call.name = "read";
+      call.arguments = { path: "/project/skills/review/SKILL.md" };
+      branch[i + 2].message.toolCallId = call.id;
+      branch[i + 2].message.toolName = "read";
+    }
+    const open = branch.splice(8);
+    open.pop();
+    open.splice(3, 2);
+    open[1].message.content.unshift({ type: "thinking", thinking: "Work still in progress.", thinkingSignature: "keep-signature" });
+    branch.splice(3, 2);
+    const renders: any[][] = [];
+    for (const source of ["extension", "interactive"]) {
+      const copy = structuredClone(branch);
+      const harness = await boot(copy, false);
+      try {
+        await harness.request();
+        copy.push(...structuredClone(open));
+        if (coldEvent) await harness.fire(coldEvent);
+        await harness.submit(source);
+        const prompt = { role: "user", content: [{ type: "text", text: "Continue." }], timestamp: 1 };
+        const messages = [...projectBranchMessages(copy), prompt];
+        const request = (await harness.fire("context", { messages }))?.messages ?? messages;
+        const openTimestamps = new Set([...open.map((entry) => entry.message.timestamp), prompt.timestamp]);
+        renders.push(request.filter((m: any) => openTimestamps.has(m.timestamp)));
+        expect(harness.appended.filter((entry) => entry.type === CUSTOM_TYPE_CHAIN)).toHaveLength(source === "interactive" ? 1 : 0);
+        expectNoOrphanToolResults(request);
+      } finally {
+        await harness.fire("session_shutdown");
+        harness.restore();
+      }
+    }
+    expect(renders[1]).toEqual(renders[0]);
+    expect(renders[1]).toHaveLength(open.length + 1);
+    expect(renders[1][2].content[0].text).toBe(coldEvent
+      ? supersededStub("/project/skills/review/SKILL.md")
+      : open[2].message.content[0].text);
+  });
+
   it.each([true, false])("does nothing below the threshold (hasUI=%s)", async (hasUI) => {
     const branch = closedChainBranch(Date.now() - 60 * 60_000, 3);
     const harness = await boot(branch, hasUI);

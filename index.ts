@@ -49,7 +49,7 @@ import { StatsAccumulator, emitExternalCost } from "./src/stats.js";
 import { PruneFrontierTracker } from "./src/frontier.js";
 import { BlockRefIssuer } from "./src/block-refs.js";
 import { compressEligible } from "./src/chain-compressor.js";
-import { createSupersedeState, earliestChainStart, earliestResultTimestamp, lowerFloor } from "./src/supersede.js";
+import { activateClosedChainSuperseded, createSupersedeState, earliestChainStart, earliestResultTimestamp, lowerFloor } from "./src/supersede.js";
 import { detectChains } from "./src/chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./src/recovery-grace.js";
 import { shouldBudgetFlush, shouldDeltaFlush, shouldFrontierGapFlush, usageFraction } from "./src/budget.js";
@@ -1105,6 +1105,7 @@ export default function (pi: ExtensionAPI) {
       thresholdMinutes: currentConfig.value.chainCompression.idleCleanupMinutes ?? DEFAULT_CONFIG.chainCompression.idleCleanupMinutes,
       declaredLifetimeMs: ctx.model ? getPromptCacheTtlMs(ctx.model, undefined) : undefined,
     })) return;
+    activateClosedChainSuperseded(projectBranchMessages(ctx.sessionManager.getBranch()), supersede, protectionPredicate);
     await compactChains(ctx, { idle: true });
   });
 
