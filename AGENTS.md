@@ -140,6 +140,8 @@ Recapture with `npm run eval -- --baseline` for eval harness, fixture, key, chec
 
 For idle timing, compression, or retention changes, run the targeted `npm run eval -- --idle --summarizer anthropic/claude-haiku-5-5 --change "idle cleanup twins"` comparison. It covers skill approval and workflow progress with default unprotected trackers, not the operator's protected-tracker configuration. Use a clean committed candidate and retain both runs when confirming a drop. See [eval/README.md](eval/README.md#idle-twins) for the fresh-control floor, comparison limits, and the targeted exception to seven-case recapture; the private-session summarizer replay is not an idle-render check.
 
+For changes to idle-cleanup timing, the pause clock, or what idle cleanup retains, run the offline `idle` replay described in [Offline idle replay](eval/README.md#offline-idle-replay).
+
 ## Release
 
 `/skill:release` owns the flow: `release.sh <level>` promotes `## [Unreleased]` in `CHANGELOG.md`, bumps `package.json`, commits `Release X.Y.Z`, tests, tags `vX.Y.Z`, pushes; CI publishes via OIDC. A user instruction naming the level is the approval. Mechanics and safety checks: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
