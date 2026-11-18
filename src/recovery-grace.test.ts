@@ -15,6 +15,21 @@ const scripted = (id: string, timestamp: number, nestedCalls: unknown) => ({
 });
 
 describe("inGraceRecoveryToolCallIds", () => {
+  it.each([
+    { label: "another outer tool", message: { ...scripted("script", 11, nestedLookup), toolName: "batch" }, key: "script@11" },
+    { label: "incomplete record", message: scripted("script", 11, { ...nestedLookup, complete: false }), key: "script@11" },
+    ...["error", "unfinished"].map((status) => ({
+      label: `${status} lookup`,
+      message: scripted("script", 11, { complete: false, calls: [{ ...nestedLookup.calls[0], status }] }), key: "script@11",
+    })),
+    { label: "several lookups", message: scripted("script", 11, { complete: true, calls: [nestedLookup.calls[0], { ...nestedLookup.calls[0], id: "second" }] }), key: "script@11" },
+    { label: "direct and nested lookup", message: { ...ctqAt("script", 11), nestedCalls: nestedLookup }, key: "script@11" },
+    { label: "no timestamp", message: { ...ctq("script"), toolName: "codemode", nestedCalls: nestedLookup }, key: "script" },
+  ])("graces the whole recorded recovery occurrence: $label", ({ message, key }) => {
+    expect([...inGraceRecoveryToolCallIds([user(), message], 3)]).toEqual([key]);
+    expect([...inGraceRecoveryToolCallIds([user(), message, user(), user(), user(), user()], 3)]).toEqual([]);
+  });
+
   for (const { label, age, graceTurns, expected } of [
     { label: "inclusive final turn", age: 3, graceTurns: 3, expected: ["direct@10", "script@11"] },
     { label: "first expired turn", age: 4, graceTurns: 3, expected: [] },

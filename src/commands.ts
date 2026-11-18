@@ -213,9 +213,9 @@ function minBatchCharsDescription(config: ContextPruneConfig): string {
 
 function recoveryGraceDescription(config: ContextPruneConfig): string {
   if (config.recoveryGraceTurns === 0) {
-    return "context_tree_query output is stubbed immediately (grace disabled). Set to a positive integer to keep recovered output verbatim for that many user-turn-groups.";
+    return "Recovered output returned directly or inside a script is stubbed immediately (grace disabled). Set to a positive integer to keep recovered output verbatim for that many user-turn-groups.";
   }
-  return `context_tree_query (recovery) output stays verbatim for ${config.recoveryGraceTurns} user-turn-group(s) after recovery, then reverts to the stub. Bounds the recover->re-stub->re-query loop. Currently ${config.recoveryGraceTurns}. Set to 0 to disable.`;
+  return `Recovered output returned directly or inside a script stays verbatim for ${config.recoveryGraceTurns} user-turn-group(s) after recovery, then reverts to the stub. Bounds the recover->re-stub->re-query loop. Currently ${config.recoveryGraceTurns}. Set to 0 to disable.`;
 }
 
 function idleTimeoutDescription(config: ContextPruneConfig): string {

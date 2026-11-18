@@ -3,7 +3,7 @@ import { pruneMessages, sizeMessages } from "./pruner.js";
 import { purgeErroredArgs } from "./error-purge.js";
 import { charsOf } from "./context-metrics.js";
 import { ToolCallIndexer } from "./indexer.js";
-import { CUSTOM_TYPE_INDEX } from "./types.js";
+import { CUSTOM_TYPE_INDEX, QUERY_TOOL_NAME } from "./types.js";
 import type { ChainCompressionConfig, ChainCompressionEntry } from "./types.js";
 import { DiagnosticSink } from "./diagnostics.js";
 import { pruneWithZeroSweepAssertion, expectNoOrphanToolResults } from "./test-support.js";
@@ -642,6 +642,58 @@ describe("pruneMessages recovery grace", () => {
     content: [{ type: "toolCall", id: toolCallId, name: toolName, input: {} }],
     timestamp,
   });
+
+  for (const spilled of [false, true]) {
+    for (const { label, age, grace, kept } of [
+      { label: "current turn", age: 0, grace: 3, kept: true },
+      { label: "final grace turn", age: 3, grace: 3, kept: true },
+      { label: "expired", age: 4, grace: 3, kept: false },
+      { label: "disabled", age: 0, grace: 0, kept: false },
+    ]) {
+      it(`renders scripted recovery like direct recovery: ${label}, spilled=${spilled}`, () => {
+        const code = 'console.log(await tools.context_tree_query({ toolCallIds: ["t0"] }));'.repeat(10);
+        const fixtures = [
+          { id: "direct", toolName: QUERY_TOOL_NAME, timestamp: 10, names: [] },
+          { id: "script", toolName: "codemode", timestamp: 11, names: ["read", QUERY_TOOL_NAME] },
+          { id: "ordinary", toolName: "codemode", timestamp: 12, names: ["read"] },
+        ];
+        const results = fixtures.map(({ id, toolName, timestamp, names }) => ({
+          ...mkQueryResult(id, timestamp), toolName,
+          content: [{ type: "text", text: `${id}: recovered evidence and other nested output` }],
+          nestedCalls: { complete: true, calls: names.map((name, i) => ({ id: `${id}-${i}`, name, status: "ok" })) },
+        }));
+        const assistants = fixtures.map(({ id, toolName, timestamp }) => ({
+          role: "assistant", timestamp: timestamp - 1,
+          content: [{ type: "toolCall", id, name: toolName,
+            arguments: toolName === QUERY_TOOL_NAME ? { toolCallIds: ["t0"] } : { code } }],
+        }));
+        const indexer = makeMockIndexer({
+          summarized: new Set(fixtures.map((f) => `${f.id}@${f.timestamp}`)),
+          shortRefs: new Map(fixtures.map((f, i) => [`${f.id}@${f.timestamp}`, `t${i + 1}`])),
+          records: new Map(fixtures.map((f) => [`${f.id}@${f.timestamp}`, {
+            toolName: f.toolName, args: {},
+            ...(spilled ? { spillPath: `/blobs/${f.id}.txt`, spillBytes: 10000, resultPreview: "preview" } : {}),
+          }])),
+        });
+        const messages = [mkUser(0), ...results.flatMap((result, i) => [assistants[i], result]),
+          ...Array.from({ length: age }, (_, i) => mkUser(20 + i))];
+        const { messages: out } = pruneWithZeroSweepAssertion(messages, indexer, undefined,
+          { enabled: true, minArgChars: 300, cooldownTurns: 2 }, undefined, grace);
+        results.forEach((result, i) => {
+          const rendered = out[2 + i * 2];
+          if (kept && i < 2) {
+            expect(rendered).toBe(result);
+            expect(out[1 + i * 2]).toBe(assistants[i]);
+          } else {
+            expect(rendered).not.toBe(result);
+            expect(rendered.content[0].text).toContain(`\`t${i + 1}\``);
+            expect(rendered.content[0].text).toContain(spilled ? `/blobs/${result.toolCallId}.txt` : "Summarized");
+            if (i > 0) expect(out[1 + i * 2].content[0].arguments.code).toContain("<purged-args");
+          }
+        });
+      });
+    }
+  }
 
   it("renders a context_tree_query recovery output verbatim at age 0 within grace", () => {
     const indexer = makeMockIndexer({
