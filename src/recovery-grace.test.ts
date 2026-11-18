@@ -44,7 +44,7 @@ describe("inGraceRecoveryToolCallIds", () => {
     });
   }
 
-  it("returns exactly the direct and scripted lookup keys from mixed records", () => {
+  it("ignores scripts without a recorded lookup: mixed records return exactly the direct and scripted lookup keys", () => {
     const negativeRecords = [
       undefined,
       null,
