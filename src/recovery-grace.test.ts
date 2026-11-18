@@ -44,29 +44,34 @@ describe("inGraceRecoveryToolCallIds", () => {
     });
   }
 
-  it.each([
-    undefined,
-    null,
-    "malformed",
-    42,
-    {},
-    { complete: true },
-    { complete: true, calls: null },
-    { complete: true, calls: {} },
-    { complete: true, calls: QUERY_TOOL_NAME },
-    { complete: true, calls: [] },
-    { complete: false, calls: [] },
-    { complete: true, calls: [null, {}, { name: 42 }] },
-    { complete: true, calls: [{ id: "inner", name: "read", status: "ok" }] },
-    { complete: false, calls: [{ id: "inner", name: "read", status: "unfinished" }] },
-    { complete: true, calls: [{ name: "context_tree_query2" }] },
-    { complete: true, calls: [{ name: "Context_Tree_Query" }] },
-    { complete: true, calls: [{ name: "bash", arguments: { command: QUERY_TOOL_NAME } }] },
-  ])("ignores scripts without a recorded lookup: %j", (nestedCalls) => {
-    const script = scripted("script", 11, nestedCalls);
-    script.content = [{ type: "text", text: QUERY_TOOL_NAME }];
-    expect([...inGraceRecoveryToolCallIds([user(), script, ctqAt("direct", 10)], 3)])
-      .toEqual(["direct@10"]);
+  it("returns exactly the direct and scripted lookup keys from mixed records", () => {
+    const negativeRecords = [
+      undefined,
+      null,
+      "malformed",
+      42,
+      {},
+      { complete: true },
+      { complete: true, calls: null },
+      { complete: true, calls: {} },
+      { complete: true, calls: QUERY_TOOL_NAME },
+      { complete: true, calls: [] },
+      { complete: false, calls: [] },
+      { complete: true, calls: [null, {}, { name: 42 }] },
+      { complete: true, calls: [{ id: "inner", name: "read", status: "ok" }] },
+      { complete: false, calls: [{ id: "inner", name: "read", status: "unfinished" }] },
+      { complete: true, calls: [{ name: "context_tree_query2" }] },
+      { complete: true, calls: [{ name: "Context_Tree_Query" }] },
+      { complete: true, calls: [{ name: "bash", arguments: { command: QUERY_TOOL_NAME } }] },
+    ];
+    const messages = [
+      user(), ctqAt("direct", 10), scripted("script", 11, nestedLookup),
+      ...negativeRecords.map((nestedCalls, index) => ({
+        ...scripted(`negative-${index}`, 20 + index, nestedCalls),
+        content: [{ type: "text", text: QUERY_TOOL_NAME }],
+      })),
+    ];
+    expect([...inGraceRecoveryToolCallIds(messages, 3)]).toEqual(["direct@10", "script@11"]);
   });
 
   it("isolates a scripted lookup from a reused ID at a different timestamp", () => {
