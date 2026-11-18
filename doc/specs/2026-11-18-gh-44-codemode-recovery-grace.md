@@ -123,7 +123,7 @@ Pi attaches the nested-call record to the outer tool result. Both arrays the che
 - `eval/replay/idle.ts` calls the same check on both paths;
 - once more than `recoveryGraceTurns` user turns follow the result, the key drops out and the result is stubbed and its chain compressed as usual.
 
-Grace covers the whole script result, including output from its other nested calls, because Pi does not record which part came from the lookup. The outer script call also keeps its arguments (the script source) unshrunk until its result is stubbed, because argument shrinking follows phase-1 stubbing (`src/pruner.ts:137-142,176`, `PRUNING.md:1180`). The window bounds that cost exactly as it bounds a direct lookup.
+Grace covers the whole script result, including output from its other nested calls, because Pi does not record which part came from the lookup. The outer script call also keeps its arguments (the script source) unshrunk until its result is stubbed, because argument shrinking follows phase-1 stubbing (`src/pruner.ts:137-142,176`, `PRUNING.md:1180`). A script whose result is an error is the exception: its arguments follow the existing errored-call cooldown and can render as `<purged-errored-args>` while the result is still in grace (`src/error-purge.ts:101-105,125-137`, `PRUNING.md` "Argument Purge"); this change leaves that purge as it is. The window bounds that cost exactly as it bounds a direct lookup.
 
 ### Responsibilities
 
@@ -137,7 +137,7 @@ Add:
 
 - `src/recovery-grace.ts`: the second match alternative, and a header comment that names both kinds of recovery result (a direct lookup, and a tool result whose recorded nested calls include one) and states that the whole outer result is graced.
 - `src/recovery-grace.test.ts`, `src/pruner.test.ts`, `src/chain-compressor.test.ts`: the new cases in Tests. No existing case is edited or removed.
-- `PRUNING.md`, "What Pruning Does", recovery grace bullet: the window also applies to a tool result whose recorded nested calls include `context_tree_query` (a codemode script that made the lookup); the whole result is kept, including output of its other nested calls; the outer script call keeps its arguments until its result is stubbed; a record that does not name the lookup earns none.
+- `PRUNING.md`, "What Pruning Does", recovery grace bullet: the window also applies to a tool result whose recorded nested calls include `context_tree_query` (a codemode script that made the lookup); the whole result is kept, including output of its other nested calls; the outer script call keeps its arguments until its result is stubbed, unless that result is an error, where the errored-call cooldown under "Argument Purge" still applies; a record that does not name the lookup earns none.
 - `doc/configuration.md`, `recoveryGraceTurns` row: the same scope in one clause.
 - `src/commands.ts`, `recoveryGraceDescription`: both branches say recovered output "returned directly or inside a script".
 - `CHANGELOG.md`: a `## [Unreleased]` section with a `### Fixed` entry ending `(#44)`.
@@ -226,5 +226,6 @@ Materiality bar: `reference/documentation-impact.md`.
 - Restricting the match to outer tool `codemode`.
 - Grace for an incomplete record that does not name the lookup.
 - Reconstructing chains compressed before this change.
+- Exempting an in-grace script call from the errored-argument purge: a script that ended in an error keeps its result through the window, not its source.
 - The paid seven-case eval, the paid idle twins, a baseline recapture, and a live smoke session.
 - A failure threshold on how far `estimatedTokensRemoved` drops on the affected set, or any pass condition on the sign of that delta.
