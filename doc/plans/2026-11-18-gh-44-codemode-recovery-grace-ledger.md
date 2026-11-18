@@ -6,7 +6,6 @@ checks: commands
 iterations: 4
 allowance: 10
 returned: 2 | home | 0895d882a92f7e5e357a16ccd30913a81450e4db
-pending: verify | home | 0162700be2bf15bdd5849cf7eaae58d6472ae5f9
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -24,3 +23,4 @@ row 1 done | Widened recovery grace to recorded nested lookups and proved whole-
 row 3 done | Confirmed direct and scripted recovery keys remain in grace on the inclusive final user turn. | nothing new to build on
 row 7 done | Confirmed a later result reusing an ID at a different timestamp does not inherit scripted lookup grace. | nothing new to build on
 row 2 done | Proved direct and scripted lookup chains defer through the grace boundary, expire together, and leave reused-ID neighbors eligible. | Reuse the parameterized production-boundary fixture in src/chain-compressor.test.ts to check chain eligibility from real messages.
+repair verification | home 1bc0ac9 | iteration 4
