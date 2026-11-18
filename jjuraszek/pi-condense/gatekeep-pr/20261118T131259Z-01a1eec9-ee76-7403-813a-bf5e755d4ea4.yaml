@@ -1,0 +1,23 @@
+skill: gatekeep-pr
+session: 01a1eec9-ee76-7403-813a-bf5e755d4ea4
+ts: 2026-11-18T13:12:59Z
+repo: jjuraszek/pi-condense
+items:
+  - kind: pr
+    key: "#45@85dd87a3d5c2e9d005046ceff1280401320f094c"
+    outcome: merged
+author:
+  name: Jacek Juraszek
+  email: jacek.juraszek@gmail.com
+gauntlet_version: 8.8.1
+models:
+  - github-copilot/gpt-6.2-astra
+  - github-copilot/gpt-6.2-sol:medium
+  - github-copilot/gpt-6.2-astra:medium
+  - github-copilot/gpt-6.2-astra:high
+tokens:
+  input: 453
+  output: 47134
+  cache_read: 10854325
+  cache_write: 757937
+cost: 12.669737499999998
