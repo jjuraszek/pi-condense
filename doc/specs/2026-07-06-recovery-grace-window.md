@@ -1,5 +1,7 @@
 # Recovery grace window: render-time bounded verbatim for `context_tree_query` output
 
+> **Superseded by:** [doc/specs/2026-11-18-gh-44-codemode-recovery-grace.md](./2026-11-18-gh-44-codemode-recovery-grace.md) - the "Decision" below on which results earn grace (direct `context_tree_query` output only) is superseded by the linked spec's "One rule, widened" section: direct lookups and tool results whose recorded nested calls name `context_tree_query` qualify for the same window.
+
 ## Problem
 
 The pruner re-prunes its own recovery tool's output, forcing a retrieve -> re-stub -> re-query loop the agent experiences as "fighting the pruner."

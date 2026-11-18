@@ -213,9 +213,9 @@ function minBatchCharsDescription(config: ContextPruneConfig): string {
 
 function recoveryGraceDescription(config: ContextPruneConfig): string {
   if (config.recoveryGraceTurns === 0) {
-    return "context_tree_query output is stubbed immediately (grace disabled). Set to a positive integer to keep recovered output verbatim for that many user-turn-groups.";
+    return "Grace is disabled. Normal pruning rules apply to recovered output returned directly or inside a script. Set a positive number of user-turn-groups to keep that output verbatim.";
   }
-  return `context_tree_query (recovery) output stays verbatim for ${config.recoveryGraceTurns} user-turn-group(s) after recovery, then reverts to the stub. Bounds the recover->re-stub->re-query loop. Currently ${config.recoveryGraceTurns}. Set to 0 to disable.`;
+  return `Recovered output returned directly or inside a script stays verbatim for ${config.recoveryGraceTurns} user-turn-group(s) after recovery. After that, normal pruning rules apply. Set to 0 to disable grace.`;
 }
 
 function idleTimeoutDescription(config: ContextPruneConfig): string {
@@ -1281,7 +1281,7 @@ export function registerCommands(
           void persistConfig((m, t) => ctx.ui.notify(m, t), currentConfig.value, save);
           ctx.ui.notify(
             parsed === 0
-              ? "recovery-grace set to 0 - context_tree_query output stubs immediately."
+              ? "recovery-grace set to 0 - normal pruning rules apply to direct and scripted lookups."
               : `recovery-grace set to ${parsed} user-turn-group(s).`,
           );
           break;

@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- Tool results whose recorded nested calls include `context_tree_query`, such as codemode recovery scripts, now earn the same bounded recovery grace as direct lookups. The whole result stays verbatim during the window, as do its script arguments unless the script ended in an error (errored calls keep their existing argument-purge cooldown), and chain compression defers the containing chain until grace expires. (#44)
+
 ## [2.18.0] - 2026-11-17
 
 ### Added
