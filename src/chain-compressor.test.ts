@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { selectEligible, compressEligible, extractChainRecords, buildDeterministicBody } from "./chain-compressor.js";
 import type { ChainCompressorIndexerDeps } from "./chain-compressor.js";
 import type { ChainRange, ChainCompressionEntry, ToolCallRecord } from "./types.js";
-import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_INDEX, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG } from "./types.js";
+import { CUSTOM_TYPE_CHAIN, CUSTOM_TYPE_INDEX, CUSTOM_TYPE_SUMMARY, DEFAULT_CONFIG, QUERY_TOOL_NAME } from "./types.js";
 import { detectChains } from "./chain-detector.js";
 import { inGraceRecoveryToolCallIds } from "./recovery-grace.js";
 import { occKey } from "./occurrence-key.js";
@@ -498,6 +498,47 @@ describe("selectEligible - recovery grace wiring (production boundary)", () => {
 
     const eligible = selectEligible(chains, 0, new Set(), inGrace);
     expect(eligible.map((c) => c.startUserTimestamp)).toEqual([3]);
+  });
+
+  test.each([
+    [QUERY_TOOL_NAME, 3],
+    ["codemode", 3],
+    [QUERY_TOOL_NAME, 4],
+    ["codemode", 4],
+  ] as const)("recovery chain for %s at age %i defers only within grace", (toolName, age) => {
+    const messages = [
+      { role: "user", timestamp: 1000, content: [{ type: "text", text: "Recover evidence." }] },
+      { role: "assistant", timestamp: 1001, content: [{ type: "toolCall", id: "lookup", name: toolName, arguments: {} }] },
+      {
+        role: "toolResult", toolCallId: "lookup", toolName, timestamp: 1002, isError: false,
+        content: [{ type: "text", text: "Recovered evidence and other script output." }],
+        ...(toolName === "codemode" ? {
+          nestedCalls: { complete: true, calls: [{ id: "inner-query", name: QUERY_TOOL_NAME, arguments: {}, status: "ok" }] },
+        } : {}),
+      },
+      { role: "assistant", timestamp: 1003, content: [{ type: "text", text: "Recovered." }] },
+      { role: "user", timestamp: 2000, content: [{ type: "text", text: "Read something else." }] },
+      { role: "assistant", timestamp: 2001, content: [{ type: "toolCall", id: "lookup", name: "codemode", arguments: {} }] },
+      {
+        role: "toolResult", toolCallId: "lookup", toolName: "codemode", timestamp: 2002, isError: false,
+        content: [{ type: "text", text: "Ordinary script output." }],
+        nestedCalls: { complete: true, calls: [{ id: "inner-read", name: "read", arguments: { path: "other.txt" }, status: "ok" }] },
+      },
+      { role: "assistant", timestamp: 2003, content: [{ type: "text", text: "Read." }] },
+      ...Array.from({ length: age - 1 }, (_, i) => ({
+        role: "user", timestamp: 3000 + i, content: [{ type: "text", text: "Continue." }],
+      })),
+    ];
+    const chains = detectChains(messages);
+    const closedChains = chains.filter((c) => c.finalAssistantTimestamp !== null);
+    expect(closedChains.map((c) => c.startUserTimestamp)).toEqual([1000, 2000]);
+    expect(closedChains.map((c) => c.finalAssistantTimestamp)).toEqual([1003, 2003]);
+    expect(closedChains.map((c) => c.middleOccurrenceKeys)).toEqual([["lookup@1002"], ["lookup@2002"]]);
+    expect(selectEligible(chains, 0, new Set()).map((c) => c.startUserTimestamp)).toEqual([1000, 2000]);
+
+    const inGrace = inGraceRecoveryToolCallIds(messages, 3);
+    const eligible = selectEligible(chains, 0, new Set(), inGrace);
+    expect(eligible.map((c) => c.startUserTimestamp)).toEqual(age === 3 ? [2000] : [1000, 2000]);
   });
 });
 
