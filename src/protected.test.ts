@@ -36,7 +36,7 @@ describe("globToRegExp", () => {
 });
 
 describe("isProtected defaults", () => {
-  test.each([".pi/gauntlet-overrides.md", "doc/gauntlet-overrides.md"])(
+  test.each([".pi/gauntlet-overrides.md", "doc/gauntlet-overrides.md", ".pi/gauntlet.md", "/repo/.pi/gauntlet.md"])(
     "protects reads of %s",
     (path) => {
       expect(isProtected("read", { path }, DEFAULT_CONFIG)).toBe(true);
@@ -47,8 +47,8 @@ describe("isProtected defaults", () => {
     expect(isProtected("read", { path: "/h/skills/x/SKILL.md" }, DEFAULT_CONFIG)).toBe(true);
   });
 
-  test("does not protect sibling settings reads", () => {
-    expect(isProtected("read", { path: ".pi/settings.json" }, DEFAULT_CONFIG)).toBe(false);
+  test.each([".pi/settings.json", "doc/gauntlet.md", ".pi/gauntlet.yaml"])("does not protect reads of %s", (path) => {
+    expect(isProtected("read", { path }, DEFAULT_CONFIG)).toBe(false);
   });
 
   test("does not infer paths from bash commands", () => {

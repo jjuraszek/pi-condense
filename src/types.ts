@@ -364,7 +364,7 @@ export interface ContextPruneConfig {
    * Glob patterns matched against a tool call's `args.path`. Matching calls are
    * protected with identical semantics to protectedTools. Default protects
    * skill files and their sibling reference docs under any `skills/` dir,
-   * plus per-repo `gauntlet-overrides.md` files.
+   * plus `gauntlet-overrides.md` and `.pi/gauntlet.md` files.
    * Kill switch: set to [] in settings.json (`contextPrune.protectedPaths`).
    */
   protectedPaths: string[];
@@ -593,7 +593,7 @@ export const DEFAULT_CONFIG: ContextPruneConfig = {
   summarizerIdleTimeoutMs: 45000,
   summarizerMaxTimeoutMs: 180000,
   protectedTools: [],
-  protectedPaths: ["**/skills/**/*.md", "**/gauntlet-overrides.md"],
+  protectedPaths: ["**/skills/**/*.md", "**/gauntlet-overrides.md", "**/.pi/gauntlet.md"],
   chainCompression: {
     enabled: true,
     rollingWindow: 3,

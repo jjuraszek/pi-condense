@@ -658,7 +658,7 @@ Protected calls are filtered out **at capture time** - they never enter the `pen
 
 **`protectedTools: string[]`** (default `[]`) - allowlist of tool names. Covers tools whose output is a small handle that must be reused byte-for-byte (e.g. a session-id) or planning tools like `todowrite` / `todoread`.
 
-**`protectedPaths: string[]`** (default `["**/skills/**/*.md", "**/gauntlet-overrides.md"]`) - glob list matched against direct and recorded nested `args.path`. Designed for skill files that carry multi-step workflow gates; summarizing them is categorically lossy. Non-string or missing `path` arguments never match. Set `[]` to disable path matching only; nested tool-name matches and incomplete-record protection remain active. Edit with `/pruner protected-paths`.
+**`protectedPaths: string[]`** (default `["**/skills/**/*.md", "**/gauntlet-overrides.md", "**/.pi/gauntlet.md"]`) - glob list matched against direct and recorded nested `args.path`. Designed for skill files that carry multi-step workflow gates; summarizing them is categorically lossy. Non-string or missing `path` arguments never match. Set `[]` to disable path matching only; nested tool-name matches and incomplete-record protection remain active. Edit with `/pruner protected-paths`.
 
 Glob contract: full-path match against the raw `args.path` string with `\` normalized to `/`. `*` and `?` match within a segment (no `/`); `**` crosses segments; `**/` also matches zero directories (so `**/SKILL.md` matches a bare relative `SKILL.md`). Case-sensitive. All other characters are regex-escaped literals.
 

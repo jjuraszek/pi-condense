@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- Reads of `.pi/gauntlet.md` now stay verbatim by default instead of being summarized.
+
 ## [2.18.1] - 2026-11-18
 
 ### Fixed
