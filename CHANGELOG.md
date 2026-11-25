@@ -7,6 +7,12 @@ Published to npm as [`pi-condense`](https://www.npmjs.com/package/pi-condense) (
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes via OIDC trusted publishing. See `.agents/skills/release/SKILL.md`.
 
+## [Unreleased]
+
+### Changed
+
+- Reads of a repo-root `gauntlet.md` or `doc/gauntlet.md` now stay verbatim by default, like `.pi/gauntlet.md`: the default `protectedPaths` entry `**/.pi/gauntlet.md` becomes `**/gauntlet.md`.
+
 ## [2.18.2] - 2026-11-23
 
 ### Changed
