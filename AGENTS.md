@@ -154,6 +154,6 @@ For changes to idle-cleanup timing, the pause clock, or what idle cleanup retain
 | What pruning does, the algorithm, session entry types, design rationale, references | [`PRUNING.md`](PRUNING.md) |
 | What changed across versions | [`CHANGELOG.md`](CHANGELOG.md) |
 | Rationale for a past change | `doc/specs/*.md` |
-| pi-gauntlet skill overrides for this repo (plan retention, tracker) | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
+| pi-gauntlet skill overrides for this repo (plan retention, tracker) | [`.pi/gauntlet.md`](.pi/gauntlet.md) |
 | Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
 | Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |
