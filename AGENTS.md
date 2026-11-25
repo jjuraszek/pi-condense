@@ -125,7 +125,7 @@ Session entry `customType`s and what each carries: [`PRUNING.md`](PRUNING.md#ses
 
 ## Workflow
 
-- Multi-step work runs `/skill:brainstorming` -> `/skill:writing-plans` in a git worktree (`.worktrees/<branch>`, gitignored); the spec is the first commit on the branch.
+- Multi-step work runs `/skill:gauntlet` in a git worktree (`.worktrees/<branch>`, gitignored); the spec is the first commit on the branch.
 - Smoke-test end-to-end with `pi -e ./index.ts --no-extensions -p "..."` against an isolated `$PI_CODING_AGENT_DIR`; verify the expected `context-prune-*` entries: `jq -r 'select(.type == "custom" or .type == "custom_message") | .customType' session.jsonl | sort | uniq -c`.
 
 ## Testing
